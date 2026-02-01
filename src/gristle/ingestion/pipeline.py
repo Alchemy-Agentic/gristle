@@ -1,0 +1,1666 @@
+"""Ingestion pipeline: parse source files and build the code graph."""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from gristle.config import settings
+from gristle.graph.client import GraphClient
+from gristle.graph.schema import ensure_schema
+from gristle.ingestion.walker import WalkedFile, walk_repo
+from gristle.models import (
+    CodeReference,
+    ParsedClass,
+    ParsedDocument,
+    ParsedFile,
+    ParsedFunction,
+    ParsedImport,
+    ParsedRoute,
+    ParsedTestCase,
+)
+from gristle.parsers.markdown import MarkdownParser
+from gristle.parsers.registry import ParserRegistry
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class IngestionResult:
+    repo_id: str
+    repo_path: str
+    files_processed: int = 0
+    files_skipped: int = 0
+    docs_processed: int = 0
+    nodes_created: int = 0
+    relationships_created: int = 0
+    doc_references_total: int = 0
+    doc_references_resolved: int = 0
+    routes_found: int = 0
+    components_found: int = 0
+    test_files_found: int = 0
+    test_cases_found: int = 0
+    todos_found: int = 0
+    dependencies_found: int = 0
+    test_coverage_edges: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+class IngestionPipeline:
+    """Orchestrates parsing source files and building the FalkorDB graph."""
+
+    _DOC_EXTENSIONS = frozenset({"md", "mdx"})
+
+    def __init__(self, graph: GraphClient, registry: ParserRegistry | None = None):
+        self.graph = graph
+        self.registry = registry or ParserRegistry().build_default()
+        self._md_parser = MarkdownParser()
+        # Maps qualified_name -> node id for cross-file call resolution
+        self._id_map: dict[str, str] = {}
+        # Maps file paths and entity names for document reference resolution
+        self._name_to_id: dict[str, str] = {}  # short name -> node id
+        # Case-insensitive version for fuzzy doc reference resolution
+        self._name_lower_to_id: dict[str, str] = {}  # lowered name -> node id
+
+        # --- Import-aware call resolution maps ---
+        # qualified_name -> node_id (unique, no collisions)
+        self._qualified_map: dict[str, str] = {}
+        # short_name -> [node_ids] (all candidates for that name)
+        self._short_to_candidates: dict[str, list[str]] = {}
+        # file_path -> {local_name -> node_id} (entities defined per file)
+        self._file_entities: dict[str, dict[str, str]] = {}
+        # file_path -> {local_name -> node_id} (exported entities only)
+        self._exported_file_entities: dict[str, dict[str, str]] = {}
+        # Pre-built path resolution maps (populated during Phase 1)
+        self._path_to_id: dict[str, str] = {}
+        self._stem_to_id: dict[str, str] = {}
+        self._dir_index_to_id: dict[str, str] = {}
+        self._pymodule_to_id: dict[str, str] = {}
+        self._source_roots: list[str] = []
+        # Cache for import entity resolution (cleared per ingestion)
+        self._import_cache: dict[str, dict[str, str]] = {}
+        # Track test file paths for TESTS edge resolution
+        self._test_file_paths: set[str] = set()
+        # file_path -> {imported_name -> dep_id} for external imports
+        self._file_external_imports: dict[str, dict[str, str]] = {}
+        # __init__.py path -> {name -> node_id} for re-exported entities
+        self._init_reexport_entities: dict[str, dict[str, str]] = {}
+        # Parsed files by path (for re-export resolution)
+        self._parsed_files_by_path: dict[str, ParsedFile] = {}
+        # Inheritance chain: class_id -> [base_class_ids] (populated after Phase 2)
+        self._class_bases: dict[str, list[str]] = {}
+        # class_id -> {method_name -> func_id} for MRO-aware method resolution
+        self._class_methods: dict[str, dict[str, str]] = {}
+        # Fixture map: fixture_name -> func_id (for USES_FIXTURE edges)
+        self._fixture_map: dict[str, str] = {}
+
+    def _register_name(self, name: str, node_id: str) -> None:
+        """Register a name in both exact and case-insensitive lookup maps."""
+        self._name_to_id[name] = node_id
+        self._name_lower_to_id[name.lower()] = node_id
+
+    def ingest_repo(self, repo_path: str | Path) -> IngestionResult:
+        """Full ingestion: walk, parse, and build the graph for a repository."""
+        repo_path = str(Path(repo_path).resolve())
+        result = IngestionResult(
+            repo_id=self.graph.repo_id,
+            repo_path=repo_path,
+        )
+
+        # Clear any existing graph data for this repo
+        self.graph.clear()
+        ensure_schema(self.graph)
+        self._id_map.clear()
+        self._name_to_id.clear()
+        self._name_lower_to_id.clear()
+        self._qualified_map.clear()
+        self._short_to_candidates.clear()
+        self._file_entities.clear()
+        self._exported_file_entities.clear()
+        self._path_to_id.clear()
+        self._stem_to_id.clear()
+        self._dir_index_to_id.clear()
+        self._pymodule_to_id.clear()
+        self._source_roots.clear()
+        self._import_cache.clear()
+        self._test_file_paths.clear()
+        self._file_external_imports.clear()
+        self._init_reexport_entities.clear()
+        self._parsed_files_by_path.clear()
+        self._class_bases.clear()
+        self._class_methods.clear()
+        self._fixture_map.clear()
+
+        # Walk and collect source files
+        files = walk_repo(repo_path, self.registry.supported_extensions)
+        logger.info("Found %d parseable files in %s", len(files), repo_path)
+
+        # Phase 1: Parse all files and build nodes
+        parsed_files: list[ParsedFile] = []
+        for wf in files:
+            parsed = self._parse_and_build(wf, result)
+            if parsed:
+                parsed_files.append(parsed)
+
+        # Detect Python source roots and register stripped module keys
+        self._register_python_source_roots(parsed_files)
+
+        # Store parsed files by path (for re-export resolution)
+        for pf in parsed_files:
+            self._parsed_files_by_path[pf.path] = pf
+
+        # Build re-export maps for Python __init__.py files
+        self._build_init_reexport_maps(parsed_files)
+
+        # Phase 2: Resolve cross-file call relationships
+        self._resolve_calls(parsed_files, result)
+
+        # Phase 3: Walk and process documentation files
+        doc_files = walk_repo(repo_path, self._DOC_EXTENSIONS)
+        logger.info("Found %d documentation files in %s", len(doc_files), repo_path)
+        for wf in doc_files:
+            self._process_document(wf, result)
+
+        logger.info(
+            "Ingestion complete: %d files, %d docs, %d nodes, %d relationships"
+            " (%d/%d doc refs resolved)",
+            result.files_processed,
+            result.docs_processed,
+            result.nodes_created,
+            result.relationships_created,
+            result.doc_references_resolved,
+            result.doc_references_total,
+        )
+        return result
+
+    def update_file(self, repo_path: str, relative_path: str) -> IngestionResult:
+        """Re-index a single file (for incremental updates).
+
+        Deletes old nodes, re-parses, rebuilds nodes, and re-resolves
+        cross-file edges (CALLS, IMPORTS, TESTS, USES_DEPENDENCY) for the
+        updated file.  Requires that in-memory maps were populated by a
+        prior full ingestion.
+        """
+        result = IngestionResult(repo_id=self.graph.repo_id, repo_path=repo_path)
+        abs_path = os.path.join(repo_path, relative_path)
+
+        # 1. Purge old nodes + in-memory map entries for this file
+        self._delete_file_nodes(relative_path)
+        self._purge_maps_for_file(relative_path)
+
+        if not os.path.exists(abs_path):
+            # File was deleted — we're done after cleanup
+            logger.info("Deleted from graph: %s", relative_path)
+            return result
+
+        # 2. Re-parse
+        try:
+            content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return result
+
+        parsed = self.registry.parse_file(relative_path, content)
+        if parsed is None:
+            return result
+
+        # 3. Rebuild file nodes (populates maps for this file)
+        self._build_file_graph(parsed, result)
+
+        # 4. Re-resolve cross-file edges for this file
+        self._import_cache.pop(relative_path, None)  # invalidate cache
+
+        # CALLS: resolve calls in this file's functions
+        for func in parsed.functions:
+            self._resolve_function_calls(func, parsed, result)
+        for cls in parsed.classes:
+            for method in cls.methods:
+                self._resolve_function_calls(method, parsed, result)
+            # INHERITS_FROM
+            class_id = f"class::{cls.qualified_name}"
+            for base_name in cls.bases:
+                base_id = self._resolve_base(base_name, parsed)
+                if base_id:
+                    self.graph.create_relationship(
+                        class_id, base_id, "INHERITS_FROM"
+                    )
+                    result.relationships_created += 1
+
+        # IMPORTS: resolve this file's imports to other files
+        file_id = f"file::{parsed.path}"
+        file_dir = parsed.path.replace("\\", "/")
+        file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
+        for imp in parsed.imports:
+            target_id = self._resolve_single_import(
+                imp, file_dir, parsed.language,
+                self._path_to_id, self._stem_to_id,
+                self._dir_index_to_id, self._pymodule_to_id,
+                self._source_roots,
+            )
+            if target_id and target_id != file_id:
+                self.graph.merge_relationship(file_id, target_id, "IMPORTS")
+                result.relationships_created += 1
+
+        # TESTS: if this is a test file, create TESTS edges
+        if parsed.is_test_file:
+            self._resolve_test_edges([parsed], result)
+
+        # Also re-resolve callers INTO this file from other files
+        # (Other files may call functions defined here — those CALLS edges
+        #  were deleted along with the old nodes and need to be recreated.
+        #  We do this via graph query for efficiency.)
+        self._relink_incoming_calls(parsed, result)
+
+        logger.info(
+            "Updated %s: %d nodes, %d rels",
+            relative_path, result.nodes_created, result.relationships_created,
+        )
+        return result
+
+    def _purge_maps_for_file(self, file_path: str) -> None:
+        """Remove a file's entries from in-memory resolution maps."""
+        # Remove entities defined in this file
+        old_entities = self._file_entities.pop(file_path, {})
+        self._exported_file_entities.pop(file_path, None)
+        self._file_external_imports.pop(file_path, None)
+        self._import_cache.pop(file_path, None)
+
+        # Remove from qualified_map and short_to_candidates
+        for local_name, node_id in old_entities.items():
+            # Reconstruct qualified_name from node_id
+            # node_id format: "func::path::Name" or "class::path::Name"
+            qn = node_id.split("::", 1)[1] if "::" in node_id else None
+            if qn and qn in self._qualified_map:
+                del self._qualified_map[qn]
+            # Remove from candidates list
+            candidates = self._short_to_candidates.get(local_name)
+            if candidates and node_id in candidates:
+                candidates.remove(node_id)
+                if not candidates:
+                    del self._short_to_candidates[local_name]
+
+        # Remove test file tracking
+        self._test_file_paths.discard(file_path)
+
+    def _relink_incoming_calls(
+        self, parsed: ParsedFile, result: IngestionResult
+    ) -> None:
+        """Re-create CALLS edges from OTHER files' functions into this file.
+
+        When a file is re-indexed, its old function nodes (and all edges)
+        are deleted.  Other files' functions may have CALLS edges pointing
+        to the old nodes.  We query the graph for functions in other files
+        that should call entities in this file and recreate those edges.
+        """
+        # Get all entity names defined in this file
+        file_entities = self._file_entities.get(parsed.path, {})
+        if not file_entities:
+            return
+
+        # For each entity, find callers from other files via the graph
+        for entity_name, entity_id in file_entities.items():
+            # Check if any function in another file has this entity in their
+            # calls list — but we don't store calls in the graph, only CALLS edges.
+            # Instead, re-check other files' import caches to see if they
+            # import from this file, and if so, invalidate their caches.
+            pass
+
+        # Invalidate import caches for files that import from this file
+        # (so next time _get_imported_entities is called for them, it
+        # picks up the new node IDs)
+        for cached_path in list(self._import_cache.keys()):
+            if cached_path != parsed.path:
+                self._import_cache.pop(cached_path, None)
+
+    # ------------------------------------------------------------------
+    # Internal: parse + build
+    # ------------------------------------------------------------------
+
+    def _parse_and_build(
+        self, wf: WalkedFile, result: IngestionResult
+    ) -> ParsedFile | None:
+        try:
+            content = Path(wf.absolute_path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError as e:
+            result.errors.append(f"Read error {wf.relative_path}: {e}")
+            result.files_skipped += 1
+            return None
+
+        try:
+            parsed = self.registry.parse_file(wf.relative_path, content)
+        except Exception as e:
+            result.errors.append(f"Parse error {wf.relative_path}: {e}")
+            result.files_skipped += 1
+            return None
+
+        if parsed is None:
+            result.files_skipped += 1
+            return None
+
+        self._build_file_graph(parsed, result)
+        result.files_processed += 1
+        if parsed.is_test_file:
+            result.test_files_found += 1
+        result.routes_found += len(parsed.routes)
+        result.test_cases_found += len(parsed.test_cases)
+        result.todos_found += len(parsed.todos)
+        for func in parsed.functions:
+            if func.is_component:
+                result.components_found += 1
+            result.todos_found += len(func.todos)
+        for cls in parsed.classes:
+            for method in cls.methods:
+                result.todos_found += len(method.todos)
+        return parsed
+
+    def _build_file_graph(self, parsed: ParsedFile, result: IngestionResult) -> None:
+        """Create graph nodes and structural edges for a single parsed file."""
+        file_id = f"file::{parsed.path}"
+
+        # Track file path for document reference resolution
+        self._register_name(parsed.path, file_id)
+        # Also track without extension and basename
+        stem = parsed.path.rsplit(".", 1)[0] if "." in parsed.path else parsed.path
+        self._register_name(stem, file_id)
+        basename = parsed.path.rsplit("/", 1)[-1] if "/" in parsed.path else parsed.path
+        self._register_name(basename, file_id)
+
+        # File node
+        self.graph.create_node("File", {
+            "id": file_id,
+            "path": parsed.path,
+            "language": parsed.language,
+            "line_count": parsed.line_count,
+            "docstring": parsed.module_docstring or "",
+            "is_test_file": parsed.is_test_file,
+            "todo_count": len(parsed.todos),
+        })
+        result.nodes_created += 1
+
+        # Track test files for TESTS edge resolution
+        if parsed.is_test_file:
+            self._test_file_paths.add(parsed.path)
+
+        # Build path resolution maps (used by import-aware call resolution)
+        normalized = parsed.path.replace("\\", "/")
+        self._path_to_id[normalized] = file_id
+        _all_exts = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".pyi"}
+        for ext in _all_exts:
+            if normalized.endswith(ext):
+                self._stem_to_id[normalized[: -len(ext)]] = file_id
+                break
+        if basename.startswith("index."):
+            dir_path = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+            if dir_path:
+                self._dir_index_to_id[dir_path] = file_id
+        if parsed.language == "python":
+            module = normalized.replace("/", ".")
+            if module.endswith(".py"):
+                module = module[:-3]
+            self._pymodule_to_id[module] = file_id
+            # Also register the __init__ as the package itself
+            # e.g. src.marshmallow.__init__ -> also register as src.marshmallow
+            if module.endswith(".__init__"):
+                pkg_module = module[: -len(".__init__")]
+                self._pymodule_to_id[pkg_module] = file_id
+            parts = module.split(".")
+            if parts and parts[-1] != "__init__":
+                self._pymodule_to_id[parts[-1]] = file_id
+
+        # Import nodes
+        for imp in parsed.imports:
+            imp_id = f"import::{parsed.path}::{imp.line}"
+            self.graph.create_node("Import", {
+                "id": imp_id,
+                "file_path": parsed.path,
+                "line": imp.line,
+                "module_path": imp.module_path,
+                "imported_names": imp.imported_names,
+                "is_relative": imp.is_relative,
+            })
+            self.graph.create_relationship(file_id, imp_id, "CONTAINS")
+            result.nodes_created += 1
+            result.relationships_created += 1
+
+        # Classes
+        for cls in parsed.classes:
+            self._build_class(file_id, cls, result)
+
+        # Module-level functions
+        for func in parsed.functions:
+            self._build_function(file_id, None, func, result)
+
+        # Routes
+        for route in parsed.routes:
+            self._build_route(file_id, route, result)
+
+        # Test cases (describe/it/test blocks)
+        for tc in parsed.test_cases:
+            self._build_test_case(file_id, tc, result)
+
+    def _build_route(
+        self, file_id: str, route: ParsedRoute, result: IngestionResult
+    ) -> None:
+        route_id = f"route::{route.file_path}::L{route.line}::{route.method}"
+        self.graph.create_node("Route", {
+            "id": route_id,
+            "method": route.method,
+            "path": route.path,
+            "handler_name": route.handler_name,
+            "file_path": route.file_path,
+            "line": route.line,
+            "end_line": route.end_line,
+            "middleware": route.middleware,
+        })
+        result.nodes_created += 1
+
+        # Link route to its file
+        self.graph.create_relationship(file_id, route_id, "CONTAINS")
+        result.relationships_created += 1
+
+        # Link route to its handler function if we can find it
+        handler_id = self._id_map.get(route.handler_name)
+        if not handler_id:
+            scoped = f"{route.file_path}::{route.handler_name}"
+            handler_id = self._id_map.get(scoped)
+        if handler_id:
+            self.graph.create_relationship(route_id, handler_id, "HANDLES")
+            result.relationships_created += 1
+
+    def _build_test_case(
+        self, file_id: str, tc: ParsedTestCase, result: IngestionResult
+    ) -> None:
+        tc_id = f"testcase::{tc.file_path}::L{tc.start_line}"
+        self.graph.create_node("TestCase", {
+            "id": tc_id,
+            "name": tc.name,
+            "block_type": tc.block_type,
+            "file_path": tc.file_path,
+            "start_line": tc.start_line,
+            "end_line": tc.end_line,
+            "parent_describe": tc.parent_describe or "",
+            "parametrize_count": tc.parametrize_count,
+        })
+        result.nodes_created += 1
+
+        self.graph.create_relationship(file_id, tc_id, "CONTAINS")
+        result.relationships_created += 1
+
+    def _build_class(
+        self, file_id: str, cls: ParsedClass, result: IngestionResult
+    ) -> None:
+        class_id = f"class::{cls.qualified_name}"
+        self._id_map[cls.qualified_name] = class_id
+        self._id_map[cls.name] = class_id  # Also index by short name
+        self._register_name(cls.name, class_id)
+        self._qualified_map[cls.qualified_name] = class_id
+        self._short_to_candidates.setdefault(cls.name, []).append(class_id)
+        self._file_entities.setdefault(cls.file_path, {})[cls.name] = class_id
+        if cls.is_exported:
+            self._exported_file_entities.setdefault(cls.file_path, {})[cls.name] = class_id
+
+        self.graph.create_node("Class", {
+            "id": class_id,
+            "name": cls.name,
+            "qualified_name": cls.qualified_name,
+            "file_path": cls.file_path,
+            "start_line": cls.start_line,
+            "end_line": cls.end_line,
+            "signature": cls.signature,
+            "docstring": cls.docstring or "",
+            "decorators": cls.decorators,
+            "is_abstract": cls.is_abstract,
+            "visibility": cls.visibility,
+            "bases": cls.bases,
+            "kind": cls.kind,
+            "is_exported": cls.is_exported,
+        })
+        result.nodes_created += 1
+
+        self.graph.create_relationship(file_id, class_id, "CONTAINS")
+        self.graph.create_relationship(class_id, file_id, "DEFINED_IN")
+        result.relationships_created += 2
+
+        if cls.is_exported:
+            self.graph.create_relationship(file_id, class_id, "EXPORTS")
+            result.relationships_created += 1
+
+        # Store class method map for inheritance-aware resolution
+        method_map: dict[str, str] = {}
+        for method in cls.methods:
+            func_id = f"func::{method.qualified_name}"
+            method_map[method.name] = func_id
+        self._class_methods[class_id] = method_map
+
+        # Methods
+        for method in cls.methods:
+            self._build_function(file_id, class_id, method, result)
+
+    def _build_function(
+        self,
+        file_id: str,
+        class_id: str | None,
+        func: ParsedFunction,
+        result: IngestionResult,
+    ) -> None:
+        func_id = f"func::{func.qualified_name}"
+        self._id_map[func.qualified_name] = func_id
+        self._id_map[func.name] = func_id  # Short name (may collide — last wins)
+        self._register_name(func.name, func_id)
+        self._qualified_map[func.qualified_name] = func_id
+        self._short_to_candidates.setdefault(func.name, []).append(func_id)
+        entities = self._file_entities.setdefault(func.file_path, {})
+        entities[func.name] = func_id
+        # Also store class-qualified form: "ClassName.method"
+        local_name = func.qualified_name.split("::")[-1]
+        if local_name != func.name:
+            entities[local_name] = func_id
+        if func.is_exported:
+            exported = self._exported_file_entities.setdefault(func.file_path, {})
+            exported[func.name] = func_id
+            if local_name != func.name:
+                exported[local_name] = func_id
+
+        # Track fixtures by name for USES_FIXTURE edge resolution
+        if func.is_fixture:
+            self._fixture_map[func.name] = func_id
+
+        self.graph.create_node("Function", {
+            "id": func_id,
+            "name": func.name,
+            "qualified_name": func.qualified_name,
+            "file_path": func.file_path,
+            "start_line": func.start_line,
+            "end_line": func.end_line,
+            "signature": func.signature,
+            "docstring": func.docstring or "",
+            "decorators": func.decorators,
+            "is_async": func.is_async,
+            "is_static": func.is_static,
+            "is_classmethod": func.is_classmethod,
+            "is_property": func.is_property,
+            "is_fixture": func.is_fixture,
+            "visibility": func.visibility,
+            "return_type": func.return_type or "",
+            "complexity": func.complexity,
+            "is_exported": func.is_exported,
+            "is_component": func.is_component,
+            "is_test": func.is_test,
+            "is_entry_point": func.is_entry_point,
+            "todo_count": len(func.todos),
+        })
+        result.nodes_created += 1
+
+        self.graph.create_relationship(func_id, file_id, "DEFINED_IN")
+        result.relationships_created += 1
+
+        if class_id:
+            self.graph.create_relationship(class_id, func_id, "CONTAINS")
+            result.relationships_created += 1
+        else:
+            self.graph.create_relationship(file_id, func_id, "CONTAINS")
+            result.relationships_created += 1
+
+        if func.is_exported:
+            self.graph.create_relationship(file_id, func_id, "EXPORTS")
+            result.relationships_created += 1
+
+    # ------------------------------------------------------------------
+    # Phase 2: Cross-file resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_calls(
+        self, parsed_files: list[ParsedFile], result: IngestionResult
+    ) -> None:
+        """Create CALLS edges by resolving call targets to known functions."""
+        # Compute source roots for path alias resolution (needs all files)
+        self._source_roots = self._detect_source_roots(parsed_files)
+        self._import_cache.clear()
+
+        for pf in parsed_files:
+            # Module-level functions
+            for func in pf.functions:
+                self._resolve_function_calls(func, pf, result)
+            # Methods
+            for cls in pf.classes:
+                for method in cls.methods:
+                    self._resolve_function_calls(method, pf, result)
+
+        # Resolve INHERITS_FROM edges and build inheritance map
+        for pf in parsed_files:
+            for cls in pf.classes:
+                class_id = f"class::{cls.qualified_name}"
+                bases: list[str] = []
+                for base_name in cls.bases:
+                    base_id = self._resolve_base(base_name, pf)
+                    if base_id:
+                        self.graph.create_relationship(
+                            class_id, base_id, "INHERITS_FROM"
+                        )
+                        result.relationships_created += 1
+                        bases.append(base_id)
+                if bases:
+                    self._class_bases[class_id] = bases
+
+        # Resolve IMPORTS (File -> File) edges
+        self._resolve_imports(parsed_files, result)
+
+        # Resolve TESTS (test File -> production File) edges
+        self._resolve_test_edges(parsed_files, result)
+
+        # Resolve USES_FIXTURE edges (test function param -> fixture function)
+        self._resolve_fixture_edges(parsed_files, result)
+
+    def _resolve_fixture_edges(
+        self, parsed_files: list[ParsedFile], result: IngestionResult
+    ) -> None:
+        """Create USES_FIXTURE edges from test functions to pytest fixtures.
+
+        Matches test function parameter names to known fixture names.
+        """
+        if not self._fixture_map:
+            return
+
+        for pf in parsed_files:
+            if not pf.is_test_file:
+                continue
+            for func in pf.functions:
+                if not func.is_test:
+                    continue
+                self._link_func_to_fixtures(func, result)
+            for cls in pf.classes:
+                for method in cls.methods:
+                    if not method.is_test:
+                        continue
+                    self._link_func_to_fixtures(method, result)
+
+    def _link_func_to_fixtures(
+        self, func: ParsedFunction, result: IngestionResult
+    ) -> None:
+        """Link a test function to fixtures it uses via parameter names."""
+        caller_id = f"func::{func.qualified_name}"
+        for param in func.parameters:
+            if param.startswith("*"):
+                continue  # skip *args/**kwargs
+            fixture_id = self._fixture_map.get(param)
+            if fixture_id:
+                self.graph.merge_relationship(caller_id, fixture_id, "USES_FIXTURE")
+                result.relationships_created += 1
+
+    def _resolve_function_calls(
+        self, func: ParsedFunction, pf: ParsedFile, result: IngestionResult
+    ) -> None:
+        caller_id = f"func::{func.qualified_name}"
+        for call_name in func.calls:
+            callee_id = self._find_callee(call_name, func, pf)
+            if callee_id:
+                self.graph.merge_relationship(caller_id, callee_id, "CALLS")
+                result.relationships_created += 1
+
+            # Create USES_HOOK edge for React hook calls (use* convention)
+            bare_name = call_name.split(".")[-1] if "." in call_name else call_name
+            if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper():
+                if callee_id:
+                    self.graph.merge_relationship(caller_id, callee_id, "USES_HOOK")
+                    result.relationships_created += 1
+                else:
+                    # Hook not in our graph (e.g. useState, useEffect from React)
+                    # Create the edge to a synthetic node if we want to track it
+                    # For now, just record as a property — could be extended later
+                    pass
+
+    def _find_callee(
+        self,
+        call_name: str,
+        caller: ParsedFunction,
+        context_file: ParsedFile,
+    ) -> str | None:
+        """Resolve a call name to a known function node ID.
+
+        Resolution strategy (priority order):
+        1. Exact qualified name
+        2. File-scoped qualified name
+        3. Dotted calls (self/this, ClassName.method, obj.method)
+        4. Import-aware: match against entities from imported files
+        5. Same-file entity match
+        6. Single-candidate short name (unambiguous global)
+        """
+        # 1. Exact qualified name (always unique)
+        if call_name in self._qualified_map:
+            return self._qualified_map[call_name]
+
+        # 2. File-scoped qualified name
+        scoped = f"{context_file.path}::{call_name}"
+        if scoped in self._qualified_map:
+            return self._qualified_map[scoped]
+
+        # 3. Dotted calls: self.method, ClassName.method, obj.method
+        if "." in call_name:
+            result = self._resolve_dotted_call(call_name, caller, context_file)
+            if result:
+                return result
+
+        # 4. Import-aware: check if this name was imported from a known file
+        imported = self._get_imported_entities(context_file)
+        if call_name in imported:
+            return imported[call_name]
+
+        # 5. Same-file entity
+        file_entities = self._file_entities.get(context_file.path, {})
+        if call_name in file_entities:
+            return file_entities[call_name]
+
+        # 6. Single-candidate short name (only if unambiguous)
+        candidates = self._short_to_candidates.get(call_name)
+        if candidates and len(candidates) == 1:
+            return candidates[0]
+
+        return None
+
+    def _resolve_dotted_call(
+        self,
+        call_name: str,
+        caller: ParsedFunction,
+        context_file: ParsedFile,
+    ) -> str | None:
+        """Resolve dotted calls: self.method, this.method, ClassName.method, obj.method."""
+        parts = call_name.split(".")
+        obj = parts[0]
+        method = parts[-1]
+
+        # self.method / this.method -> enclosing class's method (or inherited)
+        if obj in ("self", "this"):
+            local = caller.qualified_name.split("::")[-1]  # "ClassName.method"
+            if "." in local:
+                class_name = local.split(".")[0]
+                target_qn = f"{context_file.path}::{class_name}.{method}"
+                if target_qn in self._qualified_map:
+                    return self._qualified_map[target_qn]
+                # Try inherited methods via MRO
+                class_id = self._id_map.get(class_name) or self._id_map.get(
+                    f"{context_file.path}::{class_name}"
+                )
+                if class_id:
+                    inherited = self._resolve_inherited_method(class_id, method)
+                    if inherited:
+                        return inherited
+
+        # Try file-scoped "ClassName.method" (defined in the same file)
+        file_scoped = f"{context_file.path}::{call_name}"
+        if file_scoped in self._qualified_map:
+            return self._qualified_map[file_scoped]
+
+        # Try inheritance for ClassName.method where ClassName is in same file
+        class_id = self._id_map.get(obj) or self._id_map.get(
+            f"{context_file.path}::{obj}"
+        )
+        if class_id and class_id.startswith("class::"):
+            inherited = self._resolve_inherited_method(class_id, method)
+            if inherited:
+                return inherited
+
+        # Check imported entities for the dotted form
+        imported = self._get_imported_entities(context_file)
+        if call_name in imported:
+            return imported[call_name]
+
+        # obj.method where obj is an imported module/class — look up method
+        # in the file that obj was imported from
+        is_python = context_file.language == "python"
+        for imp in context_file.imports:
+            # Check if obj matches an imported name or the module basename
+            mod_basename = imp.module_path.rsplit("/", 1)[-1].split(".")[0]
+            alias = imp.aliases.get(obj)
+            is_match = (
+                obj in imp.imported_names
+                or (alias in imp.imported_names if alias else False)
+                or obj == mod_basename
+            )
+            if not is_match:
+                continue
+            target_file_id = self._resolve_import_to_file_id(imp, context_file)
+            if target_file_id:
+                target_path = target_file_id[6:]  # strip "file::"
+                # For JS/TS, prefer exported entities; Python allows all
+                if is_python:
+                    target_entities = self._file_entities.get(target_path, {})
+                else:
+                    target_entities = self._exported_file_entities.get(target_path, {})
+                    if method not in target_entities:
+                        # Fall back to all entities (some files may not mark exports)
+                        target_entities = self._file_entities.get(target_path, {})
+                if method in target_entities:
+                    return target_entities[method]
+
+                # Python: obj may be a submodule imported via __init__.py.
+                # e.g. "from marshmallow import fields" -> fields.Nested
+                # The import resolves to __init__.py but "fields" is a
+                # submodule.  Try resolving "obj" as a module path.
+                if is_python and target_path.endswith("/__init__.py"):
+                    pkg_dir = target_path.rsplit("/", 1)[0]
+                    submod_path = f"{pkg_dir}/{obj}"
+                    # Check file entities for the submodule file
+                    for ext in (".py", ""):
+                        sub_file_id = self._path_to_id.get(
+                            submod_path + ext
+                        ) or self._stem_to_id.get(submod_path)
+                        if sub_file_id:
+                            sub_path = sub_file_id[6:]
+                            sub_entities = self._file_entities.get(sub_path, {})
+                            if method in sub_entities:
+                                return sub_entities[method]
+                            break
+
+        # Last resort: method name in same file
+        file_entities = self._file_entities.get(context_file.path, {})
+        if method in file_entities:
+            return file_entities[method]
+
+        # Single-candidate for the method name
+        candidates = self._short_to_candidates.get(method)
+        if candidates and len(candidates) == 1:
+            return candidates[0]
+
+        return None
+
+    def _resolve_inherited_method(
+        self, class_id: str, method_name: str, _visited: set[str] | None = None
+    ) -> str | None:
+        """Walk the inheritance chain to find a method defined in a base class."""
+        if _visited is None:
+            _visited = set()
+        if class_id in _visited:
+            return None  # prevent cycles
+        _visited.add(class_id)
+
+        bases = self._class_bases.get(class_id, [])
+        for base_id in bases:
+            # Check if the base class directly defines this method
+            base_methods = self._class_methods.get(base_id, {})
+            if method_name in base_methods:
+                return base_methods[method_name]
+            # Recurse into base's bases
+            result = self._resolve_inherited_method(base_id, method_name, _visited)
+            if result:
+                return result
+        return None
+
+    def _get_imported_entities(
+        self, context_file: ParsedFile
+    ) -> dict[str, str]:
+        """Build a map of name -> node_id for entities imported into a file.
+
+        For wildcard imports (import * from), only exported entities are
+        included. For named imports, we trust the import statement as the
+        source of truth (the name was explicitly requested).
+
+        For Python files, all entities are considered importable since Python
+        has no export keyword — visibility is by convention only.
+
+        Results are cached per file path to avoid recomputation.
+        """
+        cache_key = context_file.path
+        if cache_key in self._import_cache:
+            return self._import_cache[cache_key]
+
+        is_python = context_file.language == "python"
+        imported: dict[str, str] = {}
+
+        for imp in context_file.imports:
+            target_file_id = self._resolve_import_to_file_id(imp, context_file)
+            if not target_file_id:
+                continue
+            target_path = target_file_id[6:]  # strip "file::"
+            target_entities = self._file_entities.get(target_path, {})
+
+            # Include re-exported entities (Python __init__.py / TS/JS barrel files)
+            reexports = self._init_reexport_entities.get(target_path, {})
+
+            if imp.is_wildcard:
+                # Wildcard: only exported entities (or all for Python)
+                if is_python:
+                    imported.update(target_entities)
+                    imported.update(reexports)
+                else:
+                    exported = self._exported_file_entities.get(target_path, {})
+                    imported.update(exported)
+                    imported.update(reexports)
+            else:
+                for name in imp.imported_names:
+                    alias = imp.aliases.get(name)
+                    if name in target_entities:
+                        imported[name] = target_entities[name]
+                        if alias:
+                            imported[alias] = target_entities[name]
+                    elif name in reexports:
+                        imported[name] = reexports[name]
+                        if alias:
+                            imported[alias] = reexports[name]
+                    elif alias and alias in target_entities:
+                        imported[alias] = target_entities[alias]
+                    elif alias and alias in reexports:
+                        imported[alias] = reexports[alias]
+
+        self._import_cache[cache_key] = imported
+        return imported
+
+    def _resolve_import_to_file_id(
+        self, imp: ParsedImport, context_file: ParsedFile
+    ) -> str | None:
+        """Resolve an import to a file ID using pre-built path maps."""
+        file_dir = context_file.path.replace("\\", "/")
+        file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
+        return self._resolve_single_import(
+            imp, file_dir, context_file.language,
+            self._path_to_id, self._stem_to_id,
+            self._dir_index_to_id, self._pymodule_to_id,
+            self._source_roots,
+        )
+
+    def _resolve_test_edges(
+        self, parsed_files: list[ParsedFile], result: IngestionResult
+    ) -> None:
+        """Create TESTS edges from test files to the production files they import.
+
+        Skips imports that resolve to other test files or test helpers.
+        """
+        for pf in parsed_files:
+            if not pf.is_test_file:
+                continue
+            test_file_id = f"file::{pf.path}"
+            file_dir = pf.path.replace("\\", "/")
+            file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
+
+            targets_seen: set[str] = set()
+            for imp in pf.imports:
+                target_id = self._resolve_single_import(
+                    imp, file_dir, pf.language,
+                    self._path_to_id, self._stem_to_id,
+                    self._dir_index_to_id, self._pymodule_to_id,
+                    self._source_roots,
+                )
+                if not target_id or target_id == test_file_id:
+                    continue
+                target_path = target_id[6:]  # strip "file::"
+                # Skip if target is also a test file
+                if target_path in self._test_file_paths:
+                    continue
+                # Deduplicate (a test file may import multiple names from same file)
+                if target_id in targets_seen:
+                    continue
+                targets_seen.add(target_id)
+
+                self.graph.merge_relationship(test_file_id, target_id, "TESTS")
+                result.relationships_created += 1
+                result.test_coverage_edges += 1
+
+    def _resolve_dependency_usage(
+        self, parsed_files: list[ParsedFile], result: IngestionResult
+    ) -> None:
+        """Create USES_DEPENDENCY edges from functions to external dependencies.
+
+        A function USES_DEPENDENCY a package when it calls a name that was
+        imported from that package (and didn't resolve to an internal entity).
+        """
+        for pf in parsed_files:
+            ext_map = self._file_external_imports.get(pf.path)
+            if not ext_map:
+                continue
+
+            for func in pf.functions:
+                self._link_func_to_deps(func, pf, ext_map, result)
+            for cls in pf.classes:
+                for method in cls.methods:
+                    self._link_func_to_deps(method, pf, ext_map, result)
+
+    def _link_func_to_deps(
+        self,
+        func: ParsedFunction,
+        context_file: ParsedFile,
+        ext_map: dict[str, str],
+        result: IngestionResult,
+    ) -> None:
+        """Check each call in a function against external imports."""
+        caller_id = f"func::{func.qualified_name}"
+        seen_deps: set[str] = set()
+
+        for call_name in func.calls:
+            # Skip calls that resolved to internal entities
+            if self._find_callee(call_name, func, context_file):
+                continue
+
+            # Check bare name against external imports
+            bare = call_name.split(".")[-1] if "." in call_name else call_name
+            obj = call_name.split(".")[0] if "." in call_name else call_name
+
+            dep_id = ext_map.get(bare) or ext_map.get(obj)
+            if dep_id and dep_id not in seen_deps:
+                seen_deps.add(dep_id)
+                self.graph.merge_relationship(caller_id, dep_id, "USES_DEPENDENCY")
+                result.relationships_created += 1
+
+    def _resolve_base(self, base_name: str, context_file: ParsedFile) -> str | None:
+        """Resolve a base/extends name to a known class node ID.
+
+        Handles generics (Foo<Bar> -> Foo), dotted refs (React.Component -> Component),
+        and utility types (Omit<Foo, 'x'> -> Foo).
+        """
+        # Strip generic parameters: Component<Props> -> Component
+        clean = base_name.split("<")[0].strip()
+        if not clean:
+            return None
+
+        # Strip wrapping quotes (e.g. from Omit<...> inner types)
+        clean = clean.strip("'\"")
+
+        # Try exact match first
+        if clean in self._id_map:
+            return self._id_map[clean]
+
+        # For dotted names like React.Component, try the last segment
+        if "." in clean:
+            last_part = clean.rsplit(".", 1)[-1]
+            if last_part in self._id_map:
+                return self._id_map[last_part]
+
+        # Try file-scoped qualified name
+        scoped = f"{context_file.path}::{clean}"
+        if scoped in self._id_map:
+            return self._id_map[scoped]
+
+        # Try matching against imported names in the file
+        for imp in context_file.imports:
+            for iname in imp.imported_names:
+                if iname == clean:
+                    full_name = f"{imp.module_path}.{iname}" if imp.module_path else iname
+                    if full_name in self._id_map:
+                        return self._id_map[full_name]
+
+        return None
+
+    def _resolve_imports(
+        self, parsed_files: list[ParsedFile], result: IngestionResult
+    ) -> None:
+        """Create IMPORTS edges between File nodes based on import statements.
+
+        Path maps and source roots are pre-built during Phase 1.
+        """
+        # Collect external dependencies (npm packages, Python stdlib/pypi)
+        external_deps: dict[str, set[str]] = {}  # package_name -> set of importing files
+
+        for pf in parsed_files:
+            file_id = f"file::{pf.path}"
+            file_dir = pf.path.replace("\\", "/")
+            file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
+
+            for imp in pf.imports:
+                target_id = self._resolve_single_import(
+                    imp, file_dir, pf.language,
+                    self._path_to_id, self._stem_to_id,
+                    self._dir_index_to_id, self._pymodule_to_id,
+                    self._source_roots,
+                )
+                if target_id and target_id != file_id:
+                    self.graph.merge_relationship(file_id, target_id, "IMPORTS")
+                    result.relationships_created += 1
+                elif not target_id and not imp.is_relative:
+                    # Unresolved non-relative import = external dependency
+                    pkg = self._extract_package_name(imp.module_path, pf.language)
+                    if pkg:
+                        if pkg not in external_deps:
+                            external_deps[pkg] = set()
+                        external_deps[pkg].add(pf.path)
+                        # Track which names this file imports from this package
+                        ext_map = self._file_external_imports.setdefault(
+                            pf.path, {}
+                        )
+                        dep_id = f"dep::{pkg}"
+                        for name in imp.imported_names:
+                            ext_map[name] = dep_id
+                            alias = imp.aliases.get(name)
+                            if alias:
+                                ext_map[alias] = dep_id
+                        # Also map the module basename (e.g. "React" from "react")
+                        mod_base = imp.module_path.rsplit("/", 1)[-1].split(".")[0]
+                        ext_map[mod_base] = dep_id
+
+        # Create Dependency nodes
+        for pkg_name, importers in external_deps.items():
+            dep_id = f"dep::{pkg_name}"
+            self.graph.create_node("Dependency", {
+                "id": dep_id,
+                "name": pkg_name,
+                "import_count": len(importers),
+            })
+            result.nodes_created += 1
+            result.dependencies_found += 1
+            # Link importing files to the dependency
+            for file_path in importers:
+                file_id = f"file::{file_path}"
+                self.graph.merge_relationship(file_id, dep_id, "DEPENDS_ON")
+                result.relationships_created += 1
+
+        # Link functions to the external dependencies they use
+        self._resolve_dependency_usage(parsed_files, result)
+
+    def _register_python_source_roots(
+        self, parsed_files: list[ParsedFile]
+    ) -> None:
+        """Detect Python source roots (e.g. ``src/``) and register module
+        keys with the source root prefix stripped.
+
+        A Python source root is a directory that contains packages
+        (dirs with ``__init__.py``) but is not itself a Python package
+        (no ``__init__.py``).  Common examples: ``src/``, ``lib/``.
+
+        For a file like ``src/marshmallow/schema.py`` whose full module
+        key is ``src.marshmallow.schema``, this method adds the key
+        ``marshmallow.schema`` so that ``from marshmallow.schema import X``
+        resolves correctly.
+        """
+        py_paths = {
+            pf.path.replace("\\", "/")
+            for pf in parsed_files
+            if pf.language == "python"
+        }
+        if not py_paths:
+            return
+
+        # Find directories that contain __init__.py
+        init_dirs: set[str] = set()
+        for p in py_paths:
+            basename = p.rsplit("/", 1)[-1] if "/" in p else p
+            if basename == "__init__.py":
+                pkg_dir = p.rsplit("/", 1)[0] if "/" in p else ""
+                if pkg_dir:
+                    init_dirs.add(pkg_dir)
+
+        # A source root is a first-level directory that is NOT a package
+        # but contains child packages.  e.g. "src" contains "src/marshmallow"
+        # which has __init__.py, but "src/__init__.py" doesn't exist.
+        first_dirs: set[str] = set()
+        for p in py_paths:
+            if "/" in p:
+                first_dirs.add(p.split("/")[0])
+
+        python_source_roots: list[str] = []
+        for d in first_dirs:
+            if d not in init_dirs:
+                # Check if any init_dir starts with this prefix
+                if any(id_.startswith(d + "/") for id_ in init_dirs):
+                    python_source_roots.append(d)
+
+        if not python_source_roots:
+            return
+
+        logger.info("Python source roots detected: %s", python_source_roots)
+
+        # Register stripped module keys
+        for full_module, file_id in list(self._pymodule_to_id.items()):
+            for root in python_source_roots:
+                prefix = root + "."
+                if full_module.startswith(prefix):
+                    stripped = full_module[len(prefix):]
+                    if stripped and stripped not in self._pymodule_to_id:
+                        self._pymodule_to_id[stripped] = file_id
+
+    def _build_init_reexport_maps(
+        self, parsed_files: list[ParsedFile]
+    ) -> None:
+        """Build re-export maps for barrel/package entry files.
+
+        Handles both Python ``__init__.py`` and TS/JS ``index.ts``/``index.js``
+        barrel files.  When a barrel file re-exports entities from siblings
+        (e.g. ``from .schema import Schema`` or ``export { Button } from './Button'``),
+        those names become available through the barrel's namespace.
+
+        Uses fixed-point iteration (up to 5 passes) so that multi-level
+        barrel chains (barrel → barrel → definition) resolve correctly.
+        """
+        # Identify barrel files once upfront
+        barrel_files: list[tuple[ParsedFile, str, bool]] = []  # (pf, normalized, is_py_init)
+        for pf in parsed_files:
+            normalized = pf.path.replace("\\", "/")
+            is_py_init = pf.language == "python" and normalized.endswith("/__init__.py")
+            is_ts_index = (
+                pf.language in ("typescript", "javascript")
+                and "/" in normalized
+                and normalized.rsplit("/", 1)[-1].startswith("index.")
+            )
+            if is_py_init or is_ts_index:
+                barrel_files.append((pf, normalized, is_py_init))
+
+        for _pass in range(5):
+            new_count = 0
+            for pf, normalized, is_py_init in barrel_files:
+                new_count += self._resolve_barrel_reexports(pf, normalized, is_py_init)
+            if new_count == 0:
+                break
+            logger.debug("Barrel re-export pass %d: %d new entities", _pass + 1, new_count)
+
+    def _resolve_barrel_reexports(
+        self, pf: ParsedFile, normalized: str, is_py_init: bool,
+    ) -> int:
+        """Resolve re-exports for a single barrel file. Returns count of new entities added."""
+        file_dir = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+        existing = self._init_reexport_entities.get(pf.path, {})
+        reexports: dict[str, str] = dict(existing)
+
+        for imp in pf.imports:
+            target_file_id = self._resolve_single_import(
+                imp, file_dir, pf.language,
+                self._path_to_id, self._stem_to_id,
+                self._dir_index_to_id, self._pymodule_to_id,
+                self._source_roots,
+            )
+            if not target_file_id:
+                continue
+            target_path = target_file_id[6:]  # strip "file::"
+            # Combine direct file entities with any re-exports from the target
+            target_entities = dict(self._file_entities.get(target_path, {}))
+            target_reexports = self._init_reexport_entities.get(target_path, {})
+            target_entities.update(target_reexports)
+
+            if imp.is_wildcard:
+                if is_py_init:
+                    reexports.update(target_entities)
+                else:
+                    exported = self._exported_file_entities.get(target_path, {})
+                    if exported:
+                        # Also include re-exports from the target barrel
+                        merged = dict(exported)
+                        merged.update(target_reexports)
+                        reexports.update(merged)
+                    else:
+                        reexports.update(target_entities)
+            else:
+                for name in imp.imported_names:
+                    alias = imp.aliases.get(name)
+                    export_name = alias or name
+                    if name in target_entities:
+                        reexports[export_name] = target_entities[name]
+                        if alias:
+                            reexports[name] = target_entities[name]
+                    elif alias and alias in target_entities:
+                        reexports[alias] = target_entities[alias]
+
+        new_count = len(reexports) - len(existing)
+        if reexports:
+            self._init_reexport_entities[pf.path] = reexports
+            if new_count > 0:
+                logger.debug(
+                    "%s re-exports %d entities (+%d new)", pf.path, len(reexports), new_count
+                )
+        return new_count
+
+    @staticmethod
+    def _detect_source_roots(parsed_files: list[ParsedFile]) -> list[str]:
+        """Auto-detect common source root prefixes like 'src/', 'lib/', 'app/'."""
+        prefix_counts: dict[str, int] = {}
+        for pf in parsed_files:
+            if pf.language not in ("typescript", "javascript"):
+                continue
+            normalized = pf.path.replace("\\", "/")
+            first_dir = normalized.split("/")[0] if "/" in normalized else ""
+            if first_dir:
+                prefix_counts[first_dir] = prefix_counts.get(first_dir, 0) + 1
+
+        total_ts_js = sum(
+            1 for pf in parsed_files if pf.language in ("typescript", "javascript")
+        )
+        if total_ts_js == 0:
+            return []
+
+        # A source root is a prefix that contains a significant portion of files
+        roots: list[str] = []
+        for prefix, count in sorted(prefix_counts.items(), key=lambda x: -x[1]):
+            if count >= total_ts_js * 0.1:  # At least 10% of files
+                roots.append(prefix)
+        return roots
+
+    def _resolve_single_import(
+        self,
+        imp: ParsedImport,
+        file_dir: str,
+        language: str,
+        path_to_id: dict[str, str],
+        stem_to_id: dict[str, str],
+        dir_index_to_id: dict[str, str],
+        pymodule_to_id: dict[str, str],
+        source_roots: list[str] | None = None,
+    ) -> str | None:
+        """Resolve a single import to a file node ID."""
+        module = imp.module_path
+
+        # Python: use module-path lookup
+        if language == "python":
+            if imp.is_relative:
+                # Resolve relative import based on importing file's directory.
+                # file_dir is e.g. "src/marshmallow", module_path is "." or ".schema"
+                pkg_module = file_dir.replace("/", ".")
+                if module == ".":
+                    # "from . import X" — X is a sibling module
+                    for name in imp.imported_names:
+                        target = f"{pkg_module}.{name}"
+                        found = pymodule_to_id.get(target)
+                        if found:
+                            return found
+                    return pymodule_to_id.get(pkg_module)
+                else:
+                    # "from .foo import X" — strip leading dots and resolve
+                    dots = len(module) - len(module.lstrip("."))
+                    relative_part = module.lstrip(".")
+                    parts = pkg_module.split(".")
+                    # Go up (dots - 1) levels: "." = same package, ".." = parent
+                    up = dots - 1
+                    if up > 0 and up < len(parts):
+                        parts = parts[:-up]
+                    base = ".".join(parts)
+                    target = f"{base}.{relative_part}" if relative_part else base
+                    return pymodule_to_id.get(target)
+            return pymodule_to_id.get(module)
+
+        # TS/JS: resolve relative paths and bare specifiers
+        if imp.is_relative:
+            # Resolve relative to the importing file's directory
+            resolved = self._resolve_relative_path(module, file_dir)
+            return self._lookup_resolved_path(
+                resolved, path_to_id, stem_to_id, dir_index_to_id
+            )
+
+        # Non-relative: could be a path alias like @/lib/foo or a package
+        stripped = self._strip_path_alias(module)
+        if stripped is None:
+            # It's likely an npm package — skip
+            return None
+
+        # Try the stripped alias directly (project-root relative)
+        found = self._lookup_resolved_path(
+            stripped, path_to_id, stem_to_id, dir_index_to_id
+        )
+        if found:
+            return found
+
+        # Try with each detected source root prefix (e.g., src/lib/utils)
+        for root in (source_roots or []):
+            prefixed = f"{root}/{stripped}"
+            found = self._lookup_resolved_path(
+                prefixed, path_to_id, stem_to_id, dir_index_to_id
+            )
+            if found:
+                return found
+
+        return None
+
+    @staticmethod
+    def _lookup_resolved_path(
+        resolved: str,
+        path_to_id: dict[str, str],
+        stem_to_id: dict[str, str],
+        dir_index_to_id: dict[str, str],
+    ) -> str | None:
+        """Try exact path, then stem (no extension), then directory index.
+
+        Also handles the TypeScript convention where imports use ``.js``
+        extensions but actual files are ``.ts`` (Node16/NodeNext module
+        resolution).
+        """
+        if resolved in path_to_id:
+            return path_to_id[resolved]
+        if resolved in stem_to_id:
+            return stem_to_id[resolved]
+        if resolved in dir_index_to_id:
+            return dir_index_to_id[resolved]
+
+        # TypeScript convention: import './foo.js' resolves to foo.ts
+        # Strip the .js/.jsx extension and retry as a stem lookup
+        for js_ext in (".js", ".jsx", ".mjs", ".cjs"):
+            if resolved.endswith(js_ext):
+                stem = resolved[: -len(js_ext)]
+                if stem in stem_to_id:
+                    return stem_to_id[stem]
+                if stem in dir_index_to_id:
+                    return dir_index_to_id[stem]
+                break
+
+        return None
+
+    @staticmethod
+    def _resolve_relative_path(module_path: str, from_dir: str) -> str:
+        """Resolve a relative import path like './utils' or '../lib/foo'."""
+        parts = from_dir.split("/") if from_dir else []
+        segments = module_path.split("/")
+
+        for seg in segments:
+            if seg == ".":
+                continue
+            elif seg == "..":
+                if parts:
+                    parts.pop()
+            else:
+                parts.append(seg)
+
+        return "/".join(parts)
+
+    @staticmethod
+    def _strip_path_alias(module_path: str) -> str | None:
+        """Strip path alias prefix and return the resolved path, or None if npm package."""
+        # @/ or ~/ or #/ prefix — common alias for project root
+        for prefix in ("@/", "~/", "#/"):
+            if module_path.startswith(prefix):
+                return module_path[len(prefix):]
+
+        # @word/ prefix where word looks like a local alias (not a scoped npm package)
+        if module_path.startswith("@") and "/" in module_path:
+            first_part = module_path.split("/")[0]
+            rest = module_path[len(first_part) + 1:]
+            # Scoped npm packages: @tanstack/query, @radix-ui/react-dialog, etc.
+            # These typically have lowercase names with hyphens.
+            # Local aliases: @app, @lib, @components — no hyphens, short.
+            if "-" not in first_part and len(first_part) <= 15:
+                # Likely a local alias — return the rest
+                return rest
+
+        return None
+
+    @staticmethod
+    def _extract_package_name(module_path: str, language: str) -> str | None:
+        """Extract the npm package name or Python top-level module from an import path.
+
+        Returns None for built-in modules or paths that don't look like packages.
+        """
+        if language == "python":
+            # Python: top-level module name (e.g. "os.path" -> "os")
+            top = module_path.split(".")[0]
+            # Skip obvious stdlib modules
+            _PY_STDLIB = {
+                "os", "sys", "re", "json", "math", "typing", "collections",
+                "functools", "itertools", "pathlib", "logging", "unittest",
+                "dataclasses", "abc", "io", "datetime", "time", "hashlib",
+                "copy", "enum", "contextlib", "operator", "string", "textwrap",
+                "struct", "types", "importlib", "inspect", "warnings",
+                "subprocess", "shutil", "tempfile", "glob", "fnmatch",
+                "socket", "http", "urllib", "email", "html", "xml",
+                "asyncio", "concurrent", "threading", "multiprocessing",
+                "__future__", "builtins", "traceback", "pdb", "dis",
+            }
+            if top in _PY_STDLIB:
+                return None
+            return top
+
+        # JS/TS: extract package name
+        # Scoped: @scope/package/path -> @scope/package
+        # Bare: package/path -> package
+        if module_path.startswith("@") and "/" in module_path:
+            parts = module_path.split("/")
+            return f"{parts[0]}/{parts[1]}" if len(parts) >= 2 else module_path
+        # Bare specifier
+        return module_path.split("/")[0]
+
+    # ------------------------------------------------------------------
+    # Phase 3: Document processing
+    # ------------------------------------------------------------------
+
+    def _process_document(self, wf: WalkedFile, result: IngestionResult) -> None:
+        """Parse a markdown file and build document nodes with code references."""
+        try:
+            content = Path(wf.absolute_path).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError as e:
+            result.errors.append(f"Read error {wf.relative_path}: {e}")
+            return
+
+        try:
+            doc = self._md_parser.parse(wf.relative_path, content)
+        except Exception as e:
+            result.errors.append(f"Doc parse error {wf.relative_path}: {e}")
+            return
+
+        doc_id = f"doc::{doc.path}"
+
+        # Create Document node
+        self.graph.create_node("Document", {
+            "id": doc_id,
+            "path": doc.path,
+            "title": doc.title,
+            "doc_type": doc.doc_type,
+            "line_count": doc.line_count,
+            "section_count": len(doc.sections),
+            "reference_count": len(doc.code_references),
+        })
+        result.nodes_created += 1
+
+        # Create DocumentSection nodes
+        for i, section in enumerate(doc.sections):
+            section_id = f"docsec::{doc.path}::L{section.start_line}"
+            self.graph.create_node("DocumentSection", {
+                "id": section_id,
+                "heading": section.heading,
+                "level": section.level,
+                "start_line": section.start_line,
+                "end_line": section.end_line,
+                "file_path": doc.path,
+                "reference_count": len(section.code_references),
+            })
+            self.graph.create_relationship(doc_id, section_id, "HAS_SECTION")
+            result.nodes_created += 1
+            result.relationships_created += 1
+
+            # Resolve code references in this section
+            for ref in section.code_references:
+                self._resolve_and_link_reference(
+                    ref, section_id, result
+                )
+
+        # Resolve top-level references (before first heading)
+        for ref in doc.code_references:
+            if not any(
+                ref in section.code_references for section in doc.sections
+            ):
+                self._resolve_and_link_reference(ref, doc_id, result)
+
+        result.docs_processed += 1
+
+    def _resolve_and_link_reference(
+        self,
+        ref: CodeReference,
+        source_id: str,
+        result: IngestionResult,
+    ) -> None:
+        """Resolve a code reference and create a REFERENCES edge if possible."""
+        result.doc_references_total += 1
+        target_id = self._resolve_doc_reference(ref)
+
+        if target_id:
+            ref.resolved = True
+            ref.resolved_to = target_id
+            self.graph.merge_relationship(source_id, target_id, "REFERENCES")
+            result.relationships_created += 1
+            result.doc_references_resolved += 1
+
+    def _resolve_doc_reference(self, ref: CodeReference) -> str | None:
+        """Try to resolve a code reference from a document to a graph node.
+
+        Uses a multi-strategy approach:
+        1. Exact match on name/path
+        2. Case-insensitive match
+        3. Dotted name decomposition (obj.method -> method)
+        4. Strip file extensions and common prefixes
+        """
+        text = ref.raw_text
+
+        # File path references — try direct path match
+        if ref.ref_type in ("file_path", "link"):
+            # Normalize the path
+            clean = text.lstrip("./").replace("\\", "/")
+            # Remove anchor fragments like #L42
+            if "#" in clean:
+                clean = clean.split("#")[0]
+            # Try exact match in name map
+            if clean in self._name_to_id:
+                return self._name_to_id[clean]
+            # Try stripping file extension (docs often reference without .ts/.js)
+            clean_stem = clean.rsplit(".", 1)[0] if "." in clean else clean
+            if clean_stem in self._name_to_id:
+                return self._name_to_id[clean_stem]
+            # Try with common prefixes stripped/added
+            for prefix in ("src/", "lib/", "app/", "packages/"):
+                if clean.startswith(prefix):
+                    stripped = clean[len(prefix):]
+                    if stripped in self._name_to_id:
+                        return self._name_to_id[stripped]
+                    stripped_stem = stripped.rsplit(".", 1)[0] if "." in stripped else stripped
+                    if stripped_stem in self._name_to_id:
+                        return self._name_to_id[stripped_stem]
+                else:
+                    prefixed = prefix + clean
+                    if prefixed in self._name_to_id:
+                        return self._name_to_id[prefixed]
+            # Case-insensitive fallback
+            clean_lower = clean.lower()
+            if clean_lower in self._name_lower_to_id:
+                return self._name_lower_to_id[clean_lower]
+            return None
+
+        # Inline code references — try as entity name
+        if ref.ref_type == "inline_code":
+            # Exact match (PascalCase class, function name, etc.)
+            if text in self._name_to_id:
+                return self._name_to_id[text]
+            if text in self._id_map:
+                return self._id_map[text]
+            # Dotted name: try last segment (e.g. graph.query -> query)
+            if "." in text:
+                last = text.rsplit(".", 1)[-1]
+                if last in self._name_to_id:
+                    return self._name_to_id[last]
+                # Also try "ClassName.method" as a qualified name
+                if text in self._id_map:
+                    return self._id_map[text]
+            # Case-insensitive fallback
+            text_lower = text.lower()
+            if text_lower in self._name_lower_to_id:
+                return self._name_lower_to_id[text_lower]
+            # Try dotted segments case-insensitively
+            if "." in text:
+                last_lower = text.rsplit(".", 1)[-1].lower()
+                if last_lower in self._name_lower_to_id:
+                    return self._name_lower_to_id[last_lower]
+            return None
+
+        return None
+
+    def _delete_file_nodes(self, file_path: str) -> None:
+        """Remove all nodes associated with a file."""
+        self.graph.execute(
+            "MATCH (n) WHERE n.file_path = $fp DETACH DELETE n",
+            {"fp": file_path},
+        )
+        self.graph.execute(
+            "MATCH (n:File) WHERE n.path = $fp DETACH DELETE n",
+            {"fp": file_path},
+        )

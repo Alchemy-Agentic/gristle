@@ -1,0 +1,11 @@
+tests/
+scripts/
+*.md
+.git/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env
+.env.example
+docker-compose.yml
+railway.toml
