@@ -57,8 +57,10 @@ After ingestion, Ziggy's agents query the code graph directly via FalkorDB. Thes
 #### Architect Agent (cycles, coupling, god modules)
 ```cypher
 -- Import cycles
-MATCH (a:File)-[:IMPORTS]->(b:File)-[:IMPORTS]->(a)
-RETURN a.path, b.path
+MATCH path = (a:File)-[:IMPORTS*2..6]->(a)
+WITH [n IN nodes(path) | n.path] AS cycle
+WHERE cycle[0] <= cycle[1]
+RETURN DISTINCT cycle
 
 -- Coupling hotspots (most-imported files)
 MATCH (f:File)<-[:IMPORTS]-(importer:File)
@@ -69,67 +71,68 @@ ORDER BY import_count DESC
 MATCH (f:File)-[:CONTAINS]->(fn:Function)
 RETURN f.path, count(fn) AS function_count
 ORDER BY function_count DESC
-
--- Orphan modules (no importers, no importees)
-MATCH (f:File)
-WHERE NOT (f)<-[:IMPORTS]-() AND NOT (f)-[:IMPORTS]->()
-RETURN f.path
 ```
 
 #### Pathfinder Agent (test gaps, dead code)
 ```cypher
--- Untested exported functions
-MATCH (fn:Function)
-WHERE fn.is_exported = true AND fn.is_test = false
-AND NOT EXISTS {
-  MATCH (tf:File)-[:TESTS]->(pf:File)-[:CONTAINS]->(fn)
-}
-RETURN fn.name, fn.qualified_name, fn.file_path
+-- Untested exported functions (uses tested_by_count when available)
+MATCH (f:Function {is_exported: true, is_test: false})
+MATCH (f)-[:DEFINED_IN]->(file:File {is_test_file: false})
+OPTIONAL MATCH (testFile:File {is_test_file: true})-[:TESTS]->(file)
+WITH f, testFile
+WHERE CASE
+  WHEN f.tested_by_count IS NOT NULL THEN f.tested_by_count = 0
+  ELSE testFile IS NULL
+END
+RETURN f.name, f.qualified_name, f.file_path, f.complexity
 
--- Dead code (no callers, not entry points, not tests)
-MATCH (fn:Function)
-WHERE fn.is_exported = true
-AND fn.is_test = false
-AND fn.is_entry_point = false
-AND fn.is_fixture = false
-AND NOT EXISTS { MATCH ()-[:CALLS]->(fn) }
-RETURN fn.name, fn.qualified_name, fn.file_path
+-- Dead code (checks both CALLS and PASSED_TO edges)
+MATCH (f:Function)
+WHERE f.is_test = false AND f.is_entry_point = false AND f.is_fixture = false
+OPTIONAL MATCH (caller:Function)-[:CALLS]->(f)
+OPTIONAL MATCH (route:Route)-[:HANDLES]->(f)
+OPTIONAL MATCH (cls:Class)-[:CONTAINS]->(f)
+OPTIONAL MATCH (passer:Function)-[:PASSED_TO]->(f)
+WITH f WHERE caller IS NULL AND route IS NULL AND cls IS NULL AND passer IS NULL
+RETURN f.name, f.qualified_name, f.file_path
 
--- Caller counts for prioritization
-MATCH (fn:Function)<-[:CALLS]-(caller:Function)
-RETURN fn.qualified_name, count(caller) AS caller_count
+-- Impact analysis (traverses CALLS + PASSED_TO)
+MATCH (caller:Function)-[:CALLS|PASSED_TO*1..3]->(target)
+WHERE target.name = $name
+RETURN caller.qualified_name, caller.file_path
 ```
 
 #### Cartographer Agent (onboarding guides)
 ```cypher
--- Entry points
-MATCH (fn:Function)
-WHERE fn.is_entry_point = true
-RETURN fn.name, fn.file_path, fn.signature
+-- Entry points with reason
+MATCH (fn:Function {is_entry_point: true})
+MATCH (fn)-[:DEFINED_IN]->(file:File)
+RETURN fn.name, file.path,
+  CASE WHEN fn.entry_point_reason IS NOT NULL THEN fn.entry_point_reason
+       WHEN fn.name IN ['main', 'app', 'server'] THEN 'main'
+       ELSE 'exported'
+  END AS type
 
 -- Routes with handlers
 MATCH (r:Route)-[:HANDLES]->(fn:Function)
 RETURN r.method, r.path, fn.name, fn.file_path
 
--- Key abstractions (most-used classes)
-MATCH (c:Class)<-[:INHERITS_FROM]-(sub:Class)
-RETURN c.name, c.qualified_name, count(sub) AS subclass_count
-ORDER BY subclass_count DESC
-
--- Project conventions
-MATCH (f:File)
-RETURN f.language, count(f) AS file_count
+-- Dependencies with versions
+MATCH (d:Dependency)
+RETURN d.name, d.import_count, d.version
+ORDER BY d.import_count DESC
 ```
 
 #### Sentinel Agent (security enrichment)
 ```cypher
--- Enrich findings with blast radius
+-- Enrich findings with blast radius (uses tested_by_count when available)
 MATCH (fn:Function {file_path: $filePath, name: $functionName})
-OPTIONAL MATCH (caller:Function)-[:CALLS]->(fn)
-OPTIONAL MATCH (tf:File)-[:TESTS]->(pf:File {path: fn.file_path})
+OPTIONAL MATCH (caller:Function)-[:CALLS|PASSED_TO*1..3]->(fn)
 RETURN fn.qualified_name,
        count(DISTINCT caller) AS caller_count,
-       count(DISTINCT tf) > 0 AS has_tests
+       CASE WHEN fn.tested_by_count IS NOT NULL THEN fn.tested_by_count > 0
+            ELSE EXISTS { MATCH (tf:File {is_test_file: true})-[:TESTS]->(pf:File {path: fn.file_path}) }
+       END AS has_tests
 ```
 
 ---
@@ -151,7 +154,17 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `is_component` | Cartographer | React component detection |
 | `signature` | Cartographer | Display in onboarding guides |
 | `start_line`, `end_line` | Sentinel | Source location for findings |
-| `complexity` | Architect | Complexity hotspot detection |
+| `complexity` | Architect, Pathfinder | Complexity hotspot detection, test gap prioritization |
+| `entry_point_reason` | Cartographer, Pathfinder | **Phase A** — categorized reason: `"react_component"`, `"route_handler"`, `"pytest_fixture"`, etc. |
+| `tested_by_count` | Pathfinder, Sentinel (enrichment) | **Phase A** — number of test functions exercising this function (via `TESTS_FUNCTION` edges) |
+| `docstring` | Cartographer | Function documentation for abstraction descriptions |
+
+### Dependency Node
+| Property | Used By | How |
+|----------|---------|-----|
+| `name` | Cartographer, Exodus | Dependency identification |
+| `version` | Cartographer, Exodus | **Phase A** — declared version string from lockfiles |
+| `import_count` | Cartographer | Usage frequency |
 
 ### File Node
 | Property | Used By | How |
@@ -179,12 +192,16 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | Edge | Used By | How |
 |------|---------|-----|
 | `CALLS` | Pathfinder, Sentinel, Architect | Call chains, blast radius, dead code |
+| `PASSED_TO` | Pathfinder, Sentinel, Architect | **Phase D** — callback/handler detection (middleware, event handlers, array method callbacks). Traversed alongside `CALLS` in impact analysis, dead code, call paths. |
 | `IMPORTS` | Architect | Cycle detection, coupling analysis |
-| `TESTS` | Pathfinder, Sentinel | Test coverage (file-level) |
+| `TESTS` | Pathfinder, Sentinel | Test coverage (file-level, fallback) |
+| `TESTS_FUNCTION` | Pathfinder | **Phase A** — function-level test coverage (test Function → prod Function) |
 | `INHERITS_FROM` | Cartographer | Abstraction hierarchy |
 | `CONTAINS` | All agents | File → entity traversal |
 | `HANDLES` | Cartographer | Route → handler linking |
-| `DEFINED_IN` | Architect | Entity → file reverse lookup |
+| `DEFINED_IN` | Architect, Pathfinder | Entity → file reverse lookup |
+| `USES_DEPENDENCY` | Cartographer | Function → dependency tracking |
+| `DEPENDS_ON` | Cartographer | File → dependency tracking |
 
 ---
 
@@ -206,35 +223,26 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 
 ---
 
-## What Ziggy's Agents Need (Improvement Roadmap)
+## Gristle Improvements (All Phases Complete)
 
-These are gaps identified by analyzing how Ziggy agents query the graph. Full spec at `../Ziggy/docs/specs/gristle-improvements.md`.
+All planned improvements from the spec at `../Ziggy/docs/specs/gristle-improvements.md` have been implemented. Ziggy agents now leverage these features with backwards-compatible `CASE WHEN` fallback patterns.
 
-### Current Gaps
+### Phase A (Complete) — Function-Level Coverage + Entry Points
+1. ✅ **Framework-aware entry points** — Express/Hono/Fastify handlers, React components, Next.js pages, pytest fixtures, etc. marked `is_entry_point` with `entry_point_reason`
+2. ✅ **Module metadata** — LOC and complexity aggregation, `File.description` from leading comments
+3. ✅ **Dependency version resolution** — `Dependency.version` parsed from lockfiles
+4. ✅ **Granular test coverage** — `TESTS_FUNCTION` edges from test functions to production functions, `tested_by_count` cached on Function nodes
 
-| Gap | Affected Agent | Impact |
-|-----|---------------|--------|
-| **Binary test coverage** — file-level only (`TESTS` edge: test File → prod File), no function-level | Pathfinder | 40-60% false positive dead code (function appears untested but test file imports the module) |
-| **Missing framework entry points** — Express handler callbacks, event listeners not marked `is_entry_point` | Pathfinder | Dead code false positives (handlers appear uncalled) |
-| **No config file extraction** — env vars, package.json scripts, Dockerfiles not in graph | Cartographer | Can't generate setup instructions |
-| **No module-level metrics** — LOC and complexity not aggregated per file | Architect | Heuristic god-module detection instead of metric-based |
-| **No dependency versions** — `Dependency` node has name but no version | Exodus (migration) | Can't assess version currency without re-parsing files |
-| **No callback/event detection** — `addEventListener`, `EventEmitter.on()`, `app.use()` not tracked | Pathfinder, Architect | Missed call paths through event system |
+### Phase B (Complete) — Config & Environment
+5. ✅ **Config & env file extraction** — `ConfigFile` properties on File nodes, `EnvVar` nodes with `USES_ENV` edges
+6. ✅ **Layer violation detection** — Convention-based rules (routes → services → adapters)
 
-### Planned Improvements (Gristle-Side)
+### Phase C (Complete, Ziggy-Side) — Audit Intelligence
+7. ✅ **Finding deduplication** — Match keys, status lifecycle (`new → open → fixed → regressed`), `CONFIRMED_BY` relationships
+8. ✅ **Cross-audit trending** — `AuditTrend` nodes with coverage/cycle/growth deltas
 
-**Phase A:**
-1. Framework-aware entry points — mark Express/Hono/Fastify handler callbacks as `is_entry_point`
-2. Module metadata — aggregate LOC and complexity per file on the `File` node
-3. Dependency version resolution — parse lockfiles, add `version` to `Dependency` nodes
-4. Granular test coverage — `TESTS_FUNCTION` edges from test functions to production functions
-
-**Phase B:**
-5. Config & env file extraction — new `ConfigFile` and `EnvVar` nodes
-6. Layer violation detection — new Cypher query in `engine.py`
-
-**Phase D:**
-7. Callback/event handler detection — new `EventHandler` nodes and `HANDLES_EVENT` edges
+### Phase D (Complete) — Call Graph Completeness
+9. ✅ **Callback/handler detection** — `PASSED_TO` edges for middleware, event handlers, array method callbacks. All Ziggy queries now traverse `[:CALLS|PASSED_TO]`
 
 ---
 

@@ -18,9 +18,9 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - **Markdown** (`.md`, `.mdx`) — headings, sections, code references, doc type classification
 
 ### Graph Schema
-**9 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency
+**10 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar
 
-**15 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, REFERENCES, HAS_SECTION, HANDLES
+**17 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES
 
 **22 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
 
@@ -99,26 +99,26 @@ See [docs/ziggy-integration.md](docs/ziggy-integration.md) for the full integrat
 
 ## Current Focus
 
-### Upcoming: Gristle Improvements (spec at `../Ziggy/docs/specs/gristle-improvements.md`)
+### Gristle Improvements — All Phases Complete ✅
 
-Prioritized enhancements driven by what Ziggy's agents need:
+All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are implemented:
 
-**Phase A** (Gristle-side):
-- Framework-aware entry points (Express handlers, FastAPI routes marked `is_entry_point`)
-- Module metadata (LOC, complexity aggregation at file level)
-- Dependency version resolution (parse lockfiles for actual versions)
-- Granular test coverage (function-level TESTS_FUNCTION edges, not just file-level)
+**Phase A** ✅ (Gristle-side):
+- Framework-aware entry points (`is_entry_point` + `entry_point_reason`)
+- Module metadata (LOC, complexity, `File.description`)
+- Dependency version resolution (`Dependency.version` from lockfiles)
+- Granular test coverage (`TESTS_FUNCTION` edges, `tested_by_count` on Function nodes)
 
-**Phase B** (Gristle-side):
-- Config & env file extraction (ConfigFile + EnvVar nodes, USES_ENV edges)
-- Layer violation detection (new Cypher query in engine.py)
+**Phase B** ✅ (Gristle-side):
+- Config & env file extraction (`config_type` on Files, EnvVar nodes, USES_ENV edges)
+- Layer violation detection (convention-based rules in query engine)
 
-**Phase C** (Ziggy-side, parallel with B):
-- Finding deduplication across audits
-- Cross-audit trending
+**Phase C** ✅ (Ziggy-side):
+- Finding deduplication across audits (match keys, status lifecycle, CONFIRMED_BY)
+- Cross-audit trending (AuditTrend nodes with delta metrics)
 
-**Phase D** (Gristle-side):
-- Callback/event handler detection (EventHandler nodes, HANDLES_EVENT edges)
+**Phase D** ✅ (Gristle-side):
+- Callback/handler detection (`PASSED_TO` edges for middleware, event handlers, array method callbacks)
 
 ---
 
