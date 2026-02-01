@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = {"env_prefix": "GRISTLE_", "env_file": ".env", "extra": "ignore"}
 
     falkordb_host: str = "localhost"
-    falkordb_port: int = 6380
+    falkordb_port: int = 6390
     falkordb_password: str | None = None
 
     max_file_size_bytes: int = 512_000  # 500KB

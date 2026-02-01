@@ -7,7 +7,7 @@ Graph-based code intelligence for AI agents. Gristle parses source repositories 
 | Item | Value |
 |------|-------|
 | Language | Python 3.11+ |
-| Graph DB | FalkorDB (Redis-based, runs on port 6380) |
+| Graph DB | FalkorDB (Redis-based, default port 6390) |
 | AST engine | tree-sitter (Python, TypeScript, JavaScript) |
 | Protocol | MCP (Model Context Protocol) over stdio or Streamable HTTP |
 | Entry point | `gristle` CLI or `gristle.mcp.server:main` |
@@ -105,7 +105,7 @@ All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB host |
-| `GRISTLE_FALKORDB_PORT` | `6380` | FalkorDB port |
+| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port |
 | `GRISTLE_FALKORDB_PASSWORD` | *(none)* | FalkorDB password (optional) |
 | `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this |
 | `GRISTLE_REPO_STORAGE_PATH` | `./repos` | Where cloned repos are stored |
