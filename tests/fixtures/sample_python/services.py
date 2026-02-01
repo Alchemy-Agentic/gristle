@@ -1,6 +1,6 @@
 """Business logic services."""
 
-from models import User, Order
+from models import Order, User
 
 
 class UserService:

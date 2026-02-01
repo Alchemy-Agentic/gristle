@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import json
 import tempfile
-import os
 from typing import Any
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gristle.graph.client import QueryResult
 from gristle.ingestion.pipeline import IngestionResult
 from gristle.query.engine import QueryEngine
-from gristle.graph.client import QueryResult
-
 
 # ------------------------------------------------------------------
 # Helpers
@@ -69,6 +67,7 @@ def _mock_engine(repo_path: str = "/tmp/repo") -> MagicMock:
 def _clean_server_state():
     """Reset server state before each test."""
     import gristle.mcp.server as srv
+
     orig_engines = srv._engines.copy()
     orig_pipelines = srv._pipelines.copy()
     orig_semantic = srv._semantic_indexes.copy()
@@ -92,11 +91,13 @@ def _clean_server_state():
 class TestResolveEngine:
     def test_returns_none_when_no_repos(self):
         from gristle.mcp.server import _resolve_engine
+
         assert _resolve_engine(None) is None
 
     def test_returns_engine_by_id(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import _resolve_engine
+
         engine = _mock_engine()
         srv._engines["myrepo"] = engine
         assert _resolve_engine("myrepo") is engine
@@ -104,12 +105,14 @@ class TestResolveEngine:
     def test_returns_none_for_unknown_id(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import _resolve_engine
+
         srv._engines["other"] = _mock_engine()
         assert _resolve_engine("unknown") is None
 
     def test_defaults_to_last_ingested(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import _resolve_engine
+
         e1 = _mock_engine()
         e2 = _mock_engine()
         srv._engines["first"] = e1
@@ -126,6 +129,7 @@ class TestGristleIngest:
     @pytest.mark.asyncio
     async def test_returns_error_for_missing_dir(self):
         from gristle.mcp.server import gristle_ingest
+
         result = await gristle_ingest(repo_path="/nonexistent/path/xyzzy")
         assert "error" in result
         assert "not found" in result["error"].lower() or "Directory" in result["error"]
@@ -134,7 +138,7 @@ class TestGristleIngest:
     @patch("gristle.mcp.server.IngestionPipeline")
     @patch("gristle.mcp.server.GraphClient")
     async def test_successful_ingestion(self, MockGraphClient, MockPipeline):
-        from gristle.mcp.server import gristle_ingest, _engines, _pipelines
+        from gristle.mcp.server import _engines, _pipelines, gristle_ingest
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mock_result = _make_ingestion_result(repo_path=tmpdir)
@@ -156,7 +160,7 @@ class TestGristleIngest:
     @patch("gristle.mcp.server.IngestionPipeline")
     @patch("gristle.mcp.server.GraphClient")
     async def test_custom_repo_id(self, MockGraphClient, MockPipeline):
-        from gristle.mcp.server import gristle_ingest, _engines
+        from gristle.mcp.server import _engines, gristle_ingest
 
         with tempfile.TemporaryDirectory() as tmpdir:
             MockPipeline.return_value.ingest_repo.return_value = _make_ingestion_result(
@@ -174,9 +178,7 @@ class TestGristleIngest:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             errors = [f"error {i}" for i in range(20)]
-            MockPipeline.return_value.ingest_repo.return_value = _make_ingestion_result(
-                repo_path=tmpdir, errors=errors
-            )
+            MockPipeline.return_value.ingest_repo.return_value = _make_ingestion_result(repo_path=tmpdir, errors=errors)
             MockGraphClient.repo_id_from_path.return_value = "abc123"
             result = await gristle_ingest(repo_path=tmpdir)
             assert len(result["errors"]) == 10
@@ -191,6 +193,7 @@ class TestGristleExplore:
     @pytest.mark.asyncio
     async def test_no_repo_ingested(self):
         from gristle.mcp.server import gristle_explore
+
         result = await gristle_explore(entity="foo")
         assert "error" in result
 
@@ -201,7 +204,9 @@ class TestGristleExplore:
 
         engine = _mock_engine()
         engine.get_function_context.return_value = {
-            "name": "foo", "qualified_name": "mod.foo", "signature": "def foo()",
+            "name": "foo",
+            "qualified_name": "mod.foo",
+            "signature": "def foo()",
         }
         engine.get_docs_for_entity.return_value = []
         srv._engines["r1"] = engine
@@ -218,7 +223,8 @@ class TestGristleExplore:
         engine = _mock_engine()
         engine.get_function_context.return_value = None
         engine.get_class_structure.return_value = {
-            "name": "MyClass", "qualified_name": "mod.MyClass",
+            "name": "MyClass",
+            "qualified_name": "mod.MyClass",
         }
         engine.get_docs_for_entity.return_value = []
         srv._engines["r1"] = engine
@@ -295,6 +301,7 @@ class TestGristleImpact:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_impact
+
         result = await gristle_impact(entity_name="foo")
         assert "error" in result
 
@@ -302,6 +309,7 @@ class TestGristleImpact:
     async def test_entity_not_found(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_impact
+
         engine = _mock_engine()
         engine.impact_analysis.return_value = None
         srv._engines["r1"] = engine
@@ -312,9 +320,11 @@ class TestGristleImpact:
     async def test_returns_impact(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_impact
+
         engine = _mock_engine()
         engine.impact_analysis.return_value = {
-            "target": "mod.foo", "direct_callers": ["bar"],
+            "target": "mod.foo",
+            "direct_callers": ["bar"],
         }
         srv._engines["r1"] = engine
         result = await gristle_impact(entity_name="foo")
@@ -330,6 +340,7 @@ class TestGristleTrace:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_trace
+
         result = await gristle_trace(from_entity="a", to_entity="b")
         assert "error" in result
 
@@ -337,6 +348,7 @@ class TestGristleTrace:
     async def test_no_path_found(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_trace
+
         engine = _mock_engine()
         engine.find_path.return_value = []
         srv._engines["r1"] = engine
@@ -347,6 +359,7 @@ class TestGristleTrace:
     async def test_returns_paths(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_trace
+
         engine = _mock_engine()
         engine.find_path.return_value = [{"path": ["a", "c", "b"], "hops": 2}]
         srv._engines["r1"] = engine
@@ -364,6 +377,7 @@ class TestGristleSearch:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_search
+
         result = await gristle_search(query="foo")
         assert "error" in result
 
@@ -371,6 +385,7 @@ class TestGristleSearch:
     async def test_returns_results(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_search
+
         engine = _mock_engine()
         engine.search.return_value = [{"name": "foo", "type": "Function"}]
         srv._engines["r1"] = engine
@@ -382,6 +397,7 @@ class TestGristleSearch:
     async def test_passes_search_type_and_limit(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_search
+
         engine = _mock_engine()
         engine.search.return_value = []
         srv._engines["r1"] = engine
@@ -398,6 +414,7 @@ class TestGristleDocs:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_docs
+
         result = await gristle_docs(entity="foo")
         assert "error" in result
 
@@ -405,6 +422,7 @@ class TestGristleDocs:
     async def test_overview_mode(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_docs
+
         engine = _mock_engine()
         engine.get_doc_overview.return_value = {"doc_types": {"readme": 1}}
         srv._engines["r1"] = engine
@@ -415,6 +433,7 @@ class TestGristleDocs:
     async def test_staleness_mode(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_docs
+
         engine = _mock_engine()
         engine.get_doc_staleness.return_value = [{"doc_path": "README.md"}]
         srv._engines["r1"] = engine
@@ -425,6 +444,7 @@ class TestGristleDocs:
     async def test_find_mode_requires_entity(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_docs
+
         srv._engines["r1"] = _mock_engine()
         result = await gristle_docs(mode="find", entity=None)
         assert "error" in result
@@ -433,6 +453,7 @@ class TestGristleDocs:
     async def test_find_mode_returns_docs(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_docs
+
         engine = _mock_engine()
         engine.get_docs_for_entity.return_value = [{"doc_path": "README.md"}]
         srv._engines["r1"] = engine
@@ -443,6 +464,7 @@ class TestGristleDocs:
     async def test_find_mode_no_docs(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_docs
+
         engine = _mock_engine()
         engine.get_docs_for_entity.return_value = []
         srv._engines["r1"] = engine
@@ -459,6 +481,7 @@ class TestGristleRoutes:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_routes
+
         result = await gristle_routes()
         assert "error" in result
 
@@ -466,6 +489,7 @@ class TestGristleRoutes:
     async def test_returns_routes(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_routes
+
         engine = _mock_engine()
         engine.get_routes.return_value = [{"method": "GET", "path": "/users"}]
         srv._engines["r1"] = engine
@@ -476,6 +500,7 @@ class TestGristleRoutes:
     async def test_filter_by_method(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_routes
+
         engine = _mock_engine()
         engine.get_routes.return_value = []
         srv._engines["r1"] = engine
@@ -492,6 +517,7 @@ class TestGristleComponents:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_components
+
         result = await gristle_components()
         assert "error" in result
 
@@ -499,6 +525,7 @@ class TestGristleComponents:
     async def test_returns_components(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_components
+
         engine = _mock_engine()
         engine.get_components.return_value = [{"name": "Button", "usage_count": 5}]
         srv._engines["r1"] = engine
@@ -516,6 +543,7 @@ class TestGristleDeps:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_deps
+
         result = await gristle_deps()
         assert "error" in result
 
@@ -523,6 +551,7 @@ class TestGristleDeps:
     async def test_list_all_deps(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_deps
+
         engine = _mock_engine()
         engine.get_dependencies.return_value = [{"name": "requests", "function_count": 5}]
         srv._engines["r1"] = engine
@@ -533,6 +562,7 @@ class TestGristleDeps:
     async def test_drill_into_dep(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_deps
+
         engine = _mock_engine()
         engine.get_dependency_users.return_value = {
             "dependency": "requests",
@@ -549,6 +579,7 @@ class TestGristleDeps:
     async def test_dep_not_found(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_deps
+
         engine = _mock_engine()
         engine.get_dependency_users.return_value = {
             "dependency": "nope",
@@ -571,6 +602,7 @@ class TestGristleTests:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_tests
+
         result = await gristle_tests()
         assert "error" in result
 
@@ -578,6 +610,7 @@ class TestGristleTests:
     async def test_find_mode_requires_entity(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_tests
+
         srv._engines["r1"] = _mock_engine()
         result = await gristle_tests(mode="find", entity=None)
         assert "error" in result
@@ -586,6 +619,7 @@ class TestGristleTests:
     async def test_find_mode_returns_tests(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_tests
+
         engine = _mock_engine()
         engine.get_tests_for_entity.return_value = [
             {"test_name": "test_foo", "test_file": "test_mod.py"},
@@ -598,6 +632,7 @@ class TestGristleTests:
     async def test_find_mode_no_tests(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_tests
+
         engine = _mock_engine()
         engine.get_tests_for_entity.return_value = []
         srv._engines["r1"] = engine
@@ -608,6 +643,7 @@ class TestGristleTests:
     async def test_coverage_mode(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_tests
+
         engine = _mock_engine()
         engine.get_untested_functions.return_value = [{"name": "orphan"}]
         srv._engines["r1"] = engine
@@ -624,6 +660,7 @@ class TestGristleConventions:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_conventions
+
         result = await gristle_conventions()
         assert "error" in result
 
@@ -631,6 +668,7 @@ class TestGristleConventions:
     async def test_returns_conventions(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_conventions
+
         engine = _mock_engine()
         engine.infer_conventions.return_value = {"languages": {"python": 10}}
         engine.get_repo_overview.return_value = {"nodes": {"Function": 50}}
@@ -651,6 +689,7 @@ class TestGristleWatch:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_watch
+
         result = await gristle_watch()
         assert "error" in result
 
@@ -658,6 +697,7 @@ class TestGristleWatch:
     async def test_status(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_watch
+
         srv._engines["r1"] = _mock_engine()
         with patch("gristle.ingestion.watcher.is_watching", return_value=False):
             result = await gristle_watch(action="status", repo_id="r1")
@@ -668,6 +708,7 @@ class TestGristleWatch:
     async def test_start_no_pipeline(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_watch
+
         srv._engines["r1"] = _mock_engine()
         # No pipeline registered
         result = await gristle_watch(action="start", repo_id="r1")
@@ -677,6 +718,7 @@ class TestGristleWatch:
     async def test_start_with_pipeline(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_watch
+
         srv._engines["r1"] = _mock_engine()
         srv._pipelines["r1"] = MagicMock()
         with patch("gristle.ingestion.watcher.start_watching", return_value=True):
@@ -688,6 +730,7 @@ class TestGristleWatch:
     async def test_stop(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_watch
+
         srv._engines["r1"] = _mock_engine()
         with patch("gristle.ingestion.watcher.stop_watching", return_value=True):
             result = await gristle_watch(action="stop", repo_id="r1")
@@ -698,6 +741,7 @@ class TestGristleWatch:
     async def test_unknown_action(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_watch
+
         srv._engines["r1"] = _mock_engine()
         result = await gristle_watch(action="invalid", repo_id="r1")
         assert "error" in result
@@ -715,6 +759,7 @@ class TestGristleDrop:
     async def test_drop_loaded_repo(self, MockGraphClient):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_drop
+
         engine = _mock_engine()
         srv._engines["r1"] = engine
         srv._pipelines["r1"] = MagicMock()
@@ -728,6 +773,7 @@ class TestGristleDrop:
     @patch("gristle.mcp.server.GraphClient")
     async def test_drop_unloaded_repo(self, MockGraphClient):
         from gristle.mcp.server import gristle_drop
+
         mock_graph = MagicMock()
         MockGraphClient.return_value = mock_graph
         result = await gristle_drop(repo_id="unknown")
@@ -745,6 +791,7 @@ class TestGristleEmbed:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_embed
+
         result = await gristle_embed()
         assert "error" in result
 
@@ -752,11 +799,13 @@ class TestGristleEmbed:
     async def test_import_error(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_embed
+
         srv._engines["r1"] = _mock_engine()
-        with patch.dict("sys.modules", {"gristle.search.embeddings": None}):
-            # Force ImportError by patching builtins import
-            with patch("builtins.__import__", side_effect=ImportError("no module")):
-                result = await gristle_embed(repo_id="r1")
+        with (
+            patch.dict("sys.modules", {"gristle.search.embeddings": None}),
+            patch("builtins.__import__", side_effect=ImportError("no module")),
+        ):
+            result = await gristle_embed(repo_id="r1")
         assert "error" in result
         assert "sentence-transformers" in result["error"]
 
@@ -770,6 +819,7 @@ class TestGristleSemanticSearch:
     @pytest.mark.asyncio
     async def test_no_repo(self):
         from gristle.mcp.server import gristle_semantic_search
+
         result = await gristle_semantic_search(query="foo")
         assert "error" in result
 
@@ -777,12 +827,18 @@ class TestGristleSemanticSearch:
     async def test_with_existing_index(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_semantic_search
+
         srv._engines["r1"] = _mock_engine()
         mock_index = MagicMock()
         mock_index.search.return_value = [
-            {"name": "validate_email", "label": "Function",
-             "signature": "def validate_email()", "docstring": "Validates email",
-             "file_path": "utils.py", "score": 0.2},
+            {
+                "name": "validate_email",
+                "label": "Function",
+                "signature": "def validate_email()",
+                "docstring": "Validates email",
+                "file_path": "utils.py",
+                "score": 0.2,
+            },
         ]
         srv._semantic_indexes["r1"] = mock_index
         result = await gristle_semantic_search(query="validates emails")
@@ -793,6 +849,7 @@ class TestGristleSemanticSearch:
     async def test_no_results(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import gristle_semantic_search
+
         srv._engines["r1"] = _mock_engine()
         mock_index = MagicMock()
         mock_index.search.return_value = []
@@ -810,6 +867,7 @@ class TestResources:
     @pytest.mark.asyncio
     async def test_list_repos_empty(self):
         from gristle.mcp.server import list_repos
+
         result = json.loads(await list_repos())
         assert result == []
 
@@ -817,6 +875,7 @@ class TestResources:
     async def test_list_repos_with_engines(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import list_repos
+
         srv._engines["r1"] = _mock_engine("/tmp/repo1")
         srv._engines["r2"] = _mock_engine("/tmp/repo2")
         result = json.loads(await list_repos())
@@ -827,6 +886,7 @@ class TestResources:
     @pytest.mark.asyncio
     async def test_repo_overview_not_found(self):
         from gristle.mcp.server import repo_overview
+
         result = json.loads(await repo_overview(repo_id="unknown"))
         assert "error" in result
 
@@ -834,6 +894,7 @@ class TestResources:
     async def test_repo_overview_success(self):
         import gristle.mcp.server as srv
         from gristle.mcp.server import repo_overview
+
         engine = _mock_engine()
         engine.get_repo_overview.return_value = {"nodes": {"Function": 50}}
         srv._engines["r1"] = engine
@@ -850,7 +911,6 @@ class TestHealthCheck:
     @pytest.mark.asyncio
     async def test_health_check(self):
         from gristle.mcp.server import health_check
-        from starlette.testclient import TestClient
 
         # health_check is an ASGI route, call it directly with a mock request
         request = MagicMock()
@@ -872,6 +932,7 @@ class TestMain:
     @patch("gristle.mcp.server.settings")
     def test_main_stdio(self, mock_settings, mock_mcp):
         from gristle.mcp.server import main
+
         mock_settings.transport = "stdio"
         with patch("gristle.logging.configure_logging"):
             main()
@@ -881,6 +942,7 @@ class TestMain:
     @patch("gristle.mcp.server.settings")
     def test_main_http(self, mock_settings, mock_mcp):
         from gristle.mcp.server import main
+
         mock_settings.transport = "streamable-http"
         with patch("gristle.logging.configure_logging"):
             main()
@@ -889,6 +951,7 @@ class TestMain:
     @patch("gristle.mcp.server.settings")
     def test_main_invalid_transport(self, mock_settings):
         from gristle.mcp.server import main
+
         mock_settings.transport = "invalid"
         with pytest.raises(SystemExit, match="Unknown transport"):
             main()

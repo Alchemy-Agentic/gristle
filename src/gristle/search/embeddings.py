@@ -31,11 +31,10 @@ class CodeEmbedder:
     def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
         try:
             from sentence_transformers import SentenceTransformer
-        except ImportError:
+        except ImportError as err:
             raise ImportError(
-                "sentence-transformers is required for semantic search. "
-                "Install it with: pip install gristle[search]"
-            )
+                "sentence-transformers is required for semantic search. Install it with: pip install gristle[search]"
+            ) from err
         self._model = SentenceTransformer(model_name)
         self._dim = self._model.get_sentence_embedding_dimension()
 
@@ -49,15 +48,11 @@ class CodeEmbedder:
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts (more efficient than one-by-one)."""
-        embeddings = self._model.encode(
-            texts, batch_size=64, show_progress_bar=False, convert_to_tensor=False
-        )
+        embeddings = self._model.encode(texts, batch_size=64, show_progress_bar=False, convert_to_tensor=False)
         return [e.tolist() for e in embeddings]
 
     @staticmethod
-    def build_function_text(
-        name: str, signature: str, docstring: str | None
-    ) -> str:
+    def build_function_text(name: str, signature: str, docstring: str | None) -> str:
         """Build the text to embed for a function node."""
         parts = [signature]
         if docstring:
@@ -65,9 +60,7 @@ class CodeEmbedder:
         return "\n".join(parts)
 
     @staticmethod
-    def build_class_text(
-        name: str, signature: str, docstring: str | None
-    ) -> str:
+    def build_class_text(name: str, signature: str, docstring: str | None) -> str:
         """Build the text to embed for a class node."""
         parts = [signature]
         if docstring:
@@ -124,11 +117,13 @@ class SemanticIndex:
             texts: list[str] = []
             for rec in result.records:
                 ids.append(rec["id"])
-                texts.append(text_builder(
-                    rec["name"],
-                    rec["signature"] or rec["name"],
-                    rec["docstring"] if rec["docstring"] else None,
-                ))
+                texts.append(
+                    text_builder(
+                        rec["name"],
+                        rec["signature"] or rec["name"],
+                        rec["docstring"] if rec["docstring"] else None,
+                    )
+                )
 
             total = len(texts)
             indexed = 0
@@ -138,10 +133,9 @@ class SemanticIndex:
                 batch_ids = ids[i : i + batch_size]
                 embeddings = self._embedder.embed_batch(batch_texts)
 
-                for node_id, embedding in zip(batch_ids, embeddings):
+                for node_id, embedding in zip(batch_ids, embeddings, strict=True):
                     self._graph.execute(
-                        f"MATCH (n:{label} {{id: $id}}) "
-                        f"SET n.embedding = vecf32($embedding)",
+                        f"MATCH (n:{label} {{id: $id}}) SET n.embedding = vecf32($embedding)",
                         {"id": node_id, "embedding": embedding},
                     )
                     indexed += 1

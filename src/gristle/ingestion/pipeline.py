@@ -6,26 +6,27 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from gristle.logging import Timer
+from typing import TYPE_CHECKING
 
 from gristle.config import settings
-from gristle.graph.client import GraphClient
 from gristle.graph.schema import ensure_schema
 from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.walker import WalkedFile, walk_repo
-from gristle.models import (
-    CodeReference,
-    ParsedClass,
-    ParsedDocument,
-    ParsedFile,
-    ParsedFunction,
-    ParsedImport,
-    ParsedRoute,
-    ParsedTestCase,
-)
+from gristle.logging import Timer
 from gristle.parsers.markdown import MarkdownParser
 from gristle.parsers.registry import ParserRegistry
+
+if TYPE_CHECKING:
+    from gristle.graph.client import GraphClient
+    from gristle.models import (
+        CodeReference,
+        ParsedClass,
+        ParsedFile,
+        ParsedFunction,
+        ParsedImport,
+        ParsedRoute,
+        ParsedTestCase,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +172,13 @@ class IngestionPipeline:
             "Phase 1 complete: parsed %d files, built %d nodes",
             result.files_processed,
             result.nodes_created,
-            extra={"event": "phase1_done", "duration_ms": phase1.ms,
-                   "repo_id": self.graph.repo_id,
-                   "files": result.files_processed,
-                   "nodes": result.nodes_created},
+            extra={
+                "event": "phase1_done",
+                "duration_ms": phase1.ms,
+                "repo_id": self.graph.repo_id,
+                "files": result.files_processed,
+                "nodes": result.nodes_created,
+            },
         )
 
         # Phase 2: Resolve cross-file call relationships
@@ -185,9 +189,12 @@ class IngestionPipeline:
         logger.info(
             "Phase 2 complete: resolved %d relationships",
             result.relationships_created - rels_before,
-            extra={"event": "phase2_done", "duration_ms": phase2.ms,
-                   "repo_id": self.graph.repo_id,
-                   "rels": result.relationships_created - rels_before},
+            extra={
+                "event": "phase2_done",
+                "duration_ms": phase2.ms,
+                "repo_id": self.graph.repo_id,
+                "rels": result.relationships_created - rels_before,
+            },
         )
 
         # Phase 3: Walk and process documentation files
@@ -205,8 +212,7 @@ class IngestionPipeline:
             result.docs_processed,
             result.doc_references_resolved,
             result.doc_references_total,
-            extra={"event": "phase3_done", "duration_ms": phase3.ms,
-                   "repo_id": self.graph.repo_id},
+            extra={"event": "phase3_done", "duration_ms": phase3.ms, "repo_id": self.graph.repo_id},
         )
 
         total_timer.__exit__(None, None, None)
@@ -217,11 +223,14 @@ class IngestionPipeline:
             result.nodes_created,
             result.relationships_created,
             total_timer.ms / 1000,
-            extra={"event": "ingestion_done", "duration_ms": total_timer.ms,
-                   "repo_id": self.graph.repo_id,
-                   "files": result.files_processed,
-                   "nodes": result.nodes_created,
-                   "rels": result.relationships_created},
+            extra={
+                "event": "ingestion_done",
+                "duration_ms": total_timer.ms,
+                "repo_id": self.graph.repo_id,
+                "files": result.files_processed,
+                "nodes": result.nodes_created,
+                "rels": result.relationships_created,
+            },
         )
         return result
 
@@ -273,9 +282,7 @@ class IngestionPipeline:
             for base_name in cls.bases:
                 base_id = self._resolve_base(base_name, parsed)
                 if base_id:
-                    self.graph.create_relationship(
-                        class_id, base_id, "INHERITS_FROM"
-                    )
+                    self.graph.create_relationship(class_id, base_id, "INHERITS_FROM")
                     result.relationships_created += 1
 
         # IMPORTS: resolve this file's imports to other files
@@ -284,9 +291,13 @@ class IngestionPipeline:
         file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
         for imp in parsed.imports:
             target_id = self._resolve_single_import(
-                imp, file_dir, parsed.language,
-                self._path_to_id, self._stem_to_id,
-                self._dir_index_to_id, self._pymodule_to_id,
+                imp,
+                file_dir,
+                parsed.language,
+                self._path_to_id,
+                self._stem_to_id,
+                self._dir_index_to_id,
+                self._pymodule_to_id,
                 self._source_roots,
             )
             if target_id and target_id != file_id:
@@ -305,7 +316,9 @@ class IngestionPipeline:
 
         logger.info(
             "Updated %s: %d nodes, %d rels",
-            relative_path, result.nodes_created, result.relationships_created,
+            relative_path,
+            result.nodes_created,
+            result.relationships_created,
         )
         return result
 
@@ -334,9 +347,7 @@ class IngestionPipeline:
         # Remove test file tracking
         self._test_file_paths.discard(file_path)
 
-    def _relink_incoming_calls(
-        self, parsed: ParsedFile, result: IngestionResult
-    ) -> None:
+    def _relink_incoming_calls(self, parsed: ParsedFile, result: IngestionResult) -> None:
         """Re-create CALLS edges from OTHER files' functions into this file.
 
         When a file is re-indexed, its old function nodes (and all edges)
@@ -350,7 +361,7 @@ class IngestionPipeline:
             return
 
         # For each entity, find callers from other files via the graph
-        for entity_name, entity_id in file_entities.items():
+        for _entity_name, _entity_id in file_entities.items():
             # Check if any function in another file has this entity in their
             # calls list — but we don't store calls in the graph, only CALLS edges.
             # Instead, re-check other files' import caches to see if they
@@ -368,13 +379,9 @@ class IngestionPipeline:
     # Internal: parse + build
     # ------------------------------------------------------------------
 
-    def _parse_and_build(
-        self, wf: WalkedFile, result: IngestionResult
-    ) -> ParsedFile | None:
+    def _parse_and_build(self, wf: WalkedFile, result: IngestionResult) -> ParsedFile | None:
         try:
-            content = Path(wf.absolute_path).read_text(
-                encoding="utf-8", errors="replace"
-            )
+            content = Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             result.errors.append(f"Read error {wf.relative_path}: {e}")
             result.files_skipped += 1
@@ -422,15 +429,18 @@ class IngestionPipeline:
         self._register_name(basename, file_id)
 
         # File node
-        batch.add_node("File", {
-            "id": file_id,
-            "path": parsed.path,
-            "language": parsed.language,
-            "line_count": parsed.line_count,
-            "docstring": parsed.module_docstring or "",
-            "is_test_file": parsed.is_test_file,
-            "todo_count": len(parsed.todos),
-        })
+        batch.add_node(
+            "File",
+            {
+                "id": file_id,
+                "path": parsed.path,
+                "language": parsed.language,
+                "line_count": parsed.line_count,
+                "docstring": parsed.module_docstring or "",
+                "is_test_file": parsed.is_test_file,
+                "todo_count": len(parsed.todos),
+            },
+        )
 
         # Track test files for TESTS edge resolution
         if parsed.is_test_file:
@@ -465,14 +475,17 @@ class IngestionPipeline:
         # Import nodes
         for imp in parsed.imports:
             imp_id = f"import::{parsed.path}::{imp.line}"
-            batch.add_node("Import", {
-                "id": imp_id,
-                "file_path": parsed.path,
-                "line": imp.line,
-                "module_path": imp.module_path,
-                "imported_names": imp.imported_names,
-                "is_relative": imp.is_relative,
-            })
+            batch.add_node(
+                "Import",
+                {
+                    "id": imp_id,
+                    "file_path": parsed.path,
+                    "line": imp.line,
+                    "module_path": imp.module_path,
+                    "imported_names": imp.imported_names,
+                    "is_relative": imp.is_relative,
+                },
+            )
             batch.add_relationship("CONTAINS", file_id, imp_id)
 
         # Classes
@@ -496,20 +509,21 @@ class IngestionPipeline:
         result.nodes_created += counts["nodes_created"]
         result.relationships_created += counts["relationships_created"]
 
-    def _build_route(
-        self, file_id: str, route: ParsedRoute, batch: BatchCollector
-    ) -> None:
+    def _build_route(self, file_id: str, route: ParsedRoute, batch: BatchCollector) -> None:
         route_id = f"route::{route.file_path}::L{route.line}::{route.method}"
-        batch.add_node("Route", {
-            "id": route_id,
-            "method": route.method,
-            "path": route.path,
-            "handler_name": route.handler_name,
-            "file_path": route.file_path,
-            "line": route.line,
-            "end_line": route.end_line,
-            "middleware": route.middleware,
-        })
+        batch.add_node(
+            "Route",
+            {
+                "id": route_id,
+                "method": route.method,
+                "path": route.path,
+                "handler_name": route.handler_name,
+                "file_path": route.file_path,
+                "line": route.line,
+                "end_line": route.end_line,
+                "middleware": route.middleware,
+            },
+        )
 
         # Link route to its file
         batch.add_relationship("CONTAINS", file_id, route_id)
@@ -522,26 +536,25 @@ class IngestionPipeline:
         if handler_id:
             batch.add_relationship("HANDLES", route_id, handler_id)
 
-    def _build_test_case(
-        self, file_id: str, tc: ParsedTestCase, batch: BatchCollector
-    ) -> None:
+    def _build_test_case(self, file_id: str, tc: ParsedTestCase, batch: BatchCollector) -> None:
         tc_id = f"testcase::{tc.file_path}::L{tc.start_line}"
-        batch.add_node("TestCase", {
-            "id": tc_id,
-            "name": tc.name,
-            "block_type": tc.block_type,
-            "file_path": tc.file_path,
-            "start_line": tc.start_line,
-            "end_line": tc.end_line,
-            "parent_describe": tc.parent_describe or "",
-            "parametrize_count": tc.parametrize_count,
-        })
+        batch.add_node(
+            "TestCase",
+            {
+                "id": tc_id,
+                "name": tc.name,
+                "block_type": tc.block_type,
+                "file_path": tc.file_path,
+                "start_line": tc.start_line,
+                "end_line": tc.end_line,
+                "parent_describe": tc.parent_describe or "",
+                "parametrize_count": tc.parametrize_count,
+            },
+        )
 
         batch.add_relationship("CONTAINS", file_id, tc_id)
 
-    def _build_class(
-        self, file_id: str, cls: ParsedClass, batch: BatchCollector
-    ) -> None:
+    def _build_class(self, file_id: str, cls: ParsedClass, batch: BatchCollector) -> None:
         class_id = f"class::{cls.qualified_name}"
         self._id_map[cls.qualified_name] = class_id
         self._id_map[cls.name] = class_id  # Also index by short name
@@ -552,22 +565,25 @@ class IngestionPipeline:
         if cls.is_exported:
             self._exported_file_entities.setdefault(cls.file_path, {})[cls.name] = class_id
 
-        batch.add_node("Class", {
-            "id": class_id,
-            "name": cls.name,
-            "qualified_name": cls.qualified_name,
-            "file_path": cls.file_path,
-            "start_line": cls.start_line,
-            "end_line": cls.end_line,
-            "signature": cls.signature,
-            "docstring": cls.docstring or "",
-            "decorators": cls.decorators,
-            "is_abstract": cls.is_abstract,
-            "visibility": cls.visibility,
-            "bases": cls.bases,
-            "kind": cls.kind,
-            "is_exported": cls.is_exported,
-        })
+        batch.add_node(
+            "Class",
+            {
+                "id": class_id,
+                "name": cls.name,
+                "qualified_name": cls.qualified_name,
+                "file_path": cls.file_path,
+                "start_line": cls.start_line,
+                "end_line": cls.end_line,
+                "signature": cls.signature,
+                "docstring": cls.docstring or "",
+                "decorators": cls.decorators,
+                "is_abstract": cls.is_abstract,
+                "visibility": cls.visibility,
+                "bases": cls.bases,
+                "kind": cls.kind,
+                "is_exported": cls.is_exported,
+            },
+        )
 
         batch.add_relationship("CONTAINS", file_id, class_id)
         batch.add_relationship("DEFINED_IN", class_id, file_id)
@@ -615,30 +631,33 @@ class IngestionPipeline:
         if func.is_fixture:
             self._fixture_map[func.name] = func_id
 
-        batch.add_node("Function", {
-            "id": func_id,
-            "name": func.name,
-            "qualified_name": func.qualified_name,
-            "file_path": func.file_path,
-            "start_line": func.start_line,
-            "end_line": func.end_line,
-            "signature": func.signature,
-            "docstring": func.docstring or "",
-            "decorators": func.decorators,
-            "is_async": func.is_async,
-            "is_static": func.is_static,
-            "is_classmethod": func.is_classmethod,
-            "is_property": func.is_property,
-            "is_fixture": func.is_fixture,
-            "visibility": func.visibility,
-            "return_type": func.return_type or "",
-            "complexity": func.complexity,
-            "is_exported": func.is_exported,
-            "is_component": func.is_component,
-            "is_test": func.is_test,
-            "is_entry_point": func.is_entry_point,
-            "todo_count": len(func.todos),
-        })
+        batch.add_node(
+            "Function",
+            {
+                "id": func_id,
+                "name": func.name,
+                "qualified_name": func.qualified_name,
+                "file_path": func.file_path,
+                "start_line": func.start_line,
+                "end_line": func.end_line,
+                "signature": func.signature,
+                "docstring": func.docstring or "",
+                "decorators": func.decorators,
+                "is_async": func.is_async,
+                "is_static": func.is_static,
+                "is_classmethod": func.is_classmethod,
+                "is_property": func.is_property,
+                "is_fixture": func.is_fixture,
+                "visibility": func.visibility,
+                "return_type": func.return_type or "",
+                "complexity": func.complexity,
+                "is_exported": func.is_exported,
+                "is_component": func.is_component,
+                "is_test": func.is_test,
+                "is_entry_point": func.is_entry_point,
+                "todo_count": len(func.todos),
+            },
+        )
 
         batch.add_relationship("DEFINED_IN", func_id, file_id)
 
@@ -654,9 +673,7 @@ class IngestionPipeline:
     # Phase 2: Cross-file resolution
     # ------------------------------------------------------------------
 
-    def _resolve_calls(
-        self, parsed_files: list[ParsedFile], result: IngestionResult
-    ) -> None:
+    def _resolve_calls(self, parsed_files: list[ParsedFile], result: IngestionResult) -> None:
         """Create CALLS edges by resolving call targets to known functions."""
         batch = BatchCollector(self.graph, self._batch_size)
 
@@ -681,9 +698,7 @@ class IngestionPipeline:
                 for base_name in cls.bases:
                     base_id = self._resolve_base(base_name, pf)
                     if base_id:
-                        batch.add_relationship(
-                            "INHERITS_FROM", class_id, base_id
-                        )
+                        batch.add_relationship("INHERITS_FROM", class_id, base_id)
                         bases.append(base_id)
                 if bases:
                     self._class_bases[class_id] = bases
@@ -702,9 +717,7 @@ class IngestionPipeline:
         result.nodes_created += counts["nodes_created"]
         result.relationships_created += counts["relationships_created"]
 
-    def _resolve_fixture_edges(
-        self, parsed_files: list[ParsedFile], batch: BatchCollector
-    ) -> None:
+    def _resolve_fixture_edges(self, parsed_files: list[ParsedFile], batch: BatchCollector) -> None:
         """Create USES_FIXTURE edges from test functions to pytest fixtures.
 
         Matches test function parameter names to known fixture names.
@@ -725,9 +738,7 @@ class IngestionPipeline:
                         continue
                     self._link_func_to_fixtures(method, batch)
 
-    def _link_func_to_fixtures(
-        self, func: ParsedFunction, batch: BatchCollector
-    ) -> None:
+    def _link_func_to_fixtures(self, func: ParsedFunction, batch: BatchCollector) -> None:
         """Link a test function to fixtures it uses via parameter names."""
         caller_id = f"func::{func.qualified_name}"
         for param in func.parameters:
@@ -737,9 +748,7 @@ class IngestionPipeline:
             if fixture_id:
                 batch.add_merge_relationship("USES_FIXTURE", caller_id, fixture_id)
 
-    def _resolve_function_calls(
-        self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector
-    ) -> None:
+    def _resolve_function_calls(self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector) -> None:
         caller_id = f"func::{func.qualified_name}"
         for call_name in func.calls:
             callee_id = self._find_callee(call_name, func, pf)
@@ -748,9 +757,8 @@ class IngestionPipeline:
 
             # Create USES_HOOK edge for React hook calls (use* convention)
             bare_name = call_name.split(".")[-1] if "." in call_name else call_name
-            if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper():
-                if callee_id:
-                    batch.add_merge_relationship("USES_HOOK", caller_id, callee_id)
+            if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper() and callee_id:
+                batch.add_merge_relationship("USES_HOOK", caller_id, callee_id)
 
     def _find_callee(
         self,
@@ -820,9 +828,7 @@ class IngestionPipeline:
                 if target_qn in self._qualified_map:
                     return self._qualified_map[target_qn]
                 # Try inherited methods via MRO
-                class_id = self._id_map.get(class_name) or self._id_map.get(
-                    f"{context_file.path}::{class_name}"
-                )
+                class_id = self._id_map.get(class_name) or self._id_map.get(f"{context_file.path}::{class_name}")
                 if class_id:
                     inherited = self._resolve_inherited_method(class_id, method)
                     if inherited:
@@ -834,9 +840,7 @@ class IngestionPipeline:
             return self._qualified_map[file_scoped]
 
         # Try inheritance for ClassName.method where ClassName is in same file
-        class_id = self._id_map.get(obj) or self._id_map.get(
-            f"{context_file.path}::{obj}"
-        )
+        class_id = self._id_map.get(obj) or self._id_map.get(f"{context_file.path}::{obj}")
         if class_id and class_id.startswith("class::"):
             inherited = self._resolve_inherited_method(class_id, method)
             if inherited:
@@ -855,9 +859,7 @@ class IngestionPipeline:
             mod_basename = imp.module_path.rsplit("/", 1)[-1].split(".")[0]
             alias = imp.aliases.get(obj)
             is_match = (
-                obj in imp.imported_names
-                or (alias in imp.imported_names if alias else False)
-                or obj == mod_basename
+                obj in imp.imported_names or (alias in imp.imported_names if alias else False) or obj == mod_basename
             )
             if not is_match:
                 continue
@@ -884,9 +886,7 @@ class IngestionPipeline:
                     submod_path = f"{pkg_dir}/{obj}"
                     # Check file entities for the submodule file
                     for ext in (".py", ""):
-                        sub_file_id = self._path_to_id.get(
-                            submod_path + ext
-                        ) or self._stem_to_id.get(submod_path)
+                        sub_file_id = self._path_to_id.get(submod_path + ext) or self._stem_to_id.get(submod_path)
                         if sub_file_id:
                             sub_path = sub_file_id[6:]
                             sub_entities = self._file_entities.get(sub_path, {})
@@ -928,9 +928,7 @@ class IngestionPipeline:
                 return result
         return None
 
-    def _get_imported_entities(
-        self, context_file: ParsedFile
-    ) -> dict[str, str]:
+    def _get_imported_entities(self, context_file: ParsedFile) -> dict[str, str]:
         """Build a map of name -> node_id for entities imported into a file.
 
         For wildcard imports (import * from), only exported entities are
@@ -987,16 +985,18 @@ class IngestionPipeline:
         self._import_cache[cache_key] = imported
         return imported
 
-    def _resolve_import_to_file_id(
-        self, imp: ParsedImport, context_file: ParsedFile
-    ) -> str | None:
+    def _resolve_import_to_file_id(self, imp: ParsedImport, context_file: ParsedFile) -> str | None:
         """Resolve an import to a file ID using pre-built path maps."""
         file_dir = context_file.path.replace("\\", "/")
         file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
         return self._resolve_single_import(
-            imp, file_dir, context_file.language,
-            self._path_to_id, self._stem_to_id,
-            self._dir_index_to_id, self._pymodule_to_id,
+            imp,
+            file_dir,
+            context_file.language,
+            self._path_to_id,
+            self._stem_to_id,
+            self._dir_index_to_id,
+            self._pymodule_to_id,
             self._source_roots,
         )
 
@@ -1020,9 +1020,13 @@ class IngestionPipeline:
             targets_seen: set[str] = set()
             for imp in pf.imports:
                 target_id = self._resolve_single_import(
-                    imp, file_dir, pf.language,
-                    self._path_to_id, self._stem_to_id,
-                    self._dir_index_to_id, self._pymodule_to_id,
+                    imp,
+                    file_dir,
+                    pf.language,
+                    self._path_to_id,
+                    self._stem_to_id,
+                    self._dir_index_to_id,
+                    self._pymodule_to_id,
                     self._source_roots,
                 )
                 if not target_id or target_id == test_file_id:
@@ -1039,9 +1043,7 @@ class IngestionPipeline:
                 batch.add_merge_relationship("TESTS", test_file_id, target_id)
                 result.test_coverage_edges += 1
 
-    def _resolve_dependency_usage(
-        self, parsed_files: list[ParsedFile], batch: BatchCollector
-    ) -> None:
+    def _resolve_dependency_usage(self, parsed_files: list[ParsedFile], batch: BatchCollector) -> None:
         """Create USES_DEPENDENCY edges from functions to external dependencies.
 
         A function USES_DEPENDENCY a package when it calls a name that was
@@ -1142,9 +1144,13 @@ class IngestionPipeline:
 
             for imp in pf.imports:
                 target_id = self._resolve_single_import(
-                    imp, file_dir, pf.language,
-                    self._path_to_id, self._stem_to_id,
-                    self._dir_index_to_id, self._pymodule_to_id,
+                    imp,
+                    file_dir,
+                    pf.language,
+                    self._path_to_id,
+                    self._stem_to_id,
+                    self._dir_index_to_id,
+                    self._pymodule_to_id,
                     self._source_roots,
                 )
                 if target_id and target_id != file_id:
@@ -1157,9 +1163,7 @@ class IngestionPipeline:
                             external_deps[pkg] = set()
                         external_deps[pkg].add(pf.path)
                         # Track which names this file imports from this package
-                        ext_map = self._file_external_imports.setdefault(
-                            pf.path, {}
-                        )
+                        ext_map = self._file_external_imports.setdefault(pf.path, {})
                         dep_id = f"dep::{pkg}"
                         for name in imp.imported_names:
                             ext_map[name] = dep_id
@@ -1173,11 +1177,14 @@ class IngestionPipeline:
         # Create Dependency nodes
         for pkg_name, importers in external_deps.items():
             dep_id = f"dep::{pkg_name}"
-            batch.add_node("Dependency", {
-                "id": dep_id,
-                "name": pkg_name,
-                "import_count": len(importers),
-            })
+            batch.add_node(
+                "Dependency",
+                {
+                    "id": dep_id,
+                    "name": pkg_name,
+                    "import_count": len(importers),
+                },
+            )
             result.dependencies_found += 1
             # Link importing files to the dependency
             for file_path in importers:
@@ -1187,9 +1194,7 @@ class IngestionPipeline:
         # Link functions to the external dependencies they use
         self._resolve_dependency_usage(parsed_files, batch)
 
-    def _register_python_source_roots(
-        self, parsed_files: list[ParsedFile]
-    ) -> None:
+    def _register_python_source_roots(self, parsed_files: list[ParsedFile]) -> None:
         """Detect Python source roots (e.g. ``src/``) and register module
         keys with the source root prefix stripped.
 
@@ -1202,11 +1207,7 @@ class IngestionPipeline:
         ``marshmallow.schema`` so that ``from marshmallow.schema import X``
         resolves correctly.
         """
-        py_paths = {
-            pf.path.replace("\\", "/")
-            for pf in parsed_files
-            if pf.language == "python"
-        }
+        py_paths = {pf.path.replace("\\", "/") for pf in parsed_files if pf.language == "python"}
         if not py_paths:
             return
 
@@ -1229,10 +1230,8 @@ class IngestionPipeline:
 
         python_source_roots: list[str] = []
         for d in first_dirs:
-            if d not in init_dirs:
-                # Check if any init_dir starts with this prefix
-                if any(id_.startswith(d + "/") for id_ in init_dirs):
-                    python_source_roots.append(d)
+            if d not in init_dirs and any(id_.startswith(d + "/") for id_ in init_dirs):
+                python_source_roots.append(d)
 
         if not python_source_roots:
             return
@@ -1244,13 +1243,11 @@ class IngestionPipeline:
             for root in python_source_roots:
                 prefix = root + "."
                 if full_module.startswith(prefix):
-                    stripped = full_module[len(prefix):]
+                    stripped = full_module[len(prefix) :]
                     if stripped and stripped not in self._pymodule_to_id:
                         self._pymodule_to_id[stripped] = file_id
 
-    def _build_init_reexport_maps(
-        self, parsed_files: list[ParsedFile]
-    ) -> None:
+    def _build_init_reexport_maps(self, parsed_files: list[ParsedFile]) -> None:
         """Build re-export maps for barrel/package entry files.
 
         Handles both Python ``__init__.py`` and TS/JS ``index.ts``/``index.js``
@@ -1283,7 +1280,10 @@ class IngestionPipeline:
             logger.debug("Barrel re-export pass %d: %d new entities", _pass + 1, new_count)
 
     def _resolve_barrel_reexports(
-        self, pf: ParsedFile, normalized: str, is_py_init: bool,
+        self,
+        pf: ParsedFile,
+        normalized: str,
+        is_py_init: bool,
     ) -> int:
         """Resolve re-exports for a single barrel file. Returns count of new entities added."""
         file_dir = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
@@ -1292,9 +1292,13 @@ class IngestionPipeline:
 
         for imp in pf.imports:
             target_file_id = self._resolve_single_import(
-                imp, file_dir, pf.language,
-                self._path_to_id, self._stem_to_id,
-                self._dir_index_to_id, self._pymodule_to_id,
+                imp,
+                file_dir,
+                pf.language,
+                self._path_to_id,
+                self._stem_to_id,
+                self._dir_index_to_id,
+                self._pymodule_to_id,
                 self._source_roots,
             )
             if not target_file_id:
@@ -1332,9 +1336,7 @@ class IngestionPipeline:
         if reexports:
             self._init_reexport_entities[pf.path] = reexports
             if new_count > 0:
-                logger.debug(
-                    "%s re-exports %d entities (+%d new)", pf.path, len(reexports), new_count
-                )
+                logger.debug("%s re-exports %d entities (+%d new)", pf.path, len(reexports), new_count)
         return new_count
 
     @staticmethod
@@ -1349,9 +1351,7 @@ class IngestionPipeline:
             if first_dir:
                 prefix_counts[first_dir] = prefix_counts.get(first_dir, 0) + 1
 
-        total_ts_js = sum(
-            1 for pf in parsed_files if pf.language in ("typescript", "javascript")
-        )
+        total_ts_js = sum(1 for pf in parsed_files if pf.language in ("typescript", "javascript"))
         if total_ts_js == 0:
             return []
 
@@ -1408,9 +1408,7 @@ class IngestionPipeline:
         if imp.is_relative:
             # Resolve relative to the importing file's directory
             resolved = self._resolve_relative_path(module, file_dir)
-            return self._lookup_resolved_path(
-                resolved, path_to_id, stem_to_id, dir_index_to_id
-            )
+            return self._lookup_resolved_path(resolved, path_to_id, stem_to_id, dir_index_to_id)
 
         # Non-relative: could be a path alias like @/lib/foo or a package
         stripped = self._strip_path_alias(module)
@@ -1419,18 +1417,14 @@ class IngestionPipeline:
             return None
 
         # Try the stripped alias directly (project-root relative)
-        found = self._lookup_resolved_path(
-            stripped, path_to_id, stem_to_id, dir_index_to_id
-        )
+        found = self._lookup_resolved_path(stripped, path_to_id, stem_to_id, dir_index_to_id)
         if found:
             return found
 
         # Try with each detected source root prefix (e.g., src/lib/utils)
-        for root in (source_roots or []):
+        for root in source_roots or []:
             prefixed = f"{root}/{stripped}"
-            found = self._lookup_resolved_path(
-                prefixed, path_to_id, stem_to_id, dir_index_to_id
-            )
+            found = self._lookup_resolved_path(prefixed, path_to_id, stem_to_id, dir_index_to_id)
             if found:
                 return found
 
@@ -1492,12 +1486,12 @@ class IngestionPipeline:
         # @/ or ~/ or #/ prefix — common alias for project root
         for prefix in ("@/", "~/", "#/"):
             if module_path.startswith(prefix):
-                return module_path[len(prefix):]
+                return module_path[len(prefix) :]
 
         # @word/ prefix where word looks like a local alias (not a scoped npm package)
         if module_path.startswith("@") and "/" in module_path:
             first_part = module_path.split("/")[0]
-            rest = module_path[len(first_part) + 1:]
+            rest = module_path[len(first_part) + 1 :]
             # Scoped npm packages: @tanstack/query, @radix-ui/react-dialog, etc.
             # These typically have lowercase names with hyphens.
             # Local aliases: @app, @lib, @components — no hyphens, short.
@@ -1518,15 +1512,55 @@ class IngestionPipeline:
             top = module_path.split(".")[0]
             # Skip obvious stdlib modules
             _PY_STDLIB = {
-                "os", "sys", "re", "json", "math", "typing", "collections",
-                "functools", "itertools", "pathlib", "logging", "unittest",
-                "dataclasses", "abc", "io", "datetime", "time", "hashlib",
-                "copy", "enum", "contextlib", "operator", "string", "textwrap",
-                "struct", "types", "importlib", "inspect", "warnings",
-                "subprocess", "shutil", "tempfile", "glob", "fnmatch",
-                "socket", "http", "urllib", "email", "html", "xml",
-                "asyncio", "concurrent", "threading", "multiprocessing",
-                "__future__", "builtins", "traceback", "pdb", "dis",
+                "os",
+                "sys",
+                "re",
+                "json",
+                "math",
+                "typing",
+                "collections",
+                "functools",
+                "itertools",
+                "pathlib",
+                "logging",
+                "unittest",
+                "dataclasses",
+                "abc",
+                "io",
+                "datetime",
+                "time",
+                "hashlib",
+                "copy",
+                "enum",
+                "contextlib",
+                "operator",
+                "string",
+                "textwrap",
+                "struct",
+                "types",
+                "importlib",
+                "inspect",
+                "warnings",
+                "subprocess",
+                "shutil",
+                "tempfile",
+                "glob",
+                "fnmatch",
+                "socket",
+                "http",
+                "urllib",
+                "email",
+                "html",
+                "xml",
+                "asyncio",
+                "concurrent",
+                "threading",
+                "multiprocessing",
+                "__future__",
+                "builtins",
+                "traceback",
+                "pdb",
+                "dis",
             }
             if top in _PY_STDLIB:
                 return None
@@ -1545,14 +1579,10 @@ class IngestionPipeline:
     # Phase 3: Document processing
     # ------------------------------------------------------------------
 
-    def _process_document(
-        self, wf: WalkedFile, result: IngestionResult, batch: BatchCollector
-    ) -> None:
+    def _process_document(self, wf: WalkedFile, result: IngestionResult, batch: BatchCollector) -> None:
         """Parse a markdown file and build document nodes with code references."""
         try:
-            content = Path(wf.absolute_path).read_text(
-                encoding="utf-8", errors="replace"
-            )
+            content = Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
         except OSError as e:
             result.errors.append(f"Read error {wf.relative_path}: {e}")
             return
@@ -1567,28 +1597,34 @@ class IngestionPipeline:
         doc_id = f"doc::{doc.path}"
 
         # Create Document node
-        batch.add_node("Document", {
-            "id": doc_id,
-            "path": doc.path,
-            "title": doc.title,
-            "doc_type": doc.doc_type,
-            "line_count": doc.line_count,
-            "section_count": len(doc.sections),
-            "reference_count": len(doc.code_references),
-        })
+        batch.add_node(
+            "Document",
+            {
+                "id": doc_id,
+                "path": doc.path,
+                "title": doc.title,
+                "doc_type": doc.doc_type,
+                "line_count": doc.line_count,
+                "section_count": len(doc.sections),
+                "reference_count": len(doc.code_references),
+            },
+        )
 
         # Create DocumentSection nodes
-        for i, section in enumerate(doc.sections):
+        for _i, section in enumerate(doc.sections):
             section_id = f"docsec::{doc.path}::L{section.start_line}"
-            batch.add_node("DocumentSection", {
-                "id": section_id,
-                "heading": section.heading,
-                "level": section.level,
-                "start_line": section.start_line,
-                "end_line": section.end_line,
-                "file_path": doc.path,
-                "reference_count": len(section.code_references),
-            })
+            batch.add_node(
+                "DocumentSection",
+                {
+                    "id": section_id,
+                    "heading": section.heading,
+                    "level": section.level,
+                    "start_line": section.start_line,
+                    "end_line": section.end_line,
+                    "file_path": doc.path,
+                    "reference_count": len(section.code_references),
+                },
+            )
             batch.add_relationship("HAS_SECTION", doc_id, section_id)
 
             # Resolve code references in this section
@@ -1597,9 +1633,7 @@ class IngestionPipeline:
 
         # Resolve top-level references (before first heading)
         for ref in doc.code_references:
-            if not any(
-                ref in section.code_references for section in doc.sections
-            ):
+            if not any(ref in section.code_references for section in doc.sections):
                 self._resolve_and_link_reference(ref, doc_id, result, batch)
 
         result.docs_processed += 1
@@ -1649,7 +1683,7 @@ class IngestionPipeline:
             # Try with common prefixes stripped/added
             for prefix in ("src/", "lib/", "app/", "packages/"):
                 if clean.startswith(prefix):
-                    stripped = clean[len(prefix):]
+                    stripped = clean[len(prefix) :]
                     if stripped in self._name_to_id:
                         return self._name_to_id[stripped]
                     stripped_stem = stripped.rsplit(".", 1)[0] if "." in stripped else stripped

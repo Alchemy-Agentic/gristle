@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from gristle.models import ParsedFile
-from gristle.parsers.base import LanguageParser
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gristle.models import ParsedFile
+    from gristle.parsers.base import LanguageParser
 
 
 class ParserRegistry:
@@ -33,7 +36,7 @@ class ParserRegistry:
     def supported_extensions(self) -> frozenset[str]:
         return frozenset(self._extension_map)
 
-    def build_default(self) -> "ParserRegistry":
+    def build_default(self) -> ParserRegistry:
         """Register all built-in parsers and return self for chaining."""
         from gristle.parsers.python import PythonParser
         from gristle.parsers.typescript import JavaScriptParser, TypeScriptParser

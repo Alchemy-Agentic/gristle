@@ -1,7 +1,6 @@
 """Data models for the sample application."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

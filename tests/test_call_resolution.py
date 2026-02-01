@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.pipeline import IngestionPipeline, IngestionResult
-from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedTestCase
+from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport
 
 
 def _make_graph_mock() -> MagicMock:
@@ -407,18 +405,14 @@ class TestQualifiedNameResolution:
         test_file = _make_file("src/test.ts", functions=[caller])
         pipeline._build_file_graph(test_file, MagicMock())
 
-        result = pipeline._find_callee(
-            "src/graph/client.ts::query", caller, test_file
-        )
+        result = pipeline._find_callee("src/graph/client.ts::query", caller, test_file)
         assert result == "func::src/graph/client.ts::query"
 
 
 class TestTestCoverageEdges:
     """TESTS edges should link test files to the production files they import."""
 
-    def _run_test_edges(
-        self, parsed_files: list[ParsedFile]
-    ) -> tuple[IngestionPipeline, IngestionResult]:
+    def _run_test_edges(self, parsed_files: list[ParsedFile]) -> tuple[IngestionPipeline, IngestionResult]:
         """Set up pipeline maps and run _resolve_test_edges."""
         pipeline = _setup_pipeline(parsed_files)
         result = IngestionResult(repo_id="test", repo_path="/tmp")
@@ -491,9 +485,7 @@ class TestTestCoverageEdges:
         """Multiple imports from the same production file create only one TESTS edge."""
         func_a = _make_func("query", "src/graph/client.ts")
         func_b = _make_func("execute", "src/graph/client.ts")
-        prod_file = _make_file(
-            "src/graph/client.ts", functions=[func_a, func_b]
-        )
+        prod_file = _make_file("src/graph/client.ts", functions=[func_a, func_b])
 
         imp1 = _make_import("../../graph/client", imported_names=["query"])
         imp2 = _make_import("../../graph/client", imported_names=["execute"])
@@ -549,8 +541,7 @@ class TestExportAwareFiltering:
         pipeline = _setup_pipeline([utils_file, api_file])
 
         # publicHelper is exported -> should resolve
-        assert pipeline._find_callee("publicHelper", caller, api_file) == \
-            "func::src/utils.ts::publicHelper"
+        assert pipeline._find_callee("publicHelper", caller, api_file) == "func::src/utils.ts::publicHelper"
         # _internal is NOT exported -> wildcard should NOT include it
         # (falls through to single-candidate which would match, but the
         #  import-aware step should not provide it)
@@ -577,14 +568,12 @@ class TestExportAwareFiltering:
         """Python wildcard import should include all entities (no export keyword)."""
         public_fn = _make_func("helper", "utils.py", is_exported=False)
         private_fn = _make_func("_private", "utils.py", is_exported=False)
-        utils_file = _make_file("utils.py", language="python",
-                                functions=[public_fn, private_fn])
+        utils_file = _make_file("utils.py", language="python", functions=[public_fn, private_fn])
 
         imp = _make_import("utils", imported_names=[], is_relative=False)
         imp.is_wildcard = True
         caller = _make_func("main", "app.py")
-        app_file = _make_file("app.py", language="python",
-                              functions=[caller], imports=[imp])
+        app_file = _make_file("app.py", language="python", functions=[caller], imports=[imp])
 
         pipeline = _setup_pipeline([utils_file, app_file])
         imported = pipeline._get_imported_entities(app_file)
@@ -597,8 +586,7 @@ class TestExportAwareFiltering:
         """obj.method on imported module should prefer exported methods."""
         exported_method = _make_func("query", "src/db.ts", is_exported=True)
         internal_method = _make_func("_connect", "src/db.ts", is_exported=False)
-        db_file = _make_file("src/db.ts",
-                             functions=[exported_method, internal_method])
+        db_file = _make_file("src/db.ts", functions=[exported_method, internal_method])
 
         imp = _make_import("./db", imported_names=["db"], is_relative=True)
         caller = _make_func("handler", "src/api.ts", calls=["db.query"])
@@ -630,9 +618,7 @@ class TestExportAwareFiltering:
 class TestDependencyUsageEdges:
     """USES_DEPENDENCY edges should link functions to external packages."""
 
-    def _run_dependency_resolution(
-        self, parsed_files: list[ParsedFile]
-    ) -> tuple[IngestionPipeline, IngestionResult]:
+    def _run_dependency_resolution(self, parsed_files: list[ParsedFile]) -> tuple[IngestionPipeline, IngestionResult]:
         """Set up pipeline, run import resolution (which creates deps), return result."""
         pipeline = _setup_pipeline(parsed_files)
         result = IngestionResult(repo_id="test", repo_path="/tmp")
@@ -799,13 +785,18 @@ class TestPythonSourceRoots:
     def test_source_root_detection_strips_src_prefix(self):
         """Python files under src/ get module keys with src. prefix stripped."""
         init = _make_file(
-            "src/mylib/__init__.py", language="python",
-            functions=[], classes=[], imports=[],
+            "src/mylib/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[],
         )
         mod = _make_file(
-            "src/mylib/core.py", language="python",
+            "src/mylib/core.py",
+            language="python",
             functions=[_make_func("do_stuff", "src/mylib/core.py")],
-            classes=[], imports=[],
+            classes=[],
+            imports=[],
         )
         pipeline = _setup_pipeline([init, mod])
         # The full key should exist
@@ -818,78 +809,98 @@ class TestPythonSourceRoots:
     def test_absolute_import_resolves_through_source_root(self):
         """'from mylib.core import do_stuff' resolves when file is at src/mylib/core.py."""
         init = _make_file(
-            "src/mylib/__init__.py", language="python",
-            functions=[], classes=[], imports=[],
+            "src/mylib/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[],
         )
         mod = _make_file(
-            "src/mylib/core.py", language="python",
+            "src/mylib/core.py",
+            language="python",
             functions=[_make_func("do_stuff", "src/mylib/core.py")],
-            classes=[], imports=[],
+            classes=[],
+            imports=[],
         )
         imp = _make_import("mylib.core", imported_names=["do_stuff"], is_relative=False)
         test_file = _make_file(
-            "tests/test_core.py", language="python", is_test_file=True,
+            "tests/test_core.py",
+            language="python",
+            is_test_file=True,
             functions=[_make_func("test_it", "tests/test_core.py", calls=["do_stuff"])],
-            classes=[], imports=[imp],
+            classes=[],
+            imports=[imp],
         )
         pipeline = _setup_pipeline_with_resolution([init, mod, test_file])
         rels = _extract_batch_merge_rels(pipeline.graph)
         import_rels = [(f, t, r) for f, t, r in rels if r == "IMPORTS"]
-        assert any(
-            f == "file::tests/test_core.py" and t == "file::src/mylib/core.py"
-            for f, t, _ in import_rels
-        ), f"Expected IMPORTS edge not found. Import rels: {import_rels}"
+        assert any(f == "file::tests/test_core.py" and t == "file::src/mylib/core.py" for f, t, _ in import_rels), (
+            f"Expected IMPORTS edge not found. Import rels: {import_rels}"
+        )
 
     def test_relative_import_dot_resolves(self):
         """'from . import fields' in __init__.py resolves to sibling module."""
         init_imp = _make_import(".", imported_names=["fields"], is_relative=True)
         init = _make_file(
-            "src/pkg/__init__.py", language="python",
-            functions=[], classes=[], imports=[init_imp],
+            "src/pkg/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[init_imp],
         )
         fields_mod = _make_file(
-            "src/pkg/fields.py", language="python",
+            "src/pkg/fields.py",
+            language="python",
             functions=[_make_func("parse", "src/pkg/fields.py")],
-            classes=[], imports=[],
+            classes=[],
+            imports=[],
         )
         pipeline = _setup_pipeline_with_resolution([init, fields_mod])
         rels = _extract_batch_merge_rels(pipeline.graph)
         import_rels = [(f, t, r) for f, t, r in rels if r == "IMPORTS"]
-        assert any(
-            f == "file::src/pkg/__init__.py" and t == "file::src/pkg/fields.py"
-            for f, t, _ in import_rels
-        ), f"Expected IMPORTS edge not found. Import rels: {import_rels}"
+        assert any(f == "file::src/pkg/__init__.py" and t == "file::src/pkg/fields.py" for f, t, _ in import_rels), (
+            f"Expected IMPORTS edge not found. Import rels: {import_rels}"
+        )
 
     def test_relative_import_dotname_resolves(self):
         """'from .schema import Schema' resolves to sibling module."""
         imp = _make_import(".schema", imported_names=["Schema"], is_relative=True)
         mod = _make_file(
-            "src/pkg/utils.py", language="python",
+            "src/pkg/utils.py",
+            language="python",
             functions=[_make_func("helper", "src/pkg/utils.py", calls=["Schema"])],
-            classes=[], imports=[imp],
+            classes=[],
+            imports=[imp],
         )
         init = _make_file(
-            "src/pkg/__init__.py", language="python",
-            functions=[], classes=[], imports=[],
+            "src/pkg/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[],
         )
         schema_mod = _make_file(
-            "src/pkg/schema.py", language="python",
-            functions=[], classes=[_make_class("Schema", "src/pkg/schema.py")],
+            "src/pkg/schema.py",
+            language="python",
+            functions=[],
+            classes=[_make_class("Schema", "src/pkg/schema.py")],
             imports=[],
         )
         pipeline = _setup_pipeline_with_resolution([init, mod, schema_mod])
         rels = _extract_batch_merge_rels(pipeline.graph)
         import_rels = [(f, t, r) for f, t, r in rels if r == "IMPORTS"]
-        assert any(
-            f == "file::src/pkg/utils.py" and t == "file::src/pkg/schema.py"
-            for f, t, _ in import_rels
-        ), f"Expected IMPORTS edge not found. Import rels: {import_rels}"
+        assert any(f == "file::src/pkg/utils.py" and t == "file::src/pkg/schema.py" for f, t, _ in import_rels), (
+            f"Expected IMPORTS edge not found. Import rels: {import_rels}"
+        )
 
     def test_init_package_registered_as_module(self):
         """__init__.py registers the package name as a module key."""
         init = _make_file(
-            "src/mylib/__init__.py", language="python",
-            functions=[], classes=[], imports=[],
+            "src/mylib/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[],
         )
         pipeline = _setup_pipeline([init])
         # Both full and stripped should be registered
@@ -900,25 +911,37 @@ class TestPythonSourceRoots:
         """'from pkg import Schema' resolves through __init__.py re-export."""
         schema_cls = _make_class("Schema", "src/pkg/schema.py")
         schema_mod = _make_file(
-            "src/pkg/schema.py", language="python",
-            functions=[], classes=[schema_cls], imports=[],
+            "src/pkg/schema.py",
+            language="python",
+            functions=[],
+            classes=[schema_cls],
+            imports=[],
         )
         # __init__.py re-exports Schema from schema.py
         init_imp = _make_import(
-            "pkg.schema", imported_names=["Schema"], is_relative=False,
+            "pkg.schema",
+            imported_names=["Schema"],
+            is_relative=False,
         )
         init = _make_file(
-            "src/pkg/__init__.py", language="python",
-            functions=[], classes=[], imports=[init_imp],
+            "src/pkg/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[init_imp],
         )
         # Consumer imports Schema from the package
         consumer_imp = _make_import(
-            "pkg", imported_names=["Schema"], is_relative=False,
+            "pkg",
+            imported_names=["Schema"],
+            is_relative=False,
         )
         consumer = _make_file(
-            "tests/test_it.py", language="python",
+            "tests/test_it.py",
+            language="python",
             functions=[_make_func("test", "tests/test_it.py", calls=["Schema"])],
-            classes=[], imports=[consumer_imp],
+            classes=[],
+            imports=[consumer_imp],
         )
         pipeline = _setup_pipeline_with_resolution([schema_mod, init, consumer])
         imported = pipeline._get_imported_entities(consumer)
@@ -930,32 +953,43 @@ class TestPythonSourceRoots:
         nested_cls = _make_class("Nested", "src/pkg/fields.py")
         string_cls = _make_class("String", "src/pkg/fields.py")
         fields_mod = _make_file(
-            "src/pkg/fields.py", language="python",
-            functions=[], classes=[nested_cls, string_cls], imports=[],
+            "src/pkg/fields.py",
+            language="python",
+            functions=[],
+            classes=[nested_cls, string_cls],
+            imports=[],
         )
         # __init__.py does 'from . import fields'
         init_imp = _make_import(".", imported_names=["fields"], is_relative=True)
         init = _make_file(
-            "src/pkg/__init__.py", language="python",
-            functions=[], classes=[], imports=[init_imp],
+            "src/pkg/__init__.py",
+            language="python",
+            functions=[],
+            classes=[],
+            imports=[init_imp],
         )
         # Consumer does 'from pkg import fields' then calls fields.Nested
         consumer_imp = _make_import(
-            "pkg", imported_names=["fields"], is_relative=False,
+            "pkg",
+            imported_names=["fields"],
+            is_relative=False,
         )
         caller = _make_func(
-            "test", "tests/test_it.py", calls=["fields.Nested", "fields.String"],
+            "test",
+            "tests/test_it.py",
+            calls=["fields.Nested", "fields.String"],
         )
         consumer = _make_file(
-            "tests/test_it.py", language="python",
-            functions=[caller], classes=[], imports=[consumer_imp],
+            "tests/test_it.py",
+            language="python",
+            functions=[caller],
+            classes=[],
+            imports=[consumer_imp],
         )
         pipeline = _setup_pipeline([fields_mod, init, consumer])
         # fields.Nested should resolve to Nested class
-        assert pipeline._find_callee("fields.Nested", caller, consumer) == \
-            "class::src/pkg/fields.py::Nested"
-        assert pipeline._find_callee("fields.String", caller, consumer) == \
-            "class::src/pkg/fields.py::String"
+        assert pipeline._find_callee("fields.Nested", caller, consumer) == "class::src/pkg/fields.py::Nested"
+        assert pipeline._find_callee("fields.String", caller, consumer) == "class::src/pkg/fields.py::String"
 
     def test_dotted_call_alias_match_with_parens(self):
         """Operator precedence bug: aliased import dotted call should match."""
@@ -963,7 +997,8 @@ class TestPythonSourceRoots:
         db_file = _make_file("src/db.ts", functions=[helper])
 
         imp = _make_import(
-            "./db", imported_names=["db"],
+            "./db",
+            imported_names=["db"],
             aliases={"db": "database"},
         )
         caller = _make_func("handler", "src/api.ts", calls=["database.query"])
@@ -980,26 +1015,31 @@ class TestInheritanceAwareResolution:
     def test_self_method_resolves_to_base_class(self):
         """self.dump() in MySchema (extends Schema) resolves to Schema.dump."""
         dump = _make_func(
-            "dump", "src/schema.py",
+            "dump",
+            "src/schema.py",
             qualified_name="src/schema.py::Schema.dump",
         )
         base_cls = _make_class(
-            "Schema", "src/schema.py", methods=[dump],
+            "Schema",
+            "src/schema.py",
+            methods=[dump],
         )
 
         # MySchema extends Schema but doesn't override dump
         caller = _make_func(
-            "process", "src/schema.py",
+            "process",
+            "src/schema.py",
             qualified_name="src/schema.py::MySchema.process",
             calls=["MySchema.dump"],  # self.dump() already resolved to MySchema.dump by parser
         )
         child_cls = _make_class(
-            "MySchema", "src/schema.py",
-            methods=[caller], bases=["Schema"],
+            "MySchema",
+            "src/schema.py",
+            methods=[caller],
+            bases=["Schema"],
         )
 
-        pf = _make_file("src/schema.py", language="python",
-                         classes=[base_cls, child_cls])
+        pf = _make_file("src/schema.py", language="python", classes=[base_cls, child_cls])
 
         pipeline = _setup_pipeline_with_resolution([pf])
         # MySchema.dump should resolve to Schema.dump via inheritance
@@ -1009,29 +1049,35 @@ class TestInheritanceAwareResolution:
     def test_self_method_prefers_own_class(self):
         """If MySchema defines dump(), don't walk to base class."""
         base_dump = _make_func(
-            "dump", "src/schema.py",
+            "dump",
+            "src/schema.py",
             qualified_name="src/schema.py::Schema.dump",
         )
         base_cls = _make_class(
-            "Schema", "src/schema.py", methods=[base_dump],
+            "Schema",
+            "src/schema.py",
+            methods=[base_dump],
         )
 
         child_dump = _make_func(
-            "dump", "src/schema.py",
+            "dump",
+            "src/schema.py",
             qualified_name="src/schema.py::MySchema.dump",
         )
         caller = _make_func(
-            "process", "src/schema.py",
+            "process",
+            "src/schema.py",
             qualified_name="src/schema.py::MySchema.process",
             calls=["MySchema.dump"],
         )
         child_cls = _make_class(
-            "MySchema", "src/schema.py",
-            methods=[child_dump, caller], bases=["Schema"],
+            "MySchema",
+            "src/schema.py",
+            methods=[child_dump, caller],
+            bases=["Schema"],
         )
 
-        pf = _make_file("src/schema.py", language="python",
-                         classes=[base_cls, child_cls])
+        pf = _make_file("src/schema.py", language="python", classes=[base_cls, child_cls])
 
         pipeline = _setup_pipeline_with_resolution([pf])
         result = pipeline._find_callee("MySchema.dump", caller, pf)
@@ -1041,7 +1087,8 @@ class TestInheritanceAwareResolution:
     def test_multi_level_inheritance(self):
         """Grandparent method resolves through multiple levels."""
         base_method = _make_func(
-            "validate", "src/base.py",
+            "validate",
+            "src/base.py",
             qualified_name="src/base.py::Base.validate",
         )
         base_cls = _make_class("Base", "src/base.py", methods=[base_method])
@@ -1051,13 +1098,16 @@ class TestInheritanceAwareResolution:
         mid_file = _make_file("src/mid.py", language="python", classes=[mid_cls])
 
         caller = _make_func(
-            "run", "src/child.py",
+            "run",
+            "src/child.py",
             qualified_name="src/child.py::Child.run",
             calls=["Child.validate"],
         )
         child_cls = _make_class(
-            "Child", "src/child.py",
-            methods=[caller], bases=["Middle"],
+            "Child",
+            "src/child.py",
+            methods=[caller],
+            bases=["Middle"],
         )
         child_file = _make_file("src/child.py", language="python", classes=[child_cls])
 
@@ -1068,7 +1118,8 @@ class TestInheritanceAwareResolution:
     def test_self_call_walks_inheritance(self):
         """self.method -> ClassName.method -> walks to base when not found on self."""
         base_method = _make_func(
-            "serialize", "src/base.py",
+            "serialize",
+            "src/base.py",
             qualified_name="src/base.py::BaseSerializer.serialize",
         )
         base_cls = _make_class("BaseSerializer", "src/base.py", methods=[base_method])
@@ -1077,13 +1128,16 @@ class TestInheritanceAwareResolution:
         # In the parser, self.serialize inside UserSerializer becomes
         # UserSerializer.serialize after self. resolution
         caller = _make_func(
-            "to_json", "src/user.py",
+            "to_json",
+            "src/user.py",
             qualified_name="src/user.py::UserSerializer.to_json",
             calls=["UserSerializer.serialize"],
         )
         child_cls = _make_class(
-            "UserSerializer", "src/user.py",
-            methods=[caller], bases=["BaseSerializer"],
+            "UserSerializer",
+            "src/user.py",
+            methods=[caller],
+            bases=["BaseSerializer"],
         )
         child_file = _make_file("src/user.py", language="python", classes=[child_cls])
 
@@ -1095,9 +1149,7 @@ class TestInheritanceAwareResolution:
 class TestFixtureEdges:
     """USES_FIXTURE edges should link test functions to fixtures via parameter names."""
 
-    def _run_fixture_resolution(
-        self, parsed_files: list[ParsedFile]
-    ) -> tuple[IngestionPipeline, IngestionResult]:
+    def _run_fixture_resolution(self, parsed_files: list[ParsedFile]) -> tuple[IngestionPipeline, IngestionResult]:
         """Set up pipeline, run full resolution."""
         pipeline = _setup_pipeline(parsed_files)
         result = IngestionResult(repo_id="test", repo_path="/tmp")
@@ -1107,20 +1159,28 @@ class TestFixtureEdges:
     def test_test_function_links_to_fixture(self):
         """A test function with a 'client' param links to the 'client' fixture."""
         fixture_fn = _make_func(
-            "client", "tests/conftest.py", is_fixture=True,
+            "client",
+            "tests/conftest.py",
+            is_fixture=True,
         )
         conftest = _make_file(
-            "tests/conftest.py", language="python",
-            functions=[fixture_fn], is_test_file=True,
+            "tests/conftest.py",
+            language="python",
+            functions=[fixture_fn],
+            is_test_file=True,
         )
 
         test_fn = _make_func(
-            "test_get", "tests/test_api.py",
-            is_test=True, parameters=["client"],
+            "test_get",
+            "tests/test_api.py",
+            is_test=True,
+            parameters=["client"],
         )
         test_file = _make_file(
-            "tests/test_api.py", language="python",
-            functions=[test_fn], is_test_file=True,
+            "tests/test_api.py",
+            language="python",
+            functions=[test_fn],
+            is_test_file=True,
         )
 
         pipeline, result = self._run_fixture_resolution([conftest, test_file])
@@ -1131,12 +1191,16 @@ class TestFixtureEdges:
     def test_non_fixture_param_ignored(self):
         """Params that don't match fixture names create no edges."""
         test_fn = _make_func(
-            "test_basic", "tests/test_api.py",
-            is_test=True, parameters=["x", "y"],
+            "test_basic",
+            "tests/test_api.py",
+            is_test=True,
+            parameters=["x", "y"],
         )
         test_file = _make_file(
-            "tests/test_api.py", language="python",
-            functions=[test_fn], is_test_file=True,
+            "tests/test_api.py",
+            language="python",
+            functions=[test_fn],
+            is_test_file=True,
         )
 
         pipeline, result = self._run_fixture_resolution([test_file])
@@ -1149,28 +1213,40 @@ class TestFixtureEdges:
     def test_class_method_links_to_fixture(self):
         """A test method inside a class with a fixture param creates an edge."""
         fixture_fn = _make_func(
-            "db", "tests/conftest.py", is_fixture=True,
+            "db",
+            "tests/conftest.py",
+            is_fixture=True,
         )
         conftest = _make_file(
-            "tests/conftest.py", language="python",
-            functions=[fixture_fn], is_test_file=True,
+            "tests/conftest.py",
+            language="python",
+            functions=[fixture_fn],
+            is_test_file=True,
         )
 
         test_method = _make_func(
-            "test_insert", "tests/test_db.py",
+            "test_insert",
+            "tests/test_db.py",
             qualified_name="tests/test_db.py::TestDatabase.test_insert",
-            is_test=True, parameters=["db"],
+            is_test=True,
+            parameters=["db"],
         )
         cls = _make_class("TestDatabase", "tests/test_db.py", methods=[test_method])
         test_file = _make_file(
-            "tests/test_db.py", language="python",
-            classes=[cls], is_test_file=True,
+            "tests/test_db.py",
+            language="python",
+            classes=[cls],
+            is_test_file=True,
         )
 
         pipeline, result = self._run_fixture_resolution([conftest, test_file])
 
         rels = _extract_batch_merge_rels(pipeline.graph)
-        assert ("func::tests/test_db.py::TestDatabase.test_insert", "func::tests/conftest.py::db", "USES_FIXTURE") in rels
+        assert (
+            "func::tests/test_db.py::TestDatabase.test_insert",
+            "func::tests/conftest.py::db",
+            "USES_FIXTURE",
+        ) in rels
 
 
 class TestBarrelFileReexportResolution:
@@ -1189,7 +1265,9 @@ class TestBarrelFileReexportResolution:
         consumer_imp = _make_import("./components", imported_names=["Button"])
         caller = _make_func("App", "src/App.ts", calls=["Button"])
         consumer_file = _make_file(
-            "src/App.ts", functions=[caller], imports=[consumer_imp],
+            "src/App.ts",
+            functions=[caller],
+            imports=[consumer_imp],
         )
 
         pipeline = _setup_pipeline([button_file, index_file, consumer_file])
@@ -1203,7 +1281,9 @@ class TestBarrelFileReexportResolution:
 
         # index.ts wildcard re-exports from ./spacing
         reexport_imp = _make_import(
-            "./spacing", imported_names=["*"], is_wildcard=True,
+            "./spacing",
+            imported_names=["*"],
+            is_wildcard=True,
         )
         index_file = _make_file("src/theme/index.ts", imports=[reexport_imp])
 
@@ -1211,7 +1291,9 @@ class TestBarrelFileReexportResolution:
         consumer_imp = _make_import("./theme", imported_names=["sm"])
         caller = _make_func("Layout", "src/Layout.ts", calls=["sm"])
         consumer_file = _make_file(
-            "src/Layout.ts", functions=[caller], imports=[consumer_imp],
+            "src/Layout.ts",
+            functions=[caller],
+            imports=[consumer_imp],
         )
 
         pipeline = _setup_pipeline([spacing_file, index_file, consumer_file])
@@ -1226,7 +1308,8 @@ class TestBarrelFileReexportResolution:
 
         # index.ts re-exports default as ModeCard
         reexport_imp = _make_import(
-            "./ModeCard", imported_names=["default"],
+            "./ModeCard",
+            imported_names=["default"],
             aliases={"default": "ModeCard"},
         )
         index_file = _make_file("src/components/index.ts", imports=[reexport_imp])
@@ -1235,7 +1318,9 @@ class TestBarrelFileReexportResolution:
         consumer_imp = _make_import("./components", imported_names=["ModeCard"])
         caller = _make_func("App", "src/App.ts", calls=["ModeCard"])
         consumer_file = _make_file(
-            "src/App.ts", functions=[caller], imports=[consumer_imp],
+            "src/App.ts",
+            functions=[caller],
+            imports=[consumer_imp],
         )
 
         pipeline = _setup_pipeline([mode_file, index_file, consumer_file])
@@ -1253,7 +1338,9 @@ class TestBarrelFileReexportResolution:
         consumer_imp = _make_import("../contexts", imported_names=["useAuth"])
         caller = _make_func("Dashboard", "src/pages/Dashboard.tsx", calls=["useAuth"])
         consumer_file = _make_file(
-            "src/pages/Dashboard.tsx", functions=[caller], imports=[consumer_imp],
+            "src/pages/Dashboard.tsx",
+            functions=[caller],
+            imports=[consumer_imp],
         )
 
         pipeline = _setup_pipeline([auth_file, index_file, consumer_file])

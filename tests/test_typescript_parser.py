@@ -1,6 +1,6 @@
 """Tests for the TypeScript/JavaScript parser."""
 
-from gristle.parsers.typescript import TypeScriptParser, JavaScriptParser
+from gristle.parsers.typescript import JavaScriptParser, TypeScriptParser
 
 
 class TestImportExtraction:
@@ -45,9 +45,7 @@ class TestImportExtraction:
     def test_extracts_multiple_imports(self):
         parser = TypeScriptParser()
         code = (
-            "import React from 'react';\n"
-            "import { useState, useEffect } from 'react';\n"
-            "import { api } from './api';\n"
+            "import React from 'react';\nimport { useState, useEffect } from 'react';\nimport { api } from './api';\n"
         )
         result = parser.parse_file("test.ts", code)
         assert len(result.imports) == 3
@@ -195,12 +193,7 @@ class TestFunctionExtraction:
 
     def test_does_not_include_methods_as_functions(self):
         parser = TypeScriptParser()
-        code = (
-            "function standalone() {}\n"
-            "class Foo {\n"
-            "  method() {}\n"
-            "}\n"
-        )
+        code = "function standalone() {}\nclass Foo {\n  method() {}\n}\n"
         result = parser.parse_file("test.ts", code)
         func_names = [f.name for f in result.functions]
         assert "standalone" in func_names
@@ -208,10 +201,7 @@ class TestFunctionExtraction:
 
     def test_extracts_jsdoc_on_function(self):
         parser = TypeScriptParser()
-        code = (
-            "/** Adds two numbers. */\n"
-            "function add(a: number, b: number) { return a + b; }\n"
-        )
+        code = "/** Adds two numbers. */\nfunction add(a: number, b: number) { return a + b; }\n"
         result = parser.parse_file("test.ts", code)
         assert result.functions[0].docstring is not None
         assert "two numbers" in result.functions[0].docstring
@@ -247,11 +237,7 @@ class TestCallExtraction:
 
     def test_extracts_jsx_component_calls(self):
         parser = TypeScriptParser()
-        code = (
-            "function App() {\n"
-            "  return <div><Header /><Footer /></div>;\n"
-            "}\n"
-        )
+        code = "function App() {\n  return <div><Header /><Footer /></div>;\n}\n"
         result = parser.parse_file("test.tsx", code)
         assert "Header" in result.functions[0].calls
         assert "Footer" in result.functions[0].calls
@@ -274,21 +260,13 @@ class TestCallExtraction:
 class TestComponentDetection:
     def test_detects_function_component(self):
         parser = TypeScriptParser()
-        code = (
-            "function Button({ label }: Props) {\n"
-            "  return <button>{label}</button>;\n"
-            "}\n"
-        )
+        code = "function Button({ label }: Props) {\n  return <button>{label}</button>;\n}\n"
         result = parser.parse_file("test.tsx", code)
         assert result.functions[0].is_component is True
 
     def test_detects_arrow_component(self):
         parser = TypeScriptParser()
-        code = (
-            "const Card = ({ title }: Props) => {\n"
-            "  return <div className='card'>{title}</div>;\n"
-            "};\n"
-        )
+        code = "const Card = ({ title }: Props) => {\n  return <div className='card'>{title}</div>;\n};\n"
         result = parser.parse_file("test.tsx", code)
         assert result.functions[0].is_component is True
 
@@ -342,12 +320,7 @@ class TestTestDetection:
     def test_test_function_names_detected(self):
         parser = TypeScriptParser()
         # describe/it/test/beforeAll etc. are test functions by name
-        code = (
-            "function describe() {}\n"
-            "function it() {}\n"
-            "function test() {}\n"
-            "function beforeEach() {}\n"
-        )
+        code = "function describe() {}\nfunction it() {}\nfunction test() {}\nfunction beforeEach() {}\n"
         # Even in a non-test file, these function names are recognized
         result = parser.parse_file("src/helper.ts", code)
         for func in result.functions:
@@ -359,7 +332,6 @@ class TestEntryPointDetection:
         parser = TypeScriptParser()
         code = "export default function HomePage() {\n  return <div>Home</div>;\n}\n"
         result = parser.parse_file("app/page.tsx", code)
-        exported_funcs = [f for f in result.functions if f.is_exported]
         # Should detect the page component as an entry point
         assert any(f.is_entry_point for f in result.functions)
 
@@ -414,13 +386,7 @@ class TestTodoExtraction:
 
     def test_extracts_multiple_todos(self):
         parser = TypeScriptParser()
-        code = (
-            "// TODO: first thing\n"
-            "function foo() {\n"
-            "  // FIXME: second thing\n"
-            "  // TODO: third thing\n"
-            "}\n"
-        )
+        code = "// TODO: first thing\nfunction foo() {\n  // FIXME: second thing\n  // TODO: third thing\n}\n"
         result = parser.parse_file("test.ts", code)
         assert len(result.todos) == 3
 
@@ -507,10 +473,7 @@ class TestRouteExtraction:
 
     def test_hono_routes(self):
         parser = TypeScriptParser()
-        code = (
-            "const app = new Hono();\n"
-            "app.get('/health', (c) => c.json({ ok: true }));\n"
-        )
+        code = "const app = new Hono();\napp.get('/health', (c) => c.json({ ok: true }));\n"
         result = parser.parse_file("server.ts", code)
         assert len(result.routes) == 1
         assert result.routes[0].method == "GET"
@@ -556,15 +519,7 @@ class TestComplexity:
 
     def test_branching_increases_complexity(self):
         parser = TypeScriptParser()
-        code = (
-            "function foo(x: number) {\n"
-            "  if (x > 0) {\n"
-            "    return x;\n"
-            "  } else {\n"
-            "    return -x;\n"
-            "  }\n"
-            "}\n"
-        )
+        code = "function foo(x: number) {\n  if (x > 0) {\n    return x;\n  } else {\n    return -x;\n  }\n}\n"
         result = parser.parse_file("test.ts", code)
         assert result.functions[0].complexity >= 2
 
@@ -676,12 +631,7 @@ class TestTestCaseExtraction:
 
     def test_extracts_test_blocks(self):
         parser = TypeScriptParser()
-        code = (
-            "import { test } from 'vitest';\n"
-            "test('returns true', () => {\n"
-            "  expect(true).toBe(true);\n"
-            "});\n"
-        )
+        code = "import { test } from 'vitest';\ntest('returns true', () => {\n  expect(true).toBe(true);\n});\n"
         result = parser.parse_file("simple.test.ts", code)
         assert len(result.test_cases) == 1
         assert result.test_cases[0].block_type == "test"
@@ -690,13 +640,7 @@ class TestTestCaseExtraction:
 
     def test_nested_describe_blocks(self):
         parser = TypeScriptParser()
-        code = (
-            "describe('Outer', () => {\n"
-            "  describe('Inner', () => {\n"
-            "    it('works', () => {});\n"
-            "  });\n"
-            "});\n"
-        )
+        code = "describe('Outer', () => {\n  describe('Inner', () => {\n    it('works', () => {});\n  });\n});\n"
         result = parser.parse_file("nested.test.ts", code)
         names = {tc.name for tc in result.test_cases}
         assert "Outer" in names
@@ -731,13 +675,7 @@ class TestTestCaseExtraction:
 
     def test_tracks_line_numbers(self):
         parser = TypeScriptParser()
-        code = (
-            "describe('Suite', () => {\n"
-            "  it('case 1', () => {\n"
-            "    expect(1).toBe(1);\n"
-            "  });\n"
-            "});\n"
-        )
+        code = "describe('Suite', () => {\n  it('case 1', () => {\n    expect(1).toBe(1);\n  });\n});\n"
         result = parser.parse_file("suite.test.ts", code)
         it_case = [tc for tc in result.test_cases if tc.block_type == "it"][0]
         assert it_case.start_line == 2
@@ -896,9 +834,9 @@ class TestSupabaseRouteExtraction:
         parser = TypeScriptParser()
         code = (
             'import { serve } from "https://deno.land/std/http/server.ts";\n'
-            'serve(async (req) => {\n'
+            "serve(async (req) => {\n"
             '  return new Response("ok");\n'
-            '});\n'
+            "});\n"
         )
         result = parser.parse_file("supabase/functions/analyze-gaps/index.ts", code)
         assert len(result.routes) == 1
@@ -907,11 +845,7 @@ class TestSupabaseRouteExtraction:
 
     def test_deno_serve_creates_route(self):
         parser = TypeScriptParser()
-        code = (
-            'Deno.serve(async (req) => {\n'
-            '  return handleRequest(req);\n'
-            '});\n'
-        )
+        code = "Deno.serve(async (req) => {\n  return handleRequest(req);\n});\n"
         result = parser.parse_file("supabase/functions/my-func/index.ts", code)
         assert len(result.routes) == 1
         assert result.routes[0].path == "/my-func"
@@ -933,9 +867,9 @@ class TestSupabaseRouteExtraction:
         parser = TypeScriptParser()
         code = (
             'function processRequest(req: Request) { return new Response("ok"); }\n'
-            'serve(async (req) => {\n'
-            '  return processRequest(req);\n'
-            '});\n'
+            "serve(async (req) => {\n"
+            "  return processRequest(req);\n"
+            "});\n"
         )
         result = parser.parse_file("supabase/functions/process-data/index.ts", code)
         assert len(result.routes) == 1
@@ -976,11 +910,7 @@ class TestReexportExtraction:
 
     def test_multiple_reexports_in_barrel(self):
         parser = TypeScriptParser()
-        code = (
-            "export { Button } from './Button';\n"
-            "export { Input } from './Input';\n"
-            "export * from './spacing';\n"
-        )
+        code = "export { Button } from './Button';\nexport { Input } from './Input';\nexport * from './spacing';\n"
         result = parser.parse_file("components/index.ts", code)
         reexport_paths = {i.module_path for i in result.imports}
         assert "./Button" in reexport_paths
@@ -1007,10 +937,7 @@ class TestReexportExtraction:
 
     def test_reexports_coexist_with_regular_imports(self):
         parser = TypeScriptParser()
-        code = (
-            "import { helper } from './helper';\n"
-            "export { Button } from './Button';\n"
-        )
+        code = "import { helper } from './helper';\nexport { Button } from './Button';\n"
         result = parser.parse_file("components/index.ts", code)
         assert len(result.imports) == 2
         paths = {i.module_path for i in result.imports}
@@ -1070,11 +997,7 @@ class TestDynamicImportExtraction:
 
     def test_multiple_dynamic_imports(self):
         parser = TypeScriptParser()
-        code = (
-            "const a = import('./a');\n"
-            "const b = require('./b');\n"
-            "const c = import('./c');\n"
-        )
+        code = "const a = import('./a');\nconst b = require('./b');\nconst c = import('./c');\n"
         result = parser.parse_file("test.ts", code)
         dynamic = [i for i in result.imports if i.is_wildcard]
         assert len(dynamic) == 3
@@ -1083,12 +1006,7 @@ class TestDynamicImportExtraction:
 
     def test_nested_in_function(self):
         parser = TypeScriptParser()
-        code = (
-            "async function loadModule() {\n"
-            "  const mod = await import('./lazy');\n"
-            "  return mod;\n"
-            "}\n"
-        )
+        code = "async function loadModule() {\n  const mod = await import('./lazy');\n  return mod;\n}\n"
         result = parser.parse_file("test.ts", code)
         dynamic = [i for i in result.imports if i.is_wildcard]
         assert len(dynamic) == 1

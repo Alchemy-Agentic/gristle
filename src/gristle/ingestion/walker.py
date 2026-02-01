@@ -77,11 +77,13 @@ def walk_repo(
             if _is_binary(abs_path):
                 continue
 
-            results.append(WalkedFile(
-                relative_path=rel_path,
-                absolute_path=abs_path,
-                extension=ext,
-            ))
+            results.append(
+                WalkedFile(
+                    relative_path=rel_path,
+                    absolute_path=abs_path,
+                    extension=ext,
+                )
+            )
 
     return results
 

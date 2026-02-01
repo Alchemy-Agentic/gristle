@@ -17,24 +17,26 @@ class Settings(BaseSettings):
     repo_storage_path: Path = Path("./repos")
 
     # Directories to always skip during ingestion
-    excluded_dirs: frozenset[str] = frozenset({
-        "node_modules",
-        ".git",
-        "__pycache__",
-        ".pycache",
-        "dist",
-        "build",
-        ".venv",
-        "venv",
-        ".env",
-        "env",
-        ".tox",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        "egg-info",
-        ".eggs",
-    })
+    excluded_dirs: frozenset[str] = frozenset(
+        {
+            "node_modules",
+            ".git",
+            "__pycache__",
+            ".pycache",
+            "dist",
+            "build",
+            ".venv",
+            "venv",
+            ".env",
+            "env",
+            ".tox",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            "egg-info",
+            ".eggs",
+        }
+    )
 
     # File watcher debounce in seconds
     watcher_debounce_seconds: float = 2.0

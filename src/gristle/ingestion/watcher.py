@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from watchfiles import awatch, Change
+from watchfiles import Change, awatch
 
 from gristle.config import settings
-from gristle.ingestion.pipeline import IngestionPipeline
-from gristle.parsers.registry import ParserRegistry
+
+if TYPE_CHECKING:
+    from gristle.ingestion.pipeline import IngestionPipeline
+    from gristle.parsers.registry import ParserRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ async def watch_repo(
 
         for rel_path, change_type in file_changes.items():
             try:
-                result = pipeline.update_file(repo_path, rel_path)
+                pipeline.update_file(repo_path, rel_path)
                 if change_type == Change.deleted:
                     deleted += 1
                 else:
@@ -80,7 +83,8 @@ async def watch_repo(
 
         logger.info(
             "Batch complete: %d updated, %d deleted",
-            updated, deleted,
+            updated,
+            deleted,
         )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 import tree_sitter_python as tspython
-from tree_sitter import Language, Parser, Node
+from tree_sitter import Language, Node, Parser
 
 from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedRoute, ParsedTestCase
 from gristle.parsers.base import LanguageParser
@@ -171,9 +171,7 @@ class PythonParser(LanguageParser):
             if not found_import_keyword:
                 continue
 
-            if child.type == "dotted_name":
-                names.append(self._text(child, src))
-            elif child.type == "identifier":
+            if child.type == "dotted_name" or child.type == "identifier":
                 names.append(self._text(child, src))
             elif child.type == "wildcard_import":
                 is_wildcard = True
@@ -199,9 +197,7 @@ class PythonParser(LanguageParser):
     # Classes
     # ------------------------------------------------------------------
 
-    def _extract_classes(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedClass]:
+    def _extract_classes(self, root: Node, src: bytes, file_path: str) -> list[ParsedClass]:
         classes: list[ParsedClass] = []
         for node in root.children:
             if node.type == "class_definition":
@@ -209,9 +205,7 @@ class PythonParser(LanguageParser):
             elif node.type == "decorated_definition":
                 inner = self._get_inner_definition(node)
                 if inner and inner.type == "class_definition":
-                    classes.append(
-                        self._parse_class(inner, src, file_path, decorator_node=node)
-                    )
+                    classes.append(self._parse_class(inner, src, file_path, decorator_node=node))
         return classes
 
     def _parse_class(
@@ -223,9 +217,7 @@ class PythonParser(LanguageParser):
     ) -> ParsedClass:
         name = self._text(node.child_by_field_name("name"), src)
         bases = self._extract_bases(node, src)
-        decorators = (
-            self._extract_decorators(decorator_node, src) if decorator_node else []
-        )
+        decorators = self._extract_decorators(decorator_node, src) if decorator_node else []
         body = node.child_by_field_name("body")
         docstring = self._extract_docstring(body, src) if body else None
         methods = self._extract_methods(body, src, file_path, name) if body else []
@@ -263,9 +255,7 @@ class PythonParser(LanguageParser):
     # Functions / Methods
     # ------------------------------------------------------------------
 
-    def _extract_module_functions(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedFunction]:
+    def _extract_module_functions(self, root: Node, src: bytes, file_path: str) -> list[ParsedFunction]:
         functions: list[ParsedFunction] = []
         for node in root.children:
             if node.type == "function_definition":
@@ -273,14 +263,10 @@ class PythonParser(LanguageParser):
             elif node.type == "decorated_definition":
                 inner = self._get_inner_definition(node)
                 if inner and inner.type == "function_definition":
-                    functions.append(
-                        self._parse_function(inner, src, file_path, decorator_node=node)
-                    )
+                    functions.append(self._parse_function(inner, src, file_path, decorator_node=node))
         return functions
 
-    def _extract_methods(
-        self, body: Node, src: bytes, file_path: str, class_name: str
-    ) -> list[ParsedFunction]:
+    def _extract_methods(self, body: Node, src: bytes, file_path: str, class_name: str) -> list[ParsedFunction]:
         methods: list[ParsedFunction] = []
         if body is None:
             return methods
@@ -291,9 +277,7 @@ class PythonParser(LanguageParser):
             elif node.type == "decorated_definition":
                 inner = self._get_inner_definition(node)
                 if inner and inner.type == "function_definition":
-                    m = self._parse_function(
-                        inner, src, file_path, class_name=class_name, decorator_node=node
-                    )
+                    m = self._parse_function(inner, src, file_path, class_name=class_name, decorator_node=node)
                     methods.append(m)
         return methods
 
@@ -301,9 +285,7 @@ class PythonParser(LanguageParser):
     # Nested classes (classes inside functions, e.g. pytest helpers)
     # ------------------------------------------------------------------
 
-    def _extract_nested_classes(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedClass]:
+    def _extract_nested_classes(self, root: Node, src: bytes, file_path: str) -> list[ParsedClass]:
         """Find class definitions nested inside functions (common in pytest)."""
         nested: list[ParsedClass] = []
         for node in root.children:
@@ -320,9 +302,7 @@ class PythonParser(LanguageParser):
                     self._walk_nested_classes(body, src, file_path, nested)
         return nested
 
-    def _walk_nested_classes(
-        self, node: Node, src: bytes, file_path: str, out: list[ParsedClass]
-    ) -> None:
+    def _walk_nested_classes(self, node: Node, src: bytes, file_path: str, out: list[ParsedClass]) -> None:
         """Recursively walk into function bodies to find nested class definitions."""
         for child in node.children:
             class_node = None
@@ -361,9 +341,7 @@ class PythonParser(LanguageParser):
                         self._check_parametrize(child, src, result)
         return result
 
-    def _check_parametrize(
-        self, node: Node, src: bytes, result: dict[int, int]
-    ) -> None:
+    def _check_parametrize(self, node: Node, src: bytes, result: dict[int, int]) -> None:
         """Check if a node is a decorated function with @pytest.mark.parametrize."""
         if node.type != "decorated_definition":
             return
@@ -395,38 +373,44 @@ class PythonParser(LanguageParser):
             is_test_class = cls.name.startswith("Test") and not cls.name.endswith("Mixin")
             if not is_test_class:
                 continue
-            cases.append(ParsedTestCase(
-                name=cls.name,
-                block_type="class",
-                file_path=cls.file_path,
-                start_line=cls.start_line,
-                end_line=cls.end_line,
-            ))
+            cases.append(
+                ParsedTestCase(
+                    name=cls.name,
+                    block_type="class",
+                    file_path=cls.file_path,
+                    start_line=cls.start_line,
+                    end_line=cls.end_line,
+                )
+            )
             # Methods inside test classes — only test_* methods
             for method in cls.methods:
                 if _TEST_FUNC_RE.match(method.name):
-                    cases.append(ParsedTestCase(
-                        name=method.name,
-                        block_type="test",
-                        file_path=method.file_path,
-                        start_line=method.start_line,
-                        end_line=method.end_line,
-                        parent_describe=cls.name,
-                        parametrize_count=pmap.get(method.start_line, 0),
-                    ))
+                    cases.append(
+                        ParsedTestCase(
+                            name=method.name,
+                            block_type="test",
+                            file_path=method.file_path,
+                            start_line=method.start_line,
+                            end_line=method.end_line,
+                            parent_describe=cls.name,
+                            parametrize_count=pmap.get(method.start_line, 0),
+                        )
+                    )
 
         # Module-level test_* functions (use name pattern, not is_test flag
         # which also marks helpers in test files)
         for func in functions:
             if _TEST_FUNC_RE.match(func.name):
-                cases.append(ParsedTestCase(
-                    name=func.name,
-                    block_type="test",
-                    file_path=func.file_path,
-                    start_line=func.start_line,
-                    end_line=func.end_line,
-                    parametrize_count=pmap.get(func.start_line, 0),
-                ))
+                cases.append(
+                    ParsedTestCase(
+                        name=func.name,
+                        block_type="test",
+                        file_path=func.file_path,
+                        start_line=func.start_line,
+                        end_line=func.end_line,
+                        parametrize_count=pmap.get(func.start_line, 0),
+                    )
+                )
 
         return cases
 
@@ -445,9 +429,7 @@ class PythonParser(LanguageParser):
         return_node = node.child_by_field_name("return_type")
         body = node.child_by_field_name("body")
 
-        decorators = (
-            self._extract_decorators(decorator_node, src) if decorator_node else []
-        )
+        decorators = self._extract_decorators(decorator_node, src) if decorator_node else []
 
         params_text = self._text(params_node, src) if params_node else "()"
         return_text = self._text(return_node, src) if return_node else None
@@ -460,7 +442,11 @@ class PythonParser(LanguageParser):
         if node.parent and node.parent.type == "decorated_definition":
             # Check the decorated_definition text
             parent_text = self._text(node.parent, src)
-            is_async = "async def" in parent_text.split("\n")[len(decorators)][:50] if decorators else "async def" in parent_text[:50]
+            is_async = (
+                "async def" in parent_text.split("\n")[len(decorators)][:50]
+                if decorators
+                else "async def" in parent_text[:50]
+            )
         else:
             is_async = full_text.lstrip().startswith("async ")
 
@@ -476,14 +462,10 @@ class PythonParser(LanguageParser):
 
         # Resolve self.method -> ClassName.method
         if class_name:
-            calls = [
-                f"{class_name}.{c[5:]}" if c.startswith("self.") else c for c in calls
-            ]
+            calls = [f"{class_name}.{c[5:]}" if c.startswith("self.") else c for c in calls]
 
         is_fixture = any(
-            d in ("fixture", "pytest.fixture")
-            or d.startswith("fixture(")
-            or d.startswith("pytest.fixture(")
+            d in ("fixture", "pytest.fixture") or d.startswith("fixture(") or d.startswith("pytest.fixture(")
             for d in decorators
         )
 
@@ -562,10 +544,7 @@ class PythonParser(LanguageParser):
                 # For calls like @app.get("/users") this captures 'app.get("/users")'
                 # which preserves the route path argument.
                 for dchild in child.children:
-                    if dchild.type in ("identifier", "dotted_name", "attribute"):
-                        decorators.append(self._text(dchild, src))
-                        break
-                    elif dchild.type == "call":
+                    if dchild.type in ("identifier", "dotted_name", "attribute") or dchild.type == "call":
                         decorators.append(self._text(dchild, src))
                         break
         return decorators
@@ -645,15 +624,10 @@ class PythonParser(LanguageParser):
         if func.name == "main":
             return True
         # Click/Typer CLI commands
-        for dec in func.decorators:
-            if "command" in dec or "cli" in dec:
-                return True
-        return False
+        return any("command" in dec or "cli" in dec for dec in func.decorators)
 
     @staticmethod
-    def _route_from_decorators(
-        func: ParsedFunction, file_path: str
-    ) -> ParsedRoute | None:
+    def _route_from_decorators(func: ParsedFunction, file_path: str) -> ParsedRoute | None:
         """Extract route info from FastAPI/Flask-style decorators."""
         for dec in func.decorators:
             m = _ROUTE_DECORATOR_RE.match(dec)
@@ -752,7 +726,7 @@ class PythonParser(LanguageParser):
             if child.type != "decorator":
                 continue
             # Check if this decorator is parametrize
-            text = src[child.start_byte: child.end_byte].decode(errors="replace")
+            text = src[child.start_byte : child.end_byte].decode(errors="replace")
             if "parametrize" not in text:
                 continue
             # Find the call node
@@ -777,13 +751,9 @@ class PythonParser(LanguageParser):
                 if arg_idx == 2:
                     # This should be a list or tuple of test cases
                     if arg.type == "list":
-                        count = sum(
-                            1 for c in arg.children if c.type not in (",", "[", "]")
-                        )
+                        count = sum(1 for c in arg.children if c.type not in (",", "[", "]"))
                     elif arg.type == "tuple":
-                        count = sum(
-                            1 for c in arg.children if c.type not in (",", "(", ")")
-                        )
+                        count = sum(1 for c in arg.children if c.type not in (",", "(", ")"))
                     break
             if count > 0:
                 total = count if total == 0 else total * count

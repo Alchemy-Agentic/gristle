@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from gristle.graph.client import GraphClient
+if TYPE_CHECKING:
+    from gristle.graph.client import GraphClient
 
 
 class QueryEngine:
@@ -57,9 +58,7 @@ class QueryEngine:
 
         rec = result.records[0]
         if include_source and self.repo_path:
-            rec["source_code"] = self._load_source(
-                rec["file_path"], rec["start_line"], rec["end_line"]
-            )
+            rec["source_code"] = self._load_source(rec["file_path"], rec["start_line"], rec["end_line"])
         return rec
 
     # ------------------------------------------------------------------
@@ -110,9 +109,7 @@ class QueryEngine:
             """,
             {"name": name},
         )
-        rec["hierarchy"] = (
-            hierarchy.records[0]["chain"] if hierarchy.records else [rec["name"]]
-        )
+        rec["hierarchy"] = hierarchy.records[0]["chain"] if hierarchy.records else [rec["name"]]
         return rec
 
     # ------------------------------------------------------------------
@@ -256,8 +253,7 @@ class QueryEngine:
         transitive = self.get_callers(name, max_depth=3)
         rec["transitive_callers"] = [r["caller"] for r in transitive]
         rec["total_affected_files"] = list(
-            {r["file_path"] for r in transitive if r.get("file_path")}
-            | set(rec.get("affected_files") or [])
+            {r["file_path"] for r in transitive if r.get("file_path")} | set(rec.get("affected_files") or [])
         )
 
         # Test coverage: which test files cover this entity's file?
@@ -585,13 +581,15 @@ class QueryEngine:
             seen_files.add(r["test_file"])
         for r in file_level.records:
             if r["test_file"] not in seen_files:
-                results.append({
-                    "test_name": None,
-                    "test_qualified_name": None,
-                    "test_file": r["test_file"],
-                    "line": None,
-                    "via": "file_coverage",
-                })
+                results.append(
+                    {
+                        "test_name": None,
+                        "test_qualified_name": None,
+                        "test_file": r["test_file"],
+                        "line": None,
+                        "via": "file_coverage",
+                    }
+                )
         return results
 
     def get_untested_functions(self, limit: int = 30) -> list[dict[str, Any]]:
@@ -726,23 +724,13 @@ class QueryEngine:
         return {
             "languages": {r["language"]: r["file_count"] for r in dir_stats.records},
             "route_methods": {r["method"]: r["count"] for r in route_stats.records},
-            "component_locations": dict(
-                sorted(component_dirs.items(), key=lambda x: -x[1])[:5]
-            ),
-            "test_locations": dict(
-                sorted(test_dirs.items(), key=lambda x: -x[1])[:5]
-            ),
+            "component_locations": dict(sorted(component_dirs.items(), key=lambda x: -x[1])[:5]),
+            "test_locations": dict(sorted(test_dirs.items(), key=lambda x: -x[1])[:5]),
             "entry_points": [
-                {"name": r["name"], "file": r["file_path"], "signature": r["signature"]}
-                for r in entry_points.records
+                {"name": r["name"], "file": r["file_path"], "signature": r["signature"]} for r in entry_points.records
             ],
-            "most_imported_files": [
-                {"path": r["path"], "imports": r["import_count"]}
-                for r in top_imported.records
-            ],
-            "visibility_distribution": {
-                r["visibility"]: r["count"] for r in visibility_stats.records
-            },
+            "most_imported_files": [{"path": r["path"], "imports": r["import_count"]} for r in top_imported.records],
+            "visibility_distribution": {r["visibility"]: r["count"] for r in visibility_stats.records},
         }
 
     # ------------------------------------------------------------------
@@ -802,9 +790,7 @@ class QueryEngine:
     # Trace path between entities
     # ------------------------------------------------------------------
 
-    def find_path(
-        self, from_name: str, to_name: str, max_hops: int = 5
-    ) -> list[dict[str, Any]]:
+    def find_path(self, from_name: str, to_name: str, max_hops: int = 5) -> list[dict[str, Any]]:
         """Find call paths between two entities."""
         result = self.graph.execute(
             f"""
@@ -824,17 +810,13 @@ class QueryEngine:
     # Source code loader
     # ------------------------------------------------------------------
 
-    def _load_source(
-        self, file_path: str, start_line: int, end_line: int
-    ) -> str | None:
+    def _load_source(self, file_path: str, start_line: int, end_line: int) -> str | None:
         """Load source code lines from disk."""
         if not self.repo_path:
             return None
         abs_path = os.path.join(self.repo_path, file_path)
         try:
-            lines = Path(abs_path).read_text(
-                encoding="utf-8", errors="replace"
-            ).splitlines()
+            lines = Path(abs_path).read_text(encoding="utf-8", errors="replace").splitlines()
             # Convert to 0-indexed
             return "\n".join(lines[start_line - 1 : end_line])
         except (OSError, IndexError):

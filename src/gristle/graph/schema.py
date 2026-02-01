@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from typing import TYPE_CHECKING
 
 from redis.exceptions import ResponseError
 
-from gristle.graph.client import GraphClient
+if TYPE_CHECKING:
+    from gristle.graph.client import GraphClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +51,9 @@ _FULLTEXT_INDEXES: list[tuple[str, str, str]] = [
 def ensure_schema(client: GraphClient) -> None:
     """Create all required indexes if they don't already exist."""
     for label, prop in _INDEXES:
-        try:
+        with contextlib.suppress(ResponseError):
             client.execute(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")
-        except ResponseError:
-            pass  # Index already exists
 
-    for idx_name, label, prop in _FULLTEXT_INDEXES:
-        try:
-            client.execute(
-                f"CALL db.idx.fulltext.createNodeIndex('{label}', '{prop}')"
-            )
-        except ResponseError:
-            pass  # Index already exists or FalkorDB version doesn't support it
+    for _idx_name, label, prop in _FULLTEXT_INDEXES:
+        with contextlib.suppress(ResponseError):
+            client.execute(f"CALL db.idx.fulltext.createNodeIndex('{label}', '{prop}')")

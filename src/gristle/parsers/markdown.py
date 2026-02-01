@@ -25,8 +25,8 @@ _FILE_PATH_RE = re.compile(
 _CODE_ENTITY_RE = re.compile(
     r"^(?:"
     r"[A-Z][a-zA-Z0-9]*(?:\.[a-zA-Z]\w*)*"  # PascalCase: UserService, Auth.Provider
-    r"|[a-z]\w*(?:\.[a-z]\w*)+"              # dotted.name: router.navigate, req.body
-    r"|use[A-Z]\w*"                           # React hooks: useAuth, useState
+    r"|[a-z]\w*(?:\.[a-z]\w*)+"  # dotted.name: router.navigate, req.body
+    r"|use[A-Z]\w*"  # React hooks: useAuth, useState
     r")$"
 )
 
@@ -97,12 +97,14 @@ class MarkdownParser:
             if m:
                 level = len(m.group(1))
                 heading = m.group(2).strip()
-                sections.append(DocumentSection(
-                    heading=heading,
-                    level=level,
-                    start_line=i + 1,
-                    end_line=len(lines),  # Will be adjusted below
-                ))
+                sections.append(
+                    DocumentSection(
+                        heading=heading,
+                        level=level,
+                        start_line=i + 1,
+                        end_line=len(lines),  # Will be adjusted below
+                    )
+                )
 
         # Set end_line for each section (up to the next section at same or higher level)
         for i, section in enumerate(sections):
@@ -112,9 +114,7 @@ class MarkdownParser:
 
         return sections
 
-    def _extract_code_references(
-        self, text: str, base_line: int
-    ) -> list[CodeReference]:
+    def _extract_code_references(self, text: str, base_line: int) -> list[CodeReference]:
         """Extract code entity references from a block of markdown text."""
         refs: list[CodeReference] = []
         seen: set[str] = set()
@@ -137,34 +137,39 @@ class MarkdownParser:
                 if raw and raw not in seen:
                     ref_type = self._classify_inline_ref(raw)
                     if ref_type:
-                        refs.append(CodeReference(
-                            raw_text=raw,
-                            ref_type=ref_type,
-                            line=actual_line,
-                        ))
+                        refs.append(
+                            CodeReference(
+                                raw_text=raw,
+                                ref_type=ref_type,
+                                line=actual_line,
+                            )
+                        )
                         seen.add(raw)
 
             # Markdown links to source files
             for m in _LINK_RE.finditer(line):
                 url = m.group(2)
-                if self._is_source_link(url):
-                    if url not in seen:
-                        refs.append(CodeReference(
+                if self._is_source_link(url) and url not in seen:
+                    refs.append(
+                        CodeReference(
                             raw_text=url,
                             ref_type="link",
                             line=actual_line,
-                        ))
-                        seen.add(url)
+                        )
+                    )
+                    seen.add(url)
 
             # Bare file path references in prose
             for m in _FILE_PATH_RE.finditer(line):
                 path = m.group(1)
                 if path not in seen:
-                    refs.append(CodeReference(
-                        raw_text=path,
-                        ref_type="file_path",
-                        line=actual_line,
-                    ))
+                    refs.append(
+                        CodeReference(
+                            raw_text=path,
+                            ref_type="file_path",
+                            line=actual_line,
+                        )
+                    )
                     seen.add(path)
 
         return refs
@@ -206,10 +211,17 @@ class MarkdownParser:
         if url.startswith(("http://", "https://", "mailto:", "#")):
             return False
         source_exts = {
-            ".ts", ".tsx", ".js", ".jsx", ".py", ".css", ".scss",
-            ".json", ".yaml", ".yml", ".toml", ".sql",
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".py",
+            ".css",
+            ".scss",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".sql",
         }
-        for ext in source_exts:
-            if ext in url:
-                return True
-        return False
+        return any(ext in url for ext in source_exts)

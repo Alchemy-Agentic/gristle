@@ -6,7 +6,7 @@ import re
 
 import tree_sitter_javascript as ts_js
 import tree_sitter_typescript as ts_ts
-from tree_sitter import Language, Parser, Node
+from tree_sitter import Language, Node, Parser
 
 from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedRoute, ParsedTestCase
 from gristle.parsers.base import LanguageParser
@@ -19,12 +19,12 @@ _TODO_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX|BUG|WARN(?:ING)?)\b[:\s]*(.*)", r
 # to avoid false positives like "test-runner/" or "v1-specs/"
 _TEST_FILE_RE = re.compile(
     r"(?:"
-    r"__tests__"           # __tests__/ directory
-    r"|__mocks__"          # __mocks__/ directory
-    r"|\.test\."           # file.test.ts
-    r"|\.spec\."           # file.spec.ts
-    r"|(?:^|/)tests/"      # tests/ directory at segment boundary
-    r"|(?:^|/)specs/"      # specs/ directory at segment boundary
+    r"__tests__"  # __tests__/ directory
+    r"|__mocks__"  # __mocks__/ directory
+    r"|\.test\."  # file.test.ts
+    r"|\.spec\."  # file.spec.ts
+    r"|(?:^|/)tests/"  # tests/ directory at segment boundary
+    r"|(?:^|/)specs/"  # specs/ directory at segment boundary
     r"|(?:^|/)test[-_][^/]*\.[tj]sx?$"  # test-foo.ts or test_foo.ts (filename, not directory)
     r"|(?:^|/)spec[-_][^/]*\.[tj]sx?$"  # spec-foo.ts or spec_foo.ts (filename, not directory)
     r")",
@@ -32,22 +32,16 @@ _TEST_FILE_RE = re.compile(
 )
 
 # Test function names
-_TEST_FUNC_RE = re.compile(
-    r"^(?:test|it|describe|beforeAll|beforeEach|afterAll|afterEach|expect)$"
-)
+_TEST_FUNC_RE = re.compile(r"^(?:test|it|describe|beforeAll|beforeEach|afterAll|afterEach|expect)$")
 
 # Next.js app router page files
-_NEXTJS_PAGE_RE = re.compile(
-    r"(?:^|/)(?:app|pages)/.*?(?:page|route|layout|loading|error|not-found)\.[tj]sx?$"
-)
+_NEXTJS_PAGE_RE = re.compile(r"(?:^|/)(?:app|pages)/.*?(?:page|route|layout|loading|error|not-found)\.[tj]sx?$")
 
 # Route method patterns for Express/Hono/Fastify etc.
 _ROUTE_METHODS = frozenset({"get", "post", "put", "delete", "patch", "all", "options", "head"})
 
 # Supabase edge function path pattern: supabase/functions/<name>/index.ts
-_SUPABASE_FUNC_RE = re.compile(
-    r"(?:^|/)supabase/functions/([^/]+)/index\.[tj]sx?$"
-)
+_SUPABASE_FUNC_RE = re.compile(r"(?:^|/)supabase/functions/([^/]+)/index\.[tj]sx?$")
 
 
 class TypeScriptParser(LanguageParser):
@@ -109,7 +103,9 @@ class TypeScriptParser(LanguageParser):
             language="typescript",
             classes=classes,
             functions=functions,
-            imports=self._extract_imports(root, src) + self._extract_reexports(root, src) + self._extract_dynamic_imports(root, src),
+            imports=self._extract_imports(root, src)
+            + self._extract_reexports(root, src)
+            + self._extract_dynamic_imports(root, src),
             routes=routes,
             test_cases=test_cases,
             module_docstring=None,
@@ -155,9 +151,7 @@ class TypeScriptParser(LanguageParser):
             is_relative=is_relative,
         )
 
-    def _extract_import_names(
-        self, node: Node, src: bytes, names: list[str], aliases: dict[str, str]
-    ) -> None:
+    def _extract_import_names(self, node: Node, src: bytes, names: list[str], aliases: dict[str, str]) -> None:
         for child in node.children:
             if child.type == "identifier":
                 # Default import
@@ -219,14 +213,16 @@ class TypeScriptParser(LanguageParser):
                     is_wildcard = True
                     names.append("*")
 
-            reexports.append(ParsedImport(
-                line=node.start_point[0] + 1,
-                module_path=module_path,
-                imported_names=names,
-                aliases=aliases,
-                is_relative=is_relative,
-                is_wildcard=is_wildcard,
-            ))
+            reexports.append(
+                ParsedImport(
+                    line=node.start_point[0] + 1,
+                    module_path=module_path,
+                    imported_names=names,
+                    aliases=aliases,
+                    is_relative=is_relative,
+                    is_wildcard=is_wildcard,
+                )
+            )
         return reexports
 
     # ------------------------------------------------------------------
@@ -245,18 +241,13 @@ class TypeScriptParser(LanguageParser):
         self._walk_dynamic_imports(root, src, results)
         return results
 
-    def _walk_dynamic_imports(
-        self, node: Node, src: bytes, out: list[ParsedImport]
-    ) -> None:
+    def _walk_dynamic_imports(self, node: Node, src: bytes, out: list[ParsedImport]) -> None:
         if node.type == "call_expression":
             func = node.child_by_field_name("function")
             if func is not None:
                 # import('./utils')  — func.type == "import"
                 # require('./lib')  — func.type == "identifier", text == "require"
-                is_dynamic = (
-                    func.type == "import"
-                    or (func.type == "identifier" and self._text(func, src) == "require")
-                )
+                is_dynamic = func.type == "import" or (func.type == "identifier" and self._text(func, src) == "require")
                 if is_dynamic:
                     args = node.child_by_field_name("arguments")
                     if args is not None and args.named_child_count > 0:
@@ -264,14 +255,16 @@ class TypeScriptParser(LanguageParser):
                         if first_arg.type == "string":
                             module_path = self._text(first_arg, src).strip("'\"")
                             is_relative = module_path.startswith(".")
-                            out.append(ParsedImport(
-                                line=node.start_point[0] + 1,
-                                module_path=module_path,
-                                imported_names=["*"],
-                                aliases={},
-                                is_relative=is_relative,
-                                is_wildcard=True,
-                            ))
+                            out.append(
+                                ParsedImport(
+                                    line=node.start_point[0] + 1,
+                                    module_path=module_path,
+                                    imported_names=["*"],
+                                    aliases={},
+                                    is_relative=is_relative,
+                                    is_wildcard=True,
+                                )
+                            )
                             return  # Don't recurse into children
 
         for child in node.children:
@@ -281,15 +274,12 @@ class TypeScriptParser(LanguageParser):
     # Classes
     # ------------------------------------------------------------------
 
-    def _extract_classes(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedClass]:
+    def _extract_classes(self, root: Node, src: bytes, file_path: str) -> list[ParsedClass]:
         classes: list[ParsedClass] = []
         for node in root.children:
             if node.type in ("class_declaration", "abstract_class_declaration"):
                 classes.append(self._parse_class(node, src, file_path))
-            elif node.type in ("interface_declaration", "type_alias_declaration",
-                               "enum_declaration"):
+            elif node.type in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
                 classes.append(self._parse_interface(node, src, file_path))
             elif node.type == "export_statement":
                 decl = node.child_by_field_name("declaration")
@@ -297,17 +287,13 @@ class TypeScriptParser(LanguageParser):
                     cls = self._parse_class(decl, src, file_path)
                     cls.is_exported = True
                     classes.append(cls)
-                elif decl and decl.type in ("interface_declaration",
-                                            "type_alias_declaration",
-                                            "enum_declaration"):
+                elif decl and decl.type in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
                     cls = self._parse_interface(decl, src, file_path)
                     cls.is_exported = True
                     classes.append(cls)
         return classes
 
-    def _parse_class(
-        self, node: Node, src: bytes, file_path: str
-    ) -> ParsedClass:
+    def _parse_class(self, node: Node, src: bytes, file_path: str) -> ParsedClass:
         name = self._text(node.child_by_field_name("name"), src)
         body = node.child_by_field_name("body")
         bases = self._extract_heritage(node, src)
@@ -330,9 +316,7 @@ class TypeScriptParser(LanguageParser):
             methods=methods,
         )
 
-    def _parse_interface(
-        self, node: Node, src: bytes, file_path: str
-    ) -> ParsedClass:
+    def _parse_interface(self, node: Node, src: bytes, file_path: str) -> ParsedClass:
         name = self._text(node.child_by_field_name("name"), src)
         kind_map = {
             "interface_declaration": "interface",
@@ -369,37 +353,36 @@ class TypeScriptParser(LanguageParser):
                     if heritage_child.type in ("extends_clause", "extends_type_clause", "implements_clause"):
                         for sub in heritage_child.children:
                             if sub.type in (
-                                "identifier", "nested_identifier", "generic_type",
-                                "type_identifier", "nested_type_identifier",
+                                "identifier",
+                                "nested_identifier",
+                                "generic_type",
+                                "type_identifier",
+                                "nested_type_identifier",
                             ):
                                 bases.append(self._text(sub, src))
             # Also check direct children (interfaces use extends_clause directly)
             elif child.type in ("extends_clause", "extends_type_clause", "implements_clause"):
                 for sub in child.children:
                     if sub.type in (
-                        "identifier", "nested_identifier", "generic_type",
-                        "type_identifier", "nested_type_identifier",
+                        "identifier",
+                        "nested_identifier",
+                        "generic_type",
+                        "type_identifier",
+                        "nested_type_identifier",
                     ):
                         bases.append(self._text(sub, src))
         return bases
 
-    def _extract_class_methods(
-        self, body: Node, src: bytes, file_path: str, class_name: str
-    ) -> list[ParsedFunction]:
+    def _extract_class_methods(self, body: Node, src: bytes, file_path: str, class_name: str) -> list[ParsedFunction]:
         methods: list[ParsedFunction] = []
         if body is None:
             return methods
         for child in body.children:
-            if child.type in ("method_definition", "public_field_definition"):
-                if child.type == "method_definition":
-                    methods.append(
-                        self._parse_method(child, src, file_path, class_name)
-                    )
+            if child.type in ("method_definition", "public_field_definition") and child.type == "method_definition":
+                methods.append(self._parse_method(child, src, file_path, class_name))
         return methods
 
-    def _parse_method(
-        self, node: Node, src: bytes, file_path: str, class_name: str
-    ) -> ParsedFunction:
+    def _parse_method(self, node: Node, src: bytes, file_path: str, class_name: str) -> ParsedFunction:
         name = self._text(node.child_by_field_name("name"), src)
         params_node = node.child_by_field_name("parameters")
         return_node = node.child_by_field_name("return_type")
@@ -434,9 +417,7 @@ class TypeScriptParser(LanguageParser):
     # Functions (module-level)
     # ------------------------------------------------------------------
 
-    def _extract_module_functions(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedFunction]:
+    def _extract_module_functions(self, root: Node, src: bytes, file_path: str) -> list[ParsedFunction]:
         functions: list[ParsedFunction] = []
         for node in root.children:
             func = self._try_extract_function(node, src, file_path)
@@ -459,9 +440,7 @@ class TypeScriptParser(LanguageParser):
                         functions.append(func)
         return functions
 
-    def _try_extract_function(
-        self, node: Node, src: bytes, file_path: str
-    ) -> ParsedFunction | None:
+    def _try_extract_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
         if node.type == "function_declaration":
             return self._parse_function_decl(node, src, file_path)
         if node.type == "lexical_declaration":
@@ -469,9 +448,7 @@ class TypeScriptParser(LanguageParser):
             return self._parse_variable_function(node, src, file_path)
         return None
 
-    def _parse_function_decl(
-        self, node: Node, src: bytes, file_path: str
-    ) -> ParsedFunction:
+    def _parse_function_decl(self, node: Node, src: bytes, file_path: str) -> ParsedFunction:
         name = self._text(node.child_by_field_name("name"), src)
         params_node = node.child_by_field_name("parameters")
         return_node = node.child_by_field_name("return_type")
@@ -500,9 +477,7 @@ class TypeScriptParser(LanguageParser):
             calls=calls,
         )
 
-    def _parse_variable_function(
-        self, node: Node, src: bytes, file_path: str
-    ) -> ParsedFunction | None:
+    def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
         """Parse `const foo = (...) => { ... }` or `const foo = function(...) { ... }`."""
         for child in node.children:
             if child.type == "variable_declarator":
@@ -522,8 +497,11 @@ class TypeScriptParser(LanguageParser):
                 return_text = self._text(return_node, src).lstrip(": ") if return_node else None
                 is_async = "async" in self._text(value_node, src).split("=>")[0].split("function")[0]
 
-                arrow = "=>" if value_node.type == "arrow_function" else "function"
-                sig = f"const {name} = {'async ' if is_async else ''}{params_text} => ..." if value_node.type == "arrow_function" else f"const {name} = {'async ' if is_async else ''}function{params_text}"
+                sig = (
+                    f"const {name} = {'async ' if is_async else ''}{params_text} => ..."
+                    if value_node.type == "arrow_function"
+                    else f"const {name} = {'async ' if is_async else ''}function{params_text}"
+                )
 
                 calls = self._extract_calls(body, src) if body else []
 
@@ -648,17 +626,14 @@ class TypeScriptParser(LanguageParser):
     # Component detection
     # ------------------------------------------------------------------
 
-    def _body_contains_jsx(
-        self, root: Node, src: bytes, func: ParsedFunction
-    ) -> bool:
+    def _body_contains_jsx(self, root: Node, src: bytes, func: ParsedFunction) -> bool:
         """Check if a function body contains JSX return statements."""
         # Find the function's AST node by line range and check for JSX
         for node in self._iter_descendants(root):
             if node.type in ("return_statement", "parenthesized_expression"):
                 line = node.start_point[0] + 1
-                if func.start_line <= line <= func.end_line:
-                    if self._subtree_has_jsx(node):
-                        return True
+                if func.start_line <= line <= func.end_line and self._subtree_has_jsx(node):
+                    return True
             # Arrow functions with implicit JSX return
             if node.type in ("jsx_element", "jsx_self_closing_element", "jsx_fragment"):
                 line = node.start_point[0] + 1
@@ -670,10 +645,7 @@ class TypeScriptParser(LanguageParser):
     def _subtree_has_jsx(node: Node) -> bool:
         if node.type in ("jsx_element", "jsx_self_closing_element", "jsx_fragment"):
             return True
-        for child in node.children:
-            if TypeScriptParser._subtree_has_jsx(child):
-                return True
-        return False
+        return any(TypeScriptParser._subtree_has_jsx(child) for child in node.children)
 
     @staticmethod
     def _iter_descendants(node: Node):
@@ -691,8 +663,16 @@ class TypeScriptParser(LanguageParser):
         # Next.js page/route/layout exports
         if _NEXTJS_PAGE_RE.search(file_path):
             if func.is_exported and func.name in (
-                "default", "GET", "POST", "PUT", "DELETE", "PATCH",
-                "HEAD", "OPTIONS", "generateMetadata", "generateStaticParams",
+                "default",
+                "GET",
+                "POST",
+                "PUT",
+                "DELETE",
+                "PATCH",
+                "HEAD",
+                "OPTIONS",
+                "generateMetadata",
+                "generateStaticParams",
             ):
                 return True
             # Default exported component in a page file
@@ -705,10 +685,7 @@ class TypeScriptParser(LanguageParser):
                 return True
 
         # main() function
-        if func.name == "main" and func.is_exported:
-            return True
-
-        return False
+        return bool(func.name == "main" and func.is_exported)
 
     @staticmethod
     def _detect_serve_entry_points(root: Node, src: bytes) -> set[str]:
@@ -736,7 +713,7 @@ class TypeScriptParser(LanguageParser):
             func_node = call.child_by_field_name("function")
             if func_node is None:
                 continue
-            func_text = src[func_node.start_byte: func_node.end_byte].decode(errors="replace")
+            func_text = src[func_node.start_byte : func_node.end_byte].decode(errors="replace")
             if func_text not in ("serve", "Deno.serve"):
                 continue
 
@@ -754,7 +731,7 @@ class TypeScriptParser(LanguageParser):
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             if func_node and func_node.type == "identifier":
-                out.add(src[func_node.start_byte: func_node.end_byte].decode(errors="replace"))
+                out.add(src[func_node.start_byte : func_node.end_byte].decode(errors="replace"))
         for child in node.children:
             TypeScriptParser._collect_call_names(child, src, out)
 
@@ -762,9 +739,7 @@ class TypeScriptParser(LanguageParser):
     # Supabase edge function route extraction
     # ------------------------------------------------------------------
 
-    def _extract_supabase_routes(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedRoute]:
+    def _extract_supabase_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
         """Extract a POST route from a Supabase edge function.
 
         Supabase edge functions live at ``supabase/functions/<name>/index.ts``
@@ -793,18 +768,20 @@ class TypeScriptParser(LanguageParser):
                 if child.type == "call_expression":
                     fn = child.child_by_field_name("function")
                     if fn:
-                        text = src[fn.start_byte:fn.end_byte].decode(errors="replace")
+                        text = src[fn.start_byte : fn.end_byte].decode(errors="replace")
                         if text in ("serve", "Deno.serve"):
                             serve_line = node.start_point[0] + 1
                             break
 
-        return [ParsedRoute(
-            method="POST",
-            path=f"/{func_name}",
-            handler_name=handler_name,
-            file_path=file_path,
-            line=serve_line,
-        )]
+        return [
+            ParsedRoute(
+                method="POST",
+                path=f"/{func_name}",
+                handler_name=handler_name,
+                file_path=file_path,
+                line=serve_line,
+            )
+        ]
 
     @staticmethod
     def _has_top_level_serve(root: Node, src: bytes) -> bool:
@@ -816,7 +793,7 @@ class TypeScriptParser(LanguageParser):
                 if child.type == "call_expression":
                     fn = child.child_by_field_name("function")
                     if fn:
-                        text = src[fn.start_byte:fn.end_byte].decode(errors="replace")
+                        text = src[fn.start_byte : fn.end_byte].decode(errors="replace")
                         if text in ("serve", "Deno.serve"):
                             return True
         return False
@@ -843,9 +820,7 @@ class TypeScriptParser(LanguageParser):
     # Route extraction
     # ------------------------------------------------------------------
 
-    def _extract_routes(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedRoute]:
+    def _extract_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
         """Extract HTTP route definitions from Express/Hono/Fastify patterns."""
         routes: list[ParsedRoute] = []
 
@@ -861,25 +836,27 @@ class TypeScriptParser(LanguageParser):
                 if "/route." in file_path:
                     for node in root.children:
                         func = self._try_get_exported_func_name(node, src)
-                        if func and func.upper() in (
-                            "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"
-                        ):
-                            routes.append(ParsedRoute(
-                                method=func.upper(),
-                                path=route_path,
-                                handler_name=func,
-                                file_path=file_path,
-                                line=node.start_point[0] + 1,
-                            ))
+                        if func and func.upper() in ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"):
+                            routes.append(
+                                ParsedRoute(
+                                    method=func.upper(),
+                                    path=route_path,
+                                    handler_name=func,
+                                    file_path=file_path,
+                                    line=node.start_point[0] + 1,
+                                )
+                            )
                 else:
                     # Page component — represents a GET route
-                    routes.append(ParsedRoute(
-                        method="GET",
-                        path=route_path,
-                        handler_name="default",
-                        file_path=file_path,
-                        line=1,
-                    ))
+                    routes.append(
+                        ParsedRoute(
+                            method="GET",
+                            path=route_path,
+                            handler_name="default",
+                            file_path=file_path,
+                            line=1,
+                        )
+                    )
 
         # Express/Hono-style: router.get('/path', handler) or app.post('/path', ...)
         for node in self._iter_descendants(root):
@@ -933,9 +910,7 @@ class TypeScriptParser(LanguageParser):
 
         return names
 
-    def _try_parse_route_call(
-        self, node: Node, src: bytes, file_path: str
-    ) -> ParsedRoute | None:
+    def _try_parse_route_call(self, node: Node, src: bytes, file_path: str) -> ParsedRoute | None:
         """Try to parse a call like router.get('/users', handler)."""
         func_node = node.child_by_field_name("function")
         if not func_node or func_node.type != "member_expression":
@@ -1033,7 +1008,7 @@ class TypeScriptParser(LanguageParser):
         for prefix in ("app/", "pages/"):
             idx = normalized.find(prefix)
             if idx >= 0:
-                normalized = normalized[idx + len(prefix):]
+                normalized = normalized[idx + len(prefix) :]
                 break
         else:
             return None
@@ -1062,9 +1037,7 @@ class TypeScriptParser(LanguageParser):
 
     _TEST_BLOCK_NAMES = frozenset({"describe", "it", "test"})
 
-    def _extract_test_cases(
-        self, root: Node, src: bytes, file_path: str
-    ) -> list[ParsedTestCase]:
+    def _extract_test_cases(self, root: Node, src: bytes, file_path: str) -> list[ParsedTestCase]:
         """Extract describe/it/test blocks from Vitest/Jest/Mocha test files."""
         cases: list[ParsedTestCase] = []
         self._walk_test_blocks(root, src, file_path, None, cases)
@@ -1095,8 +1068,11 @@ class TypeScriptParser(LanguageParser):
                         continue
             # Recurse into statement blocks, arrow function bodies, etc.
             if child.type in (
-                "statement_block", "program", "export_statement",
-                "lexical_declaration", "variable_declarator",
+                "statement_block",
+                "program",
+                "export_statement",
+                "lexical_declaration",
+                "variable_declarator",
             ):
                 self._walk_test_blocks(child, src, file_path, parent_describe, out)
 
@@ -1231,7 +1207,9 @@ class JavaScriptParser(LanguageParser):
             language="javascript",
             classes=self._ts_parser._extract_classes(root, src, file_path),
             functions=self._ts_parser._extract_module_functions(root, src, file_path),
-            imports=self._ts_parser._extract_imports(root, src) + self._ts_parser._extract_reexports(root, src) + self._ts_parser._extract_dynamic_imports(root, src),
+            imports=self._ts_parser._extract_imports(root, src)
+            + self._ts_parser._extract_reexports(root, src)
+            + self._ts_parser._extract_dynamic_imports(root, src),
             routes=self._ts_parser._extract_routes(root, src, file_path),
             test_cases=self._ts_parser._extract_test_cases(root, src, file_path) if is_test_file else [],
             module_docstring=None,

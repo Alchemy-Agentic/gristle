@@ -5,13 +5,10 @@ from __future__ import annotations
 import os
 import tempfile
 from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from gristle.graph.client import QueryResult
 from gristle.query.engine import QueryEngine
-
 
 # ------------------------------------------------------------------
 # Helpers
@@ -150,7 +147,13 @@ class TestGetClassStructure:
             "decorators": None,
             "file_path": "mod.py",
             "methods": [
-                {"name": "do_thing", "signature": "def do_thing()", "visibility": "public", "is_async": False, "docstring": None}
+                {
+                    "name": "do_thing",
+                    "signature": "def do_thing()",
+                    "visibility": "public",
+                    "is_async": False,
+                    "docstring": None,
+                }
             ],
         }
         hierarchy_rec = {"chain": ["MyClass", "Base", "object"]}
@@ -209,9 +212,9 @@ class TestGetFileOverview:
 
         engine, graph = _make_engine()
         graph.execute.side_effect = [
-            _qr([file_rec]),       # main file query
-            _qr(route_recs),       # routes query
-            _qr(test_recs),        # test coverage query
+            _qr([file_rec]),  # main file query
+            _qr(route_recs),  # routes query
+            _qr(test_recs),  # test coverage query
         ]
         result = engine.get_file_overview("api.py")
         assert result["path"] == "api.py"
@@ -231,9 +234,9 @@ class TestGetFileOverview:
         }
         engine, graph = _make_engine()
         graph.execute.side_effect = [
-            _qr([file_rec]),       # main file query
-            _empty(),              # routes
-            _empty(),              # test coverage
+            _qr([file_rec]),  # main file query
+            _empty(),  # routes
+            _empty(),  # test coverage
             _qr([{"production_file": "api.py"}]),  # tests_targets
         ]
         result = engine.get_file_overview("test_api.py")
@@ -331,20 +334,25 @@ class TestImpactAnalysis:
         ]
         test_files = [{"test_file": "test_mod.py"}]
         test_funcs_direct = [
-            {"test_name": "test_create", "test_qualified_name": "test_mod.test_create",
-             "test_file": "test_mod.py", "line": 10, "via": "calls"},
+            {
+                "test_name": "test_create",
+                "test_qualified_name": "test_mod.test_create",
+                "test_file": "test_mod.py",
+                "line": 10,
+                "via": "calls",
+            },
         ]
         test_funcs_file = []
         routes = []
 
         engine, graph = _make_engine()
         graph.execute.side_effect = [
-            _qr([impact_rec]),             # main impact query
-            _qr(transitive_callers),       # get_callers (inside impact)
-            _qr(test_files),               # test file coverage
-            _qr(test_funcs_direct),        # get_tests_for_entity -> direct
-            _qr(test_funcs_file),          # get_tests_for_entity -> file_level
-            _qr(routes),                   # routes query
+            _qr([impact_rec]),  # main impact query
+            _qr(transitive_callers),  # get_callers (inside impact)
+            _qr(test_files),  # test file coverage
+            _qr(test_funcs_direct),  # get_tests_for_entity -> direct
+            _qr(test_funcs_file),  # get_tests_for_entity -> file_level
+            _qr(routes),  # routes query
         ]
         result = engine.impact_analysis("create_user")
         assert result["target"] == "mod.create_user"
@@ -362,11 +370,11 @@ class TestImpactAnalysis:
         }
         engine, graph = _make_engine()
         graph.execute.side_effect = [
-            _qr([impact_rec]),    # main impact query
-            _empty(),             # get_callers
-            _empty(),             # get_tests_for_entity -> direct
-            _empty(),             # get_tests_for_entity -> file_level
-            _empty(),             # routes
+            _qr([impact_rec]),  # main impact query
+            _empty(),  # get_callers
+            _empty(),  # get_tests_for_entity -> direct
+            _empty(),  # get_tests_for_entity -> file_level
+            _empty(),  # routes
         ]
         result = engine.impact_analysis("orphan")
         assert result is not None
@@ -380,8 +388,9 @@ class TestImpactAnalysis:
 
 class TestSearch:
     def test_search_by_name(self):
-        recs = [{"type": "Function", "name": "foo", "qualified_name": "mod.foo",
-                 "file_path": "mod.py", "start_line": 10}]
+        recs = [
+            {"type": "Function", "name": "foo", "qualified_name": "mod.foo", "file_path": "mod.py", "start_line": 10}
+        ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
         result = engine.search("foo", search_type="name")
@@ -389,16 +398,30 @@ class TestSearch:
         assert result[0]["name"] == "foo"
 
     def test_search_by_docstring(self):
-        recs = [{"type": "Function", "name": "bar", "qualified_name": "mod.bar",
-                 "file_path": "mod.py", "docstring": "Handles bar operations"}]
+        recs = [
+            {
+                "type": "Function",
+                "name": "bar",
+                "qualified_name": "mod.bar",
+                "file_path": "mod.py",
+                "docstring": "Handles bar operations",
+            }
+        ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
         result = engine.search("bar operations", search_type="docstring")
         assert len(result) == 1
 
     def test_search_all(self):
-        recs = [{"type": "Class", "name": "MyClass", "qualified_name": "mod.MyClass",
-                 "file_path": "mod.py", "start_line": 1}]
+        recs = [
+            {
+                "type": "Class",
+                "name": "MyClass",
+                "qualified_name": "mod.MyClass",
+                "file_path": "mod.py",
+                "start_line": 1,
+            }
+        ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
         result = engine.search("MyClass", search_type="all")
@@ -455,8 +478,15 @@ class TestGetRepoOverview:
 
 class TestDocQueries:
     def test_get_docs_for_entity(self):
-        recs = [{"doc_path": "README.md", "doc_title": "API", "section": "Usage",
-                 "line": 10, "references_entity": "create_user"}]
+        recs = [
+            {
+                "doc_path": "README.md",
+                "doc_title": "API",
+                "section": "Usage",
+                "line": 10,
+                "references_entity": "create_user",
+            }
+        ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
         result = engine.get_docs_for_entity("create_user")
@@ -469,8 +499,9 @@ class TestDocQueries:
         assert engine.get_docs_for_entity("undocumented") == []
 
     def test_get_doc_staleness(self):
-        recs = [{"doc_path": "README.md", "title": "Guide", "doc_type": "readme",
-                 "total_refs": 5, "resolved_sections": 3}]
+        recs = [
+            {"doc_path": "README.md", "title": "Guide", "doc_type": "readme", "total_refs": 5, "resolved_sections": 3}
+        ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
         result = engine.get_doc_staleness()
@@ -504,10 +535,24 @@ class TestDocQueries:
 class TestGetRoutes:
     def test_get_all_routes(self):
         recs = [
-            {"method": "GET", "path": "/users", "handler": "list_users",
-             "file_path": "api.py", "line": 10, "middleware": None, "handler_signature": "def list_users()"},
-            {"method": "POST", "path": "/users", "handler": "create_user",
-             "file_path": "api.py", "line": 20, "middleware": None, "handler_signature": "def create_user()"},
+            {
+                "method": "GET",
+                "path": "/users",
+                "handler": "list_users",
+                "file_path": "api.py",
+                "line": 10,
+                "middleware": None,
+                "handler_signature": "def list_users()",
+            },
+            {
+                "method": "POST",
+                "path": "/users",
+                "handler": "create_user",
+                "file_path": "api.py",
+                "line": 20,
+                "middleware": None,
+                "handler_signature": "def create_user()",
+            },
         ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
@@ -515,8 +560,17 @@ class TestGetRoutes:
         assert len(result) == 2
 
     def test_get_routes_filtered_by_method(self):
-        recs = [{"method": "GET", "path": "/users", "handler": "list_users",
-                 "file_path": "api.py", "line": 10, "middleware": None, "handler_signature": "def list_users()"}]
+        recs = [
+            {
+                "method": "GET",
+                "path": "/users",
+                "handler": "list_users",
+                "file_path": "api.py",
+                "line": 10,
+                "middleware": None,
+                "handler_signature": "def list_users()",
+            }
+        ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
         result = engine.get_routes(method="get")
@@ -539,8 +593,15 @@ class TestGetRoutes:
 class TestGetComponents:
     def test_returns_components(self):
         recs = [
-            {"name": "Button", "qualified_name": "ui.Button", "file_path": "ui.tsx",
-             "start_line": 5, "signature": "function Button()", "is_exported": True, "usage_count": 12},
+            {
+                "name": "Button",
+                "qualified_name": "ui.Button",
+                "file_path": "ui.tsx",
+                "start_line": 5,
+                "signature": "function Button()",
+                "is_exported": True,
+                "usage_count": 12,
+            },
         ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
@@ -562,8 +623,13 @@ class TestGetComponents:
 class TestTestQueries:
     def test_get_tests_for_entity_direct_calls(self):
         direct = [
-            {"test_name": "test_create", "test_qualified_name": "test_mod.test_create",
-             "test_file": "test_mod.py", "line": 10, "via": "calls"},
+            {
+                "test_name": "test_create",
+                "test_qualified_name": "test_mod.test_create",
+                "test_file": "test_mod.py",
+                "line": 10,
+                "via": "calls",
+            },
         ]
         engine, graph = _make_engine()
         graph.execute.side_effect = [_qr(direct), _empty()]
@@ -583,8 +649,13 @@ class TestTestQueries:
     def test_get_tests_deduplicates_by_file(self):
         """Direct calls take precedence over file-level coverage for same file."""
         direct = [
-            {"test_name": "test_create", "test_qualified_name": "test_mod.test_create",
-             "test_file": "test_mod.py", "line": 10, "via": "calls"},
+            {
+                "test_name": "test_create",
+                "test_qualified_name": "test_mod.test_create",
+                "test_file": "test_mod.py",
+                "line": 10,
+                "via": "calls",
+            },
         ]
         file_level = [{"test_file": "test_mod.py", "via": "file_coverage"}]
         engine, graph = _make_engine()
@@ -596,8 +667,7 @@ class TestTestQueries:
 
     def test_get_untested_functions(self):
         recs = [
-            {"name": "orphan_func", "qualified_name": "mod.orphan_func",
-             "file_path": "mod.py", "complexity": 8},
+            {"name": "orphan_func", "qualified_name": "mod.orphan_func", "file_path": "mod.py", "complexity": 8},
         ]
         engine, graph = _make_engine()
         graph.execute.return_value = _qr(recs)
@@ -680,8 +750,7 @@ class TestDependencies:
     def test_get_dependency_users(self):
         files = [{"file_path": "api.py"}, {"file_path": "client.py"}]
         funcs = [
-            {"name": "fetch", "qualified_name": "api.fetch", "file_path": "api.py",
-             "start_line": 10, "is_test": False},
+            {"name": "fetch", "qualified_name": "api.fetch", "file_path": "api.py", "start_line": 10, "is_test": False},
         ]
         engine, graph = _make_engine()
         graph.execute.side_effect = [_qr(files), _qr(funcs)]

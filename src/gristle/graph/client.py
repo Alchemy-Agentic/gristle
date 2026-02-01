@@ -59,11 +59,9 @@ class GraphClient:
         records = []
         if result.result_set:
             # FalkorDB headers are [[type_code, name], ...] — extract names
-            headers = [
-                h[1] if isinstance(h, list) else h for h in result.header
-            ]
+            headers = [h[1] if isinstance(h, list) else h for h in result.header]
             for row in result.result_set:
-                records.append(dict(zip(headers, row)))
+                records.append(dict(zip(headers, row, strict=False)))
         return QueryResult(
             records=records,
             summary={
@@ -98,11 +96,7 @@ class GraphClient:
             props_inner = ", ".join(f"{k}: ${k}" for k in properties)
             props_clause = f" {{{props_inner}}}"
 
-        query = (
-            "MATCH (a), (b) "
-            "WHERE a.id = $from_id AND b.id = $to_id "
-            f"CREATE (a)-[:{rel_type}{props_clause}]->(b)"
-        )
+        query = f"MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id CREATE (a)-[:{rel_type}{props_clause}]->(b)"
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if properties:
             params.update(properties)
@@ -121,11 +115,7 @@ class GraphClient:
             props_inner = ", ".join(f"{k}: ${k}" for k in properties)
             props_clause = f" {{{props_inner}}}"
 
-        query = (
-            "MATCH (a), (b) "
-            "WHERE a.id = $from_id AND b.id = $to_id "
-            f"MERGE (a)-[:{rel_type}{props_clause}]->(b)"
-        )
+        query = f"MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id MERGE (a)-[:{rel_type}{props_clause}]->(b)"
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if properties:
             params.update(properties)
@@ -149,9 +139,7 @@ class GraphClient:
         result = self.execute(query, {"items": items})
         return result.summary["nodes_created"]
 
-    def batch_create_relationships(
-        self, rel_type: str, items: list[dict[str, Any]]
-    ) -> int:
+    def batch_create_relationships(self, rel_type: str, items: list[dict[str, Any]]) -> int:
         """Create multiple relationships of the same type via UNWIND.
 
         Each item must have ``from_id`` and ``to_id`` keys.
@@ -173,9 +161,7 @@ class GraphClient:
         result = self.execute(query, {"rels": items})
         return result.summary["relationships_created"]
 
-    def batch_merge_relationships(
-        self, rel_type: str, items: list[dict[str, Any]]
-    ) -> int:
+    def batch_merge_relationships(self, rel_type: str, items: list[dict[str, Any]]) -> int:
         """Merge (upsert) multiple relationships of the same type via UNWIND.
 
         Each item must have ``from_id`` and ``to_id`` keys.

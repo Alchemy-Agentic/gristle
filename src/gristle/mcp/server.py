@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from gristle.config import settings
@@ -16,6 +16,9 @@ from gristle.ingestion.pipeline import IngestionPipeline
 from gristle.logging import Timer
 from gristle.parsers.registry import ParserRegistry
 from gristle.query.engine import QueryEngine
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +75,16 @@ def _get_engine(repo_id: str) -> QueryEngine | None:
 async def health_check(request: Request) -> JSONResponse:
     from gristle import __version__
 
-    return JSONResponse({
-        "status": "ok",
-        "server": "gristle",
-        "version": __version__,
-        "transport": settings.transport,
-        "repos_loaded": len(_engines),
-        "repos": list(_engines.keys()),
-    })
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": "gristle",
+            "version": __version__,
+            "transport": settings.transport,
+            "repos_loaded": len(_engines),
+            "repos": list(_engines.keys()),
+        }
+    )
 
 
 # ======================================================================
@@ -123,9 +128,14 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
     logger.info(
         "gristle_ingest completed for %s",
         rid,
-        extra={"event": "tool_ingest", "repo_id": rid,
-               "duration_ms": t.ms, "files": result.files_processed,
-               "nodes": result.nodes_created, "rels": result.relationships_created},
+        extra={
+            "event": "tool_ingest",
+            "repo_id": rid,
+            "duration_ms": t.ms,
+            "files": result.files_processed,
+            "nodes": result.nodes_created,
+            "rels": result.relationships_created,
+        },
     )
 
     return {
@@ -184,9 +194,7 @@ async def gristle_ingest_github(
 
     # Inject token into URL for private repos
     if token and clone_url.startswith("https://"):
-        clone_url = clone_url.replace(
-            "https://", f"https://x-access-token:{token}@", 1
-        )
+        clone_url = clone_url.replace("https://", f"https://x-access-token:{token}@", 1)
 
     # Derive a stable repo_id from the URL (strip token first)
     clean_url = repo_url if not repo_url.startswith("http") else repo_url
@@ -205,8 +213,7 @@ async def gristle_ingest_github(
 
         logger.info(
             "Clone completed",
-            extra={"event": "clone_done", "repo_id": rid,
-                   "duration_ms": clone_timer.ms},
+            extra={"event": "clone_done", "repo_id": rid, "duration_ms": clone_timer.ms},
         )
 
         # Ingest using existing pipeline
@@ -228,11 +235,14 @@ async def gristle_ingest_github(
         logger.info(
             "gristle_ingest_github completed for %s",
             rid,
-            extra={"event": "tool_ingest_github", "repo_id": rid,
-                   "duration_ms": clone_timer.ms + ingest_timer.ms,
-                   "files": result.files_processed,
-                   "nodes": result.nodes_created,
-                   "rels": result.relationships_created},
+            extra={
+                "event": "tool_ingest_github",
+                "repo_id": rid,
+                "duration_ms": clone_timer.ms + ingest_timer.ms,
+                "files": result.files_processed,
+                "nodes": result.nodes_created,
+                "rels": result.relationships_created,
+            },
         )
 
         return {
@@ -650,10 +660,7 @@ async def gristle_embed(
     try:
         from gristle.search.embeddings import CodeEmbedder, SemanticIndex
     except ImportError:
-        return {
-            "error": "sentence-transformers not installed. "
-                     "Run: pip install gristle[search]"
-        }
+        return {"error": "sentence-transformers not installed. Run: pip install gristle[search]"}
 
     engine = _engines[rid]
     graph = engine.graph  # Access the graph client from engine
@@ -703,36 +710,33 @@ async def gristle_semantic_search(
         # Try to reconstruct from existing graph (embeddings may already exist)
         try:
             from gristle.search.embeddings import CodeEmbedder, SemanticIndex
+
             engine = _engines[rid]
             embedder = CodeEmbedder()
             index = SemanticIndex(engine.graph, embedder)
             _semantic_indexes[rid] = index
         except ImportError:
-            return {
-                "error": "sentence-transformers not installed. "
-                         "Run: pip install gristle[search]"
-            }
+            return {"error": "sentence-transformers not installed. Run: pip install gristle[search]"}
         except Exception as e:
             return {"error": f"Failed to initialize semantic search: {e}"}
 
     results = index.search(query, limit=limit)
     if not results:
-        return {
-            "note": f"No semantic matches for '{query}'. "
-                    "Run gristle_embed first if you haven't already."
-        }
+        return {"note": f"No semantic matches for '{query}'. Run gristle_embed first if you haven't already."}
 
     # Format results
     formatted = []
     for r in results:
-        formatted.append({
-            "name": r["name"],
-            "type": r["label"],
-            "signature": r["signature"],
-            "docstring": r.get("docstring") or None,
-            "file": r["file_path"],
-            "similarity": round(1 - r["score"], 3),  # Convert distance to similarity
-        })
+        formatted.append(
+            {
+                "name": r["name"],
+                "type": r["label"],
+                "signature": r["signature"],
+                "docstring": r.get("docstring") or None,
+                "file": r["file_path"],
+                "similarity": round(1 - r["score"], 3),  # Convert distance to similarity
+            }
+        )
 
     return {
         "query": query,

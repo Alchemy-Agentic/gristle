@@ -54,11 +54,11 @@ class TextFormatter(logging.Formatter):
     """Coloured, human-readable formatter for local development."""
 
     COLOURS = {
-        "DEBUG": "\033[90m",     # grey
-        "INFO": "\033[36m",      # cyan
-        "WARNING": "\033[33m",   # yellow
-        "ERROR": "\033[31m",     # red
-        "CRITICAL": "\033[1;31m", # bold red
+        "DEBUG": "\033[90m",  # grey
+        "INFO": "\033[36m",  # cyan
+        "WARNING": "\033[33m",  # yellow
+        "ERROR": "\033[31m",  # red
+        "CRITICAL": "\033[1;31m",  # bold red
     }
     RESET = "\033[0m"
 
@@ -113,7 +113,7 @@ class Timer:
 
     __slots__ = ("_start", "ms")
 
-    def __enter__(self) -> "Timer":
+    def __enter__(self) -> Timer:
         self._start = time.perf_counter()
         self.ms = 0.0
         return self

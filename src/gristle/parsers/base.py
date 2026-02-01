@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from gristle.models import ParsedFile
+if TYPE_CHECKING:
+    from gristle.models import ParsedFile
 
 
 class LanguageParser(ABC):

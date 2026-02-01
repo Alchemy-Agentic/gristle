@@ -63,6 +63,7 @@ class ParsedClass:
 @dataclass(slots=True)
 class ParsedTestCase:
     """A test case block: describe/it/test (JS/TS) or TestClass/test_func (Python)."""
+
     name: str  # The test description or function/class name
     block_type: str  # "describe", "it", "test", "class"
     file_path: str
@@ -75,6 +76,7 @@ class ParsedTestCase:
 @dataclass(slots=True)
 class ParsedRoute:
     """An HTTP route/endpoint definition."""
+
     method: str  # GET, POST, PUT, DELETE, PATCH, ALL
     path: str  # /api/users/:id
     handler_name: str  # function name
@@ -82,6 +84,7 @@ class ParsedRoute:
     line: int
     end_line: int = 0  # End line of handler body (for source loading)
     middleware: list[str] = field(default_factory=list)
+
 
 @dataclass(slots=True)
 class ParsedFile:
@@ -106,6 +109,7 @@ class ParsedFile:
 @dataclass(slots=True)
 class CodeReference:
     """A reference to a code entity found in a document."""
+
     raw_text: str  # The text as written in the doc
     ref_type: str  # inline_code, file_path, link, code_block
     line: int
@@ -116,6 +120,7 @@ class CodeReference:
 @dataclass(slots=True)
 class DocumentSection:
     """A heading-delimited section in a document."""
+
     heading: str
     level: int  # 1-6
     start_line: int
@@ -126,6 +131,7 @@ class DocumentSection:
 @dataclass(slots=True)
 class ParsedDocument:
     """A parsed documentation file."""
+
     path: str
     title: str  # First H1 heading or filename
     doc_type: str  # readme, changelog, architecture, guide, adr, other

@@ -259,13 +259,7 @@ class TestNestedClassCapture:
 
     def test_class_inside_function(self):
         parser = PythonParser()
-        code = (
-            "def test_schema():\n"
-            "    class UserSchema:\n"
-            "        name = 'test'\n"
-            "\n"
-            "    s = UserSchema()\n"
-        )
+        code = "def test_schema():\n    class UserSchema:\n        name = 'test'\n\n    s = UserSchema()\n"
         result = parser.parse_file("tests/test_schemas.py", code)
         class_names = [c.name for c in result.classes]
         assert "UserSchema" in class_names
@@ -300,13 +294,7 @@ class TestParametrizeDetection:
 
     def test_parametrize_count_simple(self):
         parser = PythonParser()
-        code = (
-            "import pytest\n"
-            "\n"
-            "@pytest.mark.parametrize('x', [1, 2, 3])\n"
-            "def test_values(x):\n"
-            "    assert x > 0\n"
-        )
+        code = "import pytest\n\n@pytest.mark.parametrize('x', [1, 2, 3])\ndef test_values(x):\n    assert x > 0\n"
         result = parser.parse_file("tests/test_p.py", code)
         assert len(result.test_cases) == 1
         assert result.test_cases[0].parametrize_count == 3
@@ -349,26 +337,14 @@ class TestFixtureDetection:
 
     def test_fixture_detected(self):
         parser = PythonParser()
-        code = (
-            "import pytest\n"
-            "\n"
-            "@pytest.fixture\n"
-            "def client():\n"
-            "    return TestClient()\n"
-        )
+        code = "import pytest\n\n@pytest.fixture\ndef client():\n    return TestClient()\n"
         result = parser.parse_file("tests/conftest.py", code)
         assert len(result.functions) == 1
         assert result.functions[0].is_fixture is True
 
     def test_fixture_with_scope(self):
         parser = PythonParser()
-        code = (
-            "import pytest\n"
-            "\n"
-            "@pytest.fixture(scope='session')\n"
-            "def db():\n"
-            "    return Database()\n"
-        )
+        code = "import pytest\n\n@pytest.fixture(scope='session')\ndef db():\n    return Database()\n"
         result = parser.parse_file("tests/conftest.py", code)
         assert result.functions[0].is_fixture is True
 
@@ -453,11 +429,6 @@ class TestRouteExtraction:
 
     def test_fixture_with_args_still_detected(self):
         parser = PythonParser()
-        code = (
-            "import pytest\n\n"
-            "@pytest.fixture(scope='session')\n"
-            "def db():\n"
-            "    return 'db'\n"
-        )
+        code = "import pytest\n\n@pytest.fixture(scope='session')\ndef db():\n    return 'db'\n"
         result = parser.parse_file("conftest.py", code)
         assert result.functions[0].is_fixture is True

@@ -167,13 +167,7 @@ class TestCodeReferenceExtraction:
 
     def test_ignores_fenced_code_blocks(self):
         parser = MarkdownParser()
-        content = (
-            "# Example\n\n"
-            "```typescript\n"
-            "const x = new UserService();\n"
-            "```\n\n"
-            "Use `UserService` directly.\n"
-        )
+        content = "# Example\n\n```typescript\nconst x = new UserService();\n```\n\nUse `UserService` directly.\n"
         result = parser.parse("doc.md", content)
         # Only the inline `UserService` after the block should be captured
         entity_refs = [r for r in result.code_references if r.raw_text == "UserService"]

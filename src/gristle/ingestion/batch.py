@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from gristle.graph.client import GraphClient
+if TYPE_CHECKING:
+    from gristle.graph.client import GraphClient
 
 
 class BatchCollector:
