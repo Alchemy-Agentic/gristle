@@ -28,8 +28,9 @@ tests
 .coverage
 htmlcov
 
-# Documentation
+# Documentation (keep README.md for pyproject.toml metadata)
 *.md
+!README.md
 docs
 LICENSE
 
