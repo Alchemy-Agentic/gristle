@@ -94,6 +94,8 @@ tests/
   test_walker.py
   test_call_resolution.py  # Cross-file resolution integration tests
   test_batch.py            # BatchCollector and batch graph client tests
+  test_query_engine.py     # Query engine method tests (all 20 methods)
+  test_mcp_server.py       # MCP server tool, resource, and entry point tests
 ```
 
 ---
@@ -601,7 +603,7 @@ A `Timer` context manager is used in the MCP server to measure ingestion duratio
 
 ```bash
 # Start FalkorDB (Redis-compatible graph database)
-docker run -d -p 6380:6379 falkordb/falkordb
+docker run -d -p 6390:6379 falkordb/falkordb
 ```
 
 ### Installation
@@ -678,7 +680,7 @@ Gristle includes `railway.toml` for one-click Railway deployment. Deploy as a se
 | Env Variable | Value |
 |-------------|-------|
 | `GRISTLE_FALKORDB_HOST` | `falkordb.railway.internal` |
-| `GRISTLE_FALKORDB_PORT` | `6379` |
+| `GRISTLE_FALKORDB_PORT` | `6390` |
 | `GRISTLE_API_KEY` | *(your token)* |
 
 Railway injects `PORT` automatically. The Dockerfile sets `GRISTLE_TRANSPORT=streamable-http` by default.

@@ -39,7 +39,7 @@ Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`)
       "command": "gristle",
       "env": {
         "GRISTLE_FALKORDB_HOST": "localhost",
-        "GRISTLE_FALKORDB_PORT": "6379"
+        "GRISTLE_FALKORDB_PORT": "6390"
       }
     }
   }
@@ -78,7 +78,7 @@ Gristle is production-ready on Railway. Deploy it alongside a FalkorDB instance 
 | Variable | Value |
 |----------|-------|
 | `GRISTLE_FALKORDB_HOST` | Internal hostname of your FalkorDB service |
-| `GRISTLE_FALKORDB_PORT` | `6379` |
+| `GRISTLE_FALKORDB_PORT` | `6390` |
 | `GRISTLE_FALKORDB_PASSWORD` | Your FalkorDB password (if set) |
 | `GRISTLE_API_KEY` | A secret token for auth |
 
@@ -128,7 +128,7 @@ All settings are configured via environment variables with the `GRISTLE_` prefix
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB hostname |
-| `GRISTLE_FALKORDB_PORT` | `6380` | FalkorDB port |
+| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port |
 | `GRISTLE_FALKORDB_PASSWORD` | - | FalkorDB password (optional) |
 | `GRISTLE_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `GRISTLE_API_KEY` | - | Bearer token for HTTP auth (optional) |
@@ -168,8 +168,21 @@ curl https://gristle-production.up.railway.app/health
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # run tests
+pytest                    # run tests (383 tests)
+ruff check src/ tests/    # lint
+ruff format src/ tests/   # format
+mypy src/                 # type check
 ```
+
+### Docker
+
+Run both FalkorDB and Gristle together:
+
+```bash
+docker compose up -d
+```
+
+This starts FalkorDB on port 6390 and Gristle on port 8080 with streamable-http transport.
 
 ## Architecture
 
