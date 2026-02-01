@@ -15,5 +15,25 @@ services:
       timeout: 5s
       retries: 5
 
+  gristle:
+    build: .
+    ports:
+      - "${GRISTLE_HTTP_PORT:-8080}:8080"
+    environment:
+      GRISTLE_TRANSPORT: streamable-http
+      GRISTLE_FALKORDB_HOST: falkordb
+      GRISTLE_FALKORDB_PORT: "6379"
+      GRISTLE_FALKORDB_PASSWORD: "${GRISTLE_FALKORDB_PASSWORD:-}"
+      GRISTLE_API_KEY: "${GRISTLE_API_KEY:-}"
+      GRISTLE_INGESTION_BATCH_SIZE: "${GRISTLE_INGESTION_BATCH_SIZE:-200}"
+      GRISTLE_LOG_LEVEL: "${GRISTLE_LOG_LEVEL:-INFO}"
+      GRISTLE_LOG_FORMAT: json
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    volumes:
+      - gristle_repos:/app/repos
+
 volumes:
   falkordb_data:
+  gristle_repos:

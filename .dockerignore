@@ -1,11 +1,51 @@
-tests/
-scripts/
-*.md
-.git/
-.pytest_cache/
-__pycache__/
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__
 *.pyc
-.env
-.env.example
+*.pyo
+*.egg-info
+dist
+build
+.eggs
+
+# Virtual environments
+.venv
+venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Tests
+tests
+.pytest_cache
+.coverage
+htmlcov
+
+# Documentation
+*.md
+docs
+LICENSE
+
+# Docker
+Dockerfile
 docker-compose.yml
-railway.toml
+.dockerignore
+
+# Environment and config
+.env
+.env.*
+!.env.example
+
+# Repos cloned during ingestion
+repos
+
+# OS
+.DS_Store
+Thumbs.db
