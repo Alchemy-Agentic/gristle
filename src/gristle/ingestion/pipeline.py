@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from gristle.logging import Timer
+
 from gristle.config import settings
 from gristle.graph.client import GraphClient
 from gristle.graph.schema import ensure_schema
@@ -103,6 +105,9 @@ class IngestionPipeline:
 
     def ingest_repo(self, repo_path: str | Path) -> IngestionResult:
         """Full ingestion: walk, parse, and build the graph for a repository."""
+        total_timer = Timer()
+        total_timer.__enter__()
+
         repo_path = str(Path(repo_path).resolve())
         result = IngestionResult(
             repo_id=self.graph.repo_id,
@@ -138,40 +143,74 @@ class IngestionPipeline:
         logger.info("Found %d parseable files in %s", len(files), repo_path)
 
         # Phase 1: Parse all files and build nodes
-        parsed_files: list[ParsedFile] = []
-        for wf in files:
-            parsed = self._parse_and_build(wf, result)
-            if parsed:
-                parsed_files.append(parsed)
+        with Timer() as phase1:
+            parsed_files: list[ParsedFile] = []
+            for wf in files:
+                parsed = self._parse_and_build(wf, result)
+                if parsed:
+                    parsed_files.append(parsed)
 
-        # Detect Python source roots and register stripped module keys
-        self._register_python_source_roots(parsed_files)
+            # Detect Python source roots and register stripped module keys
+            self._register_python_source_roots(parsed_files)
 
-        # Store parsed files by path (for re-export resolution)
-        for pf in parsed_files:
-            self._parsed_files_by_path[pf.path] = pf
+            # Store parsed files by path (for re-export resolution)
+            for pf in parsed_files:
+                self._parsed_files_by_path[pf.path] = pf
 
-        # Build re-export maps for Python __init__.py files
-        self._build_init_reexport_maps(parsed_files)
-
-        # Phase 2: Resolve cross-file call relationships
-        self._resolve_calls(parsed_files, result)
-
-        # Phase 3: Walk and process documentation files
-        doc_files = walk_repo(repo_path, self._DOC_EXTENSIONS)
-        logger.info("Found %d documentation files in %s", len(doc_files), repo_path)
-        for wf in doc_files:
-            self._process_document(wf, result)
+            # Build re-export maps for Python __init__.py files
+            self._build_init_reexport_maps(parsed_files)
 
         logger.info(
-            "Ingestion complete: %d files, %d docs, %d nodes, %d relationships"
-            " (%d/%d doc refs resolved)",
+            "Phase 1 complete: parsed %d files, built %d nodes",
+            result.files_processed,
+            result.nodes_created,
+            extra={"event": "phase1_done", "duration_ms": phase1.ms,
+                   "repo_id": self.graph.repo_id,
+                   "files": result.files_processed,
+                   "nodes": result.nodes_created},
+        )
+
+        # Phase 2: Resolve cross-file call relationships
+        rels_before = result.relationships_created
+        with Timer() as phase2:
+            self._resolve_calls(parsed_files, result)
+
+        logger.info(
+            "Phase 2 complete: resolved %d relationships",
+            result.relationships_created - rels_before,
+            extra={"event": "phase2_done", "duration_ms": phase2.ms,
+                   "repo_id": self.graph.repo_id,
+                   "rels": result.relationships_created - rels_before},
+        )
+
+        # Phase 3: Walk and process documentation files
+        with Timer() as phase3:
+            doc_files = walk_repo(repo_path, self._DOC_EXTENSIONS)
+            for wf in doc_files:
+                self._process_document(wf, result)
+
+        logger.info(
+            "Phase 3 complete: processed %d docs (%d/%d refs resolved)",
+            result.docs_processed,
+            result.doc_references_resolved,
+            result.doc_references_total,
+            extra={"event": "phase3_done", "duration_ms": phase3.ms,
+                   "repo_id": self.graph.repo_id},
+        )
+
+        total_timer.__exit__(None, None, None)
+        logger.info(
+            "Ingestion complete: %d files, %d docs, %d nodes, %d relationships in %.1fs",
             result.files_processed,
             result.docs_processed,
             result.nodes_created,
             result.relationships_created,
-            result.doc_references_resolved,
-            result.doc_references_total,
+            total_timer.ms / 1000,
+            extra={"event": "ingestion_done", "duration_ms": total_timer.ms,
+                   "repo_id": self.graph.repo_id,
+                   "files": result.files_processed,
+                   "nodes": result.nodes_created,
+                   "rels": result.relationships_created},
         )
         return result
 

@@ -134,6 +134,96 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+async def gristle_ingest_github(
+    repo_url: str,
+    token: str | None = None,
+    ref: str | None = None,
+    repo_id: str | None = None,
+) -> dict:
+    """Clone and index a GitHub repository into the Gristle code graph.
+
+    Clones the repository to a temporary directory, runs full ingestion,
+    then deletes the clone. The code graph persists in FalkorDB.
+
+    Args:
+        repo_url: GitHub repository — either "owner/repo" or a full URL
+                  like "https://github.com/owner/repo".
+        token: Optional GitHub personal access token for private repos.
+        ref: Optional branch, tag, or commit SHA to check out.
+        repo_id: Optional short identifier for this repo. Defaults to a
+                 hash derived from the repo URL.
+    """
+    import shutil
+    import tempfile
+
+    from git import Repo
+
+    # Normalize repo_url to a clone-able HTTPS URL
+    if repo_url.startswith(("http://", "https://")):
+        clone_url = repo_url
+    else:
+        # "owner/repo" shorthand
+        clone_url = f"https://github.com/{repo_url}.git"
+
+    # Inject token into URL for private repos
+    if token and clone_url.startswith("https://"):
+        clone_url = clone_url.replace(
+            "https://", f"https://x-access-token:{token}@", 1
+        )
+
+    # Derive a stable repo_id from the URL (strip token first)
+    clean_url = repo_url if not repo_url.startswith("http") else repo_url
+    rid = repo_id or GraphClient.repo_id_from_path(clean_url)
+
+    tmp_dir = tempfile.mkdtemp(prefix="gristle_")
+    try:
+        # Clone (shallow for speed)
+        clone_kwargs: dict = {"depth": 1}
+        if ref:
+            clone_kwargs["branch"] = ref
+        logger.info("Cloning %s to %s", repo_url, tmp_dir)
+        Repo.clone_from(clone_url, tmp_dir, **clone_kwargs)
+
+        # Ingest using existing pipeline
+        graph = GraphClient(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            repo_id=rid,
+            password=settings.falkordb_password,
+        )
+        pipeline = IngestionPipeline(graph, _registry)
+        result = pipeline.ingest_repo(tmp_dir)
+
+        engine = QueryEngine(graph, repo_path=tmp_dir)
+        _engines[rid] = engine
+        _pipelines[rid] = pipeline
+
+        return {
+            "status": "success",
+            "repo_id": rid,
+            "graph_name": graph.graph_name,
+            "files_processed": result.files_processed,
+            "files_skipped": result.files_skipped,
+            "docs_processed": result.docs_processed,
+            "nodes_created": result.nodes_created,
+            "relationships_created": result.relationships_created,
+            "routes_found": result.routes_found,
+            "components_found": result.components_found,
+            "test_files_found": result.test_files_found,
+            "test_cases_found": result.test_cases_found,
+            "dependencies_found": result.dependencies_found,
+            "test_coverage_edges": result.test_coverage_edges,
+            "errors": result.errors[:10] if result.errors else [],
+        }
+    except Exception as e:
+        logger.error("Failed to ingest %s: %s", repo_url, e)
+        return {"error": str(e)}
+    finally:
+        # Always clean up the clone
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@mcp.tool()
 async def gristle_watch(
     action: str = "status",
     repo_id: str | None = None,
@@ -613,6 +703,37 @@ async def gristle_semantic_search(
     }
 
 
+@mcp.tool()
+async def gristle_drop(
+    repo_id: str,
+) -> dict:
+    """Drop a repository's code graph from FalkorDB.
+
+    Use this to clean up ephemeral graphs after analysis is complete.
+    Removes all graph data and frees memory.
+
+    Args:
+        repo_id: Repository identifier to drop.
+    """
+    engine = _engines.pop(repo_id, None)
+    _pipelines.pop(repo_id, None)
+    _semantic_indexes.pop(repo_id, None)
+
+    if engine is None:
+        # Still try to drop the graph directly
+        graph = GraphClient(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            repo_id=repo_id,
+            password=settings.falkordb_password,
+        )
+        graph.drop()
+        return {"status": "dropped", "repo_id": repo_id, "was_loaded": False}
+
+    engine.graph.drop()
+    return {"status": "dropped", "repo_id": repo_id, "was_loaded": True}
+
+
 # ======================================================================
 # Resources
 # ======================================================================
@@ -665,12 +786,13 @@ def _resolve_engine(repo_id: str | None) -> QueryEngine | None:
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    from gristle.logging import configure_logging
 
     transport = settings.transport
     if transport not in ("stdio", "streamable-http"):
         raise SystemExit(f"Unknown transport: {transport}. Use 'stdio' or 'streamable-http'.")
 
+    configure_logging(transport)
     logger.info("Starting Gristle MCP server (transport=%s)", transport)
     mcp.run(transport=transport)
 
