@@ -412,6 +412,7 @@ class TypeScriptParser(LanguageParser):
         qualified = f"{file_path}::{class_name}.{name}"
 
         calls = self._extract_calls(body, src) if body else []
+        callback_refs = self._extract_callback_refs(body, src) if body else []
 
         return ParsedFunction(
             name=name,
@@ -427,6 +428,7 @@ class TypeScriptParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            callback_refs=callback_refs,
         )
 
     # ------------------------------------------------------------------
@@ -477,6 +479,7 @@ class TypeScriptParser(LanguageParser):
         sig = f"{'async ' if is_async else ''}function {name}{params_text}{f': {return_text}' if return_text else ''}"
 
         calls = self._extract_calls(body, src) if body else []
+        callback_refs = self._extract_callback_refs(body, src) if body else []
 
         return ParsedFunction(
             name=name,
@@ -491,6 +494,7 @@ class TypeScriptParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            callback_refs=callback_refs,
         )
 
     def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
@@ -520,6 +524,7 @@ class TypeScriptParser(LanguageParser):
                 )
 
                 calls = self._extract_calls(body, src) if body else []
+                callback_refs = self._extract_callback_refs(body, src) if body else []
 
                 return ParsedFunction(
                     name=name,
@@ -534,12 +539,23 @@ class TypeScriptParser(LanguageParser):
                     return_type=return_text,
                     complexity=self._cyclomatic_complexity(body) if body else 1,
                     calls=calls,
+                    callback_refs=callback_refs,
                 )
         return None
 
     # ------------------------------------------------------------------
     # Call extraction
     # ------------------------------------------------------------------
+
+    # Method names that indicate a callback/handler pattern
+    _MIDDLEWARE_METHODS = frozenset({"use", "middleware"})
+    _ROUTE_METHODS = frozenset({"get", "post", "put", "delete", "patch", "all", "head", "options"})
+    _EVENT_METHODS = frozenset({"on", "once", "addEventListener", "addListener", "removeListener"})
+    _PROMISE_METHODS = frozenset({"then", "catch", "finally"})
+    _ARRAY_METHODS = frozenset({
+        "map", "filter", "reduce", "forEach", "find", "findIndex",
+        "some", "every", "flatMap", "sort", "reduceRight",
+    })
 
     def _extract_calls(self, node: Node, src: bytes) -> list[str]:
         calls: list[str] = []
@@ -551,6 +567,75 @@ class TypeScriptParser(LanguageParser):
                 seen.add(c)
                 unique.append(c)
         return unique
+
+    def _extract_callback_refs(
+        self, node: Node, src: bytes,
+    ) -> list[tuple[str, str]]:
+        """Extract (callee_name, context) for function references passed as arguments."""
+        refs: list[tuple[str, str]] = []
+        self._walk_callback_refs(node, src, refs)
+        # Deduplicate while preserving order
+        seen: set[tuple[str, str]] = set()
+        unique: list[tuple[str, str]] = []
+        for r in refs:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    def _walk_callback_refs(
+        self, node: Node, src: bytes, out: list[tuple[str, str]],
+    ) -> None:
+        if node.type == "call_expression":
+            func_node = node.child_by_field_name("function")
+            args_node = node.child_by_field_name("arguments")
+            if func_node and args_node:
+                method_name = self._get_method_name(func_node, src)
+                context = self._classify_callback_context(method_name)
+                if context:
+                    self._collect_callback_args(args_node, src, context, out)
+        for child in node.children:
+            self._walk_callback_refs(child, src, out)
+
+    def _get_method_name(self, func_node: Node, src: bytes) -> str | None:
+        """Extract the method name from a call expression's function node."""
+        if func_node.type == "member_expression":
+            prop = func_node.child_by_field_name("property")
+            if prop:
+                return self._text(prop, src)
+        if func_node.type == "identifier":
+            return self._text(func_node, src)
+        return None
+
+    def _classify_callback_context(self, method_name: str | None) -> str | None:
+        """Return the callback context for a known method, or None."""
+        if not method_name:
+            return None
+        if method_name in self._MIDDLEWARE_METHODS:
+            return "middleware"
+        if method_name in self._ROUTE_METHODS:
+            return "route_handler"
+        if method_name in self._EVENT_METHODS:
+            return "callback"
+        if method_name in self._PROMISE_METHODS:
+            return "callback"
+        if method_name in self._ARRAY_METHODS:
+            return "array_method"
+        return None
+
+    def _collect_callback_args(
+        self,
+        args_node: Node,
+        src: bytes,
+        context: str,
+        out: list[tuple[str, str]],
+    ) -> None:
+        """Collect identifier/member_expression arguments as callback refs."""
+        for child in args_node.named_children:
+            if child.type in ("identifier", "member_expression"):
+                name = self._resolve_call_name(child, src)
+                if name:
+                    out.append((name, context))
 
     def _walk_calls(self, node: Node, src: bytes, out: list[str]) -> None:
         if node.type == "call_expression":

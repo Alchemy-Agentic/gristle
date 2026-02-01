@@ -182,7 +182,7 @@ curl https://gristle-production.up.railway.app/health
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # run tests (576 tests)
+pytest                    # run tests (617 tests)
 ruff check src/ tests/    # lint
 ruff format src/ tests/   # format
 mypy src/                 # type check

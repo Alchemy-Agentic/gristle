@@ -875,6 +875,14 @@ class IngestionPipeline:
             if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper() and callee_id:
                 batch.add_merge_relationship("USES_HOOK", caller_id, callee_id)
 
+        # Resolve callback/handler references -> PASSED_TO edges
+        for ref_name, context in func.callback_refs:
+            callee_id = self._find_callee(ref_name, func, pf)
+            if callee_id:
+                batch.add_merge_relationship(
+                    "PASSED_TO", caller_id, callee_id, {"context": context},
+                )
+
     def _find_callee(
         self,
         call_name: str,

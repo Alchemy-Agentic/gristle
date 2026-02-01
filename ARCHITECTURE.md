@@ -106,6 +106,7 @@ tests/
   test_parser_registry.py  # Parser dispatch and build_default
   test_auth.py             # ApiKeyVerifier token validation
   test_embeddings.py       # CodeEmbedder and SemanticIndex (mocked model)
+  test_callback_detection.py # Callback/handler detection (PASSED_TO edges) for TS/JS and Python
 ```
 
 ---
@@ -165,6 +166,7 @@ Represents a function or method.
 | `return_type` | `str \| None` | Return type annotation |
 | `complexity` | `int` | Cyclomatic complexity (default 1) |
 | `calls` | `list[str]` | Raw call names extracted from body |
+| `callback_refs` | `list[tuple[str, str]]` | `(callee_name, context)` — function references passed as arguments (middleware, route_handler, callback, array_method, argument) |
 | `parameters` | `list[str]` | Parameter names (excluding self/cls) |
 | `todos` | `list[str]` | TODO/FIXME/HACK comments in body |
 
@@ -285,6 +287,7 @@ Container for all entities parsed from a single source file.
 | `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
 | `EXPORTS` | File | Function, Class | Module exports |
 | `CALLS` | Function | Function | Function call (with `depth` property) |
+| `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument) |
 | `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
 | `INHERITS_FROM` | Class | Class | Class inheritance |
 | `IMPORTS` | File | File | File-level import dependency |
@@ -328,6 +331,8 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 
 **Call extraction:** Walks the function body AST for `call` nodes. Resolves `self.method` to `ClassName.method` within the parser itself.
 
+**Callback detection:** Identifies function references passed as arguments to known higher-order patterns. Detects: `map(fn, iter)`, `filter(fn, iter)`, `sorted(iter, key=fn)`, `.connect(fn)`, `.on(event, fn)`, `.add_middleware(fn)`, `.add_route(path, fn)`. Each produces a `(callee_name, context)` tuple on `callback_refs`.
+
 ### TypeScript/JavaScript Parser (`parsers/typescript.py`)
 
 **Extensions:** `.ts`, `.tsx` (TypeScript), `.js`, `.jsx` (JavaScript)
@@ -346,6 +351,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Supabase/Deno:** `serve()` / `Deno.serve()` entry point detection and route extraction
 - **Entry points:** Next.js pages, Storybook stories, React components, serverless handlers (`handler` export), barrel-only hooks (`use*` in `index.ts`), `main()` exports, route handlers — each sets `entry_point_reason`
 - **Module docstrings:** Leading JSDoc blocks, `@module`/`@fileoverview` tags, or `//` comments extracted as `module_docstring`
+- **Callback detection:** Identifies function references passed as arguments to known patterns: `.use(fn)` (middleware), `.get/.post(path, fn)` (route_handler), `.on/.addEventListener(event, fn)` (callback), `.then/.catch(fn)` (callback), `.map/.filter/.forEach/.reduce/.sort(fn)` (array_method). Each produces a `(callee_name, context)` tuple on `callback_refs`.
 
 ### Config Parser (`parsers/config.py`)
 
@@ -411,12 +417,13 @@ This phase creates all relationship edges that require cross-file knowledge:
 1. **Detect Python source roots** (e.g., `src/`, `lib/`) for module path resolution.
 2. **Register stripped module keys** so `from mypackage.utils import x` resolves correctly.
 3. **Resolve CALLS edges** for every function's `calls` list using a 6-step strategy (see below).
-4. **Resolve INHERITS_FROM edges** between classes, populating `_class_bases` for MRO walking.
-5. **Resolve IMPORTS edges** (File -> File) based on import statements.
-6. **Resolve TESTS edges** (test File -> production File) by matching import paths.
-7. **Resolve USES_FIXTURE edges** (test Function -> fixture Function) by parameter name matching.
-8. **Resolve TESTS_FUNCTION edges** (test Function -> production Function) by walking test functions' CALLS edges to depth 2, then updating `tested_by_count` on production functions.
-9. **Resolve USES_DEPENDENCY edges** for external packages.
+4. **Resolve PASSED_TO edges** for every function's `callback_refs` list using the same 6-step resolution. Each edge carries a `context` property (middleware, route_handler, callback, array_method, argument).
+5. **Resolve INHERITS_FROM edges** between classes, populating `_class_bases` for MRO walking.
+6. **Resolve IMPORTS edges** (File -> File) based on import statements.
+7. **Resolve TESTS edges** (test File -> production File) by matching import paths.
+8. **Resolve USES_FIXTURE edges** (test Function -> fixture Function) by parameter name matching.
+9. **Resolve TESTS_FUNCTION edges** (test Function -> production Function) by walking test functions' CALLS edges to depth 2, then updating `tested_by_count` on production functions.
+10. **Resolve USES_DEPENDENCY edges** for external packages.
 
 ### Config Phase: Config Files & Environment Variables
 

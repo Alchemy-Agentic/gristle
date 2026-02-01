@@ -485,10 +485,15 @@ class PythonParser(LanguageParser):
 
         # Extract calls from the function body
         calls = self._extract_calls(body, src) if body else []
+        callback_refs = self._extract_callback_refs(body, src) if body else []
 
         # Resolve self.method -> ClassName.method
         if class_name:
             calls = [f"{class_name}.{c[5:]}" if c.startswith("self.") else c for c in calls]
+            callback_refs = [
+                (f"{class_name}.{name[5:]}" if name.startswith("self.") else name, ctx)
+                for name, ctx in callback_refs
+            ]
 
         is_fixture = any(
             d in ("fixture", "pytest.fixture") or d.startswith("fixture(") or d.startswith("pytest.fixture(")
@@ -513,6 +518,7 @@ class PythonParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            callback_refs=callback_refs,
             parameters=param_names,
         )
 
@@ -557,6 +563,111 @@ class PythonParser(LanguageParser):
                     return f"{obj_name}.{attr_name}"
                 return attr_name
         return None
+
+    # ------------------------------------------------------------------
+    # Callback / handler detection
+    # ------------------------------------------------------------------
+
+    # Known patterns where arguments are function references
+    # First-arg-is-callback builtins: map(fn, iter), filter(fn, iter), reduce(fn, iter)
+    _PY_FIRST_ARG_HOF = frozenset({"map", "filter", "reduce", "functools.reduce"})
+    # Keyword-arg-is-callback builtins: sorted(iter, key=fn)
+    _PY_KWARG_HOF = frozenset({"sorted", "min", "max"})
+    _PY_EVENT_METHODS = frozenset({"connect", "on", "add_handler", "add_event_handler"})
+    _PY_MIDDLEWARE_METHODS = frozenset({"add_middleware", "middleware", "use"})
+    _PY_ROUTE_METHODS = frozenset({"add_route", "add_api_route", "add_url_rule"})
+    _PY_ARRAY_METHODS = frozenset({"apply"})
+
+    def _extract_callback_refs(
+        self, node: Node, src: bytes,
+    ) -> list[tuple[str, str]]:
+        """Extract (callee_name, context) for function references passed as arguments."""
+        refs: list[tuple[str, str]] = []
+        self._walk_callback_refs(node, src, refs)
+        seen: set[tuple[str, str]] = set()
+        unique: list[tuple[str, str]] = []
+        for r in refs:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    def _walk_callback_refs(
+        self, node: Node, src: bytes, out: list[tuple[str, str]],
+    ) -> None:
+        if node.type == "call":
+            func_node = node.child_by_field_name("function")
+            args_node = node.child_by_field_name("arguments")
+            if func_node and args_node:
+                call_name = self._resolve_call_name(func_node, src)
+                context = self._classify_py_callback_context(call_name)
+                if context:
+                    self._collect_py_callback_args(args_node, src, context, call_name, out)
+        for child in node.children:
+            self._walk_callback_refs(child, src, out)
+
+    def _classify_py_callback_context(self, call_name: str | None) -> str | None:
+        """Return the callback context for a known Python pattern, or None."""
+        if not call_name:
+            return None
+        # Builtin higher-order functions: map(fn, iterable), filter(fn, iterable)
+        if call_name in self._PY_FIRST_ARG_HOF:
+            return "argument"
+        # Keyword-arg HOFs: sorted(iter, key=fn)
+        if call_name in self._PY_KWARG_HOF:
+            return "argument"
+        # Method-based patterns: check the last dotted part
+        method = call_name.rsplit(".", 1)[-1] if "." in call_name else call_name
+        if method in self._PY_EVENT_METHODS:
+            return "callback"
+        if method in self._PY_MIDDLEWARE_METHODS:
+            return "middleware"
+        if method in self._PY_ROUTE_METHODS:
+            return "route_handler"
+        if method in self._PY_ARRAY_METHODS:
+            return "array_method"
+        return None
+
+    _PY_CALLBACK_KWARG_NAMES = frozenset({
+        "key", "default", "callback", "handler", "func", "target",
+    })
+
+    def _collect_py_callback_args(
+        self,
+        args_node: Node,
+        src: bytes,
+        context: str,
+        call_name: str | None,
+        out: list[tuple[str, str]],
+    ) -> None:
+        """Collect identifier/attribute arguments as callback refs."""
+        first_arg_only = call_name in self._PY_FIRST_ARG_HOF
+        kwarg_only = call_name in self._PY_KWARG_HOF
+        found_first = False
+        for child in args_node.named_children:
+            if child.type == "keyword_argument":
+                # Handle key=fn in sorted(iterable, key=fn)
+                key_node = child.child_by_field_name("name")
+                value_node = child.child_by_field_name("value")
+                if key_node and value_node:
+                    key_text = self._text(key_node, src)
+                    if key_text in self._PY_CALLBACK_KWARG_NAMES and value_node.type in ("identifier", "attribute"):
+                            name = self._resolve_call_name(value_node, src)
+                            if name:
+                                out.append((name, context))
+            elif kwarg_only:
+                # For sorted/min/max, only keyword args are callbacks
+                continue
+            elif child.type in ("identifier", "attribute"):
+                name = self._resolve_call_name(child, src)
+                if name:
+                    out.append((name, context))
+                    if first_arg_only:
+                        return
+                    found_first = True
+            elif first_arg_only and not found_first:
+                # For map/filter, skip if first arg is not an identifier
+                return
 
     # ------------------------------------------------------------------
     # Decorators

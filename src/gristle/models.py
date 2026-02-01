@@ -39,6 +39,7 @@ class ParsedFunction:
     return_type: str | None = None
     complexity: int = 1
     calls: list[str] = field(default_factory=list)
+    callback_refs: list[tuple[str, str]] = field(default_factory=list)  # (callee_name, context)
     parameters: list[str] = field(default_factory=list)  # Parameter names
     todos: list[str] = field(default_factory=list)  # TODO/FIXME/HACK comments
 
