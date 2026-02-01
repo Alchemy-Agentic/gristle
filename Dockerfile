@@ -17,6 +17,11 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# git is required by gristle_ingest_github (clones repos via gitpython)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin/gristle /usr/local/bin/gristle
 
