@@ -1,46 +1,36 @@
 # Gristle
 
-Graph-based code intelligence for AI agents. Gristle parses repositories into a
-queryable [FalkorDB](https://www.falkordb.com/) graph, preserving structural
-relationships — function calls, imports, inheritance, test coverage — so AI
-agents can reason about code architecture instead of searching over chunks.
+Graph-based code intelligence for AI agents. Gristle parses repositories into a [FalkorDB](https://www.falkordb.com/) graph database, preserving structural relationships — function calls, imports, inheritance, data flow — so AI agents can query code the way humans think about it.
 
-## Key features
+## Why graphs instead of vectors?
 
-- **Multi-language parsing** — Python, TypeScript, JavaScript via tree-sitter
-- **Import-aware call resolution** — 6-step strategy including inheritance
-  walking, barrel-file re-exports, and fixture mapping
-- **13 MCP tools** — explore, impact analysis, call tracing, route discovery,
-  component listing, dependency mapping, test coverage, conventions, and more
-- **Semantic search** — optional vector embeddings via sentence-transformers
-- **Incremental updates** — file watcher for live graph re-indexing
-- **Remote or local** — stdio transport for local dev, streamable-http for
-  production (Railway, Docker)
+Vector search over chunked code loses structure. "Function A calls function B which inherits from class C" becomes three unrelated text chunks. Gristle keeps these relationships as first-class edges in a graph, enabling queries like:
+
+- **Impact analysis** — "What breaks if I change this function?"
+- **Call tracing** — "How does data flow from the API handler to the database?"
+- **Convention inference** — "What patterns does this project follow?"
+
+## Supported languages
+
+| Language | Functions | Classes | Imports | Routes | Components | Tests |
+|----------|-----------|---------|---------|--------|------------|-------|
+| Python | Yes | Yes | Yes | FastAPI, Flask, Django | - | pytest |
+| TypeScript | Yes | Yes | Yes | Express, Hono, Fastify | React | jest, vitest |
+| JavaScript | Yes | Yes | Yes | Express, Hono, Fastify | React | jest, vitest |
 
 ## Quick start
 
-### 1. Start FalkorDB
+### Local (stdio transport)
+
+Start FalkorDB, then run Gristle as a local MCP server:
 
 ```bash
-docker compose up -d
+docker compose up -d          # start FalkorDB
+pip install -e ".[dev]"       # install Gristle
+gristle                       # start MCP server (stdio)
 ```
 
-### 2. Install Gristle
-
-```bash
-pip install -e .
-
-# Optional: enable semantic search
-pip install -e ".[search]"
-```
-
-### 3. Run as a local MCP server (stdio)
-
-```bash
-gristle
-```
-
-Or add it to your MCP client config (e.g. Claude Desktop):
+Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`):
 
 ```json
 {
@@ -56,108 +46,120 @@ Or add it to your MCP client config (e.g. Claude Desktop):
 }
 ```
 
-### 4. Run as an HTTP server (production)
+### Remote (HTTP transport)
+
+Run as an HTTP server for shared or cloud deployments:
 
 ```bash
 GRISTLE_TRANSPORT=streamable-http \
-GRISTLE_FALKORDB_HOST=your-falkordb-host \
-GRISTLE_API_KEY=your-secret \
+GRISTLE_API_KEY=your-secret-key \
 gristle
 ```
 
-## Usage
+Connect from your MCP client:
 
-Once connected, an AI agent calls tools in this order:
-
+```json
+{
+  "mcpServers": {
+    "gristle": {
+      "url": "https://gristle-production.up.railway.app/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-key"
+      }
+    }
+  }
+}
 ```
-1. gristle_ingest(repo_path="/path/to/repo")   # Build the graph
-2. gristle_conventions()                         # Learn project structure
-3. gristle_explore(entity="UserService")         # Dive into specifics
-4. gristle_impact(entity_name="authenticate")    # Check blast radius
-```
 
-### MCP tools
+### Railway
 
-| Tool | Purpose |
-|---|---|
-| `gristle_ingest` | Index a local repository |
-| `gristle_ingest_github` | Clone and index a GitHub repo |
-| `gristle_watch` | Start/stop incremental file watching |
-| `gristle_explore` | Explore a function, class, or file |
-| `gristle_impact` | Blast radius analysis |
-| `gristle_trace` | Find call paths between two entities |
+Gristle is production-ready on Railway. Deploy it alongside a FalkorDB instance and set these environment variables:
+
+| Variable | Value |
+|----------|-------|
+| `GRISTLE_FALKORDB_HOST` | Internal hostname of your FalkorDB service |
+| `GRISTLE_FALKORDB_PORT` | `6379` |
+| `GRISTLE_FALKORDB_PASSWORD` | Your FalkorDB password (if set) |
+| `GRISTLE_API_KEY` | A secret token for auth |
+
+Railway auto-injects `PORT` which Gristle picks up. The transport defaults to `streamable-http` in the Docker image.
+
+## MCP tools
+
+Once connected, the agent has access to these tools:
+
+| Tool | Description |
+|------|-------------|
+| `gristle_ingest` | Index a local repository into the code graph |
+| `gristle_ingest_github` | Clone and index a GitHub repo (supports private repos with token) |
+| `gristle_explore` | Look up a function, class, or file with full context |
+| `gristle_impact` | Blast radius analysis — what breaks if you change something |
+| `gristle_trace` | Find call paths between two functions |
 | `gristle_search` | Search by name or docstring |
-| `gristle_docs` | Query documentation relationships |
-| `gristle_routes` | List HTTP endpoints |
-| `gristle_components` | List React/UI components |
-| `gristle_deps` | External dependency analysis |
-| `gristle_tests` | Test coverage queries |
+| `gristle_docs` | Find documentation referencing code entities |
+| `gristle_routes` | List all HTTP endpoints |
+| `gristle_components` | List React/UI components with usage counts |
+| `gristle_deps` | Query external dependency usage |
+| `gristle_tests` | Find tests for an entity or list untested functions |
 | `gristle_conventions` | Infer project patterns and structure |
-| `gristle_embed` | Build semantic search index |
-| `gristle_semantic_search` | Find code by natural language |
-| `gristle_drop` | Remove a repo's graph |
+| `gristle_watch` | Start/stop file watching for incremental re-indexing |
+| `gristle_drop` | Remove a repo's graph from FalkorDB |
+
+### Example workflow
+
+```
+Agent: gristle_ingest_github("owner/repo")
+  → 847 files, 12,340 nodes, 8,921 relationships
+
+Agent: gristle_conventions()
+  → FastAPI project, pytest, src/ layout, 42 routes
+
+Agent: gristle_impact("create_user")
+  → 3 direct callers, 7 transitive, 4 test files affected
+
+Agent: gristle_trace("api_handler", "send_email")
+  → api_handler → create_user → notify_user → send_email
+```
 
 ## Configuration
 
-All settings use the `GRISTLE_` prefix and can be set via environment variables
-or a `.env` file.
+All settings are configured via environment variables with the `GRISTLE_` prefix. See [.env.example](.env.example) for the full list.
 
 | Variable | Default | Description |
-|---|---|---|
+|----------|---------|-------------|
 | `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB hostname |
 | `GRISTLE_FALKORDB_PORT` | `6380` | FalkorDB port |
-| `GRISTLE_FALKORDB_PASSWORD` | — | FalkorDB password (optional) |
+| `GRISTLE_FALKORDB_PASSWORD` | - | FalkorDB password (optional) |
 | `GRISTLE_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
-| `GRISTLE_HTTP_HOST` | `0.0.0.0` | HTTP bind address |
-| `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) |
-| `GRISTLE_API_KEY` | — | Bearer token auth (optional) |
-| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this |
-| `GRISTLE_REPO_STORAGE_PATH` | `./repos` | Temp storage for cloned repos |
-| `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | File watcher debounce |
+| `GRISTLE_API_KEY` | - | Bearer token for HTTP auth (optional) |
+| `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `GRISTLE_LOG_FORMAT` | auto | `json` for structured, `text` for human-readable |
 
-## Docker
+## Observability
 
-```bash
-# Build
-docker build -t gristle .
+Gristle outputs structured JSON logs in production (HTTP transport) and coloured human-readable logs in development (stdio). All ingestion operations include timing data:
 
-# Run with external FalkorDB
-docker run -p 8080:8080 \
-  -e GRISTLE_FALKORDB_HOST=host.docker.internal \
-  -e GRISTLE_API_KEY=your-secret \
-  gristle
+```json
+{"ts": "2026-01-31T14:22:03", "level": "INFO", "logger": "gristle.ingestion.pipeline",
+ "msg": "Ingestion complete: 847 files, 12 docs, 12340 nodes, 8921 relationships in 4.2s",
+ "event": "ingestion_done", "duration_ms": 4231.7, "repo_id": "a1b2c3d4e5f6",
+ "files": 847, "nodes": 12340, "rels": 8921}
 ```
 
-## Deploy to Railway
+The `/health` endpoint returns server status without auth:
 
-The repo includes a `railway.toml` ready for deployment. Add a FalkorDB service
-to your Railway project and set `GRISTLE_FALKORDB_HOST` to the internal hostname.
+```bash
+curl https://gristle-production.up.railway.app/health
+# {"status": "ok", "server": "gristle", "version": "0.1.0", "repos_loaded": 2, ...}
+```
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                    # run tests
 ```
 
 ## Architecture
 
-Gristle builds a code graph with these node types:
-
-- **File** — source files and documents
-- **Function** — functions, methods, test cases
-- **Class** — classes, interfaces, type aliases
-- **Import** — import statements
-- **Route** — HTTP endpoints
-- **Document** — markdown documentation
-
-Connected by relationships like `CALLS`, `IMPORTS`, `DEFINED_IN`, `CONTAINS`,
-`INHERITS`, `TESTS`, `DOCUMENTS`, `DEPENDS_ON`, and more.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full data model and design
-decisions, [gristle-spec.md](gristle-spec.md) for the detailed specification,
-and [MCP_USAGE_GUIDE.md](MCP_USAGE_GUIDE.md) for the tool reference.
-
-## License
-
-Proprietary — Alchemy Agentic
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design — graph schema, ingestion pipeline, call resolution strategy, and query templates.

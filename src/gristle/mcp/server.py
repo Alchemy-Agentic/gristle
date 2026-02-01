@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse
 from gristle.config import settings
 from gristle.graph.client import GraphClient
 from gristle.ingestion.pipeline import IngestionPipeline
+from gristle.logging import Timer
 from gristle.parsers.registry import ParserRegistry
 from gristle.query.engine import QueryEngine
 
@@ -69,10 +70,15 @@ def _get_engine(repo_id: str) -> QueryEngine | None:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> JSONResponse:
+    from gristle import __version__
+
     return JSONResponse({
         "status": "ok",
         "server": "gristle",
+        "version": __version__,
+        "transport": settings.transport,
         "repos_loaded": len(_engines),
+        "repos": list(_engines.keys()),
     })
 
 
@@ -106,11 +112,21 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
         password=settings.falkordb_password,
     )
     pipeline = IngestionPipeline(graph, _registry)
-    result = pipeline.ingest_repo(repo_path_resolved)
+
+    with Timer() as t:
+        result = pipeline.ingest_repo(repo_path_resolved)
 
     engine = QueryEngine(graph, repo_path=repo_path_resolved)
     _engines[rid] = engine
     _pipelines[rid] = pipeline
+
+    logger.info(
+        "gristle_ingest completed for %s",
+        rid,
+        extra={"event": "tool_ingest", "repo_id": rid,
+               "duration_ms": t.ms, "files": result.files_processed,
+               "nodes": result.nodes_created, "rels": result.relationships_created},
+    )
 
     return {
         "status": "success",
@@ -129,6 +145,7 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
         "todos_found": result.todos_found,
         "dependencies_found": result.dependencies_found,
         "test_coverage_edges": result.test_coverage_edges,
+        "duration_ms": t.ms,
         "errors": result.errors[:10] if result.errors else [],
     }
 
@@ -181,8 +198,16 @@ async def gristle_ingest_github(
         clone_kwargs: dict = {"depth": 1}
         if ref:
             clone_kwargs["branch"] = ref
-        logger.info("Cloning %s to %s", repo_url, tmp_dir)
-        Repo.clone_from(clone_url, tmp_dir, **clone_kwargs)
+
+        with Timer() as clone_timer:
+            logger.info("Cloning %s to %s", repo_url, tmp_dir)
+            Repo.clone_from(clone_url, tmp_dir, **clone_kwargs)
+
+        logger.info(
+            "Clone completed",
+            extra={"event": "clone_done", "repo_id": rid,
+                   "duration_ms": clone_timer.ms},
+        )
 
         # Ingest using existing pipeline
         graph = GraphClient(
@@ -192,11 +217,23 @@ async def gristle_ingest_github(
             password=settings.falkordb_password,
         )
         pipeline = IngestionPipeline(graph, _registry)
-        result = pipeline.ingest_repo(tmp_dir)
+
+        with Timer() as ingest_timer:
+            result = pipeline.ingest_repo(tmp_dir)
 
         engine = QueryEngine(graph, repo_path=tmp_dir)
         _engines[rid] = engine
         _pipelines[rid] = pipeline
+
+        logger.info(
+            "gristle_ingest_github completed for %s",
+            rid,
+            extra={"event": "tool_ingest_github", "repo_id": rid,
+                   "duration_ms": clone_timer.ms + ingest_timer.ms,
+                   "files": result.files_processed,
+                   "nodes": result.nodes_created,
+                   "rels": result.relationships_created},
+        )
 
         return {
             "status": "success",
@@ -213,10 +250,11 @@ async def gristle_ingest_github(
             "test_cases_found": result.test_cases_found,
             "dependencies_found": result.dependencies_found,
             "test_coverage_edges": result.test_coverage_edges,
+            "duration_ms": clone_timer.ms + ingest_timer.ms,
             "errors": result.errors[:10] if result.errors else [],
         }
     except Exception as e:
-        logger.error("Failed to ingest %s: %s", repo_url, e)
+        logger.error("Failed to ingest %s: %s", repo_url, e, exc_info=True)
         return {"error": str(e)}
     finally:
         # Always clean up the clone
