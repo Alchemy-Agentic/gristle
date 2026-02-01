@@ -30,8 +30,9 @@ class GraphClient:
         host: str = "localhost",
         port: int = 6379,
         repo_id: str = "default",
+        password: str | None = None,
     ):
-        self._db = FalkorDB(host=host, port=port)
+        self._db = FalkorDB(host=host, port=port, password=password)
         self._repo_id = repo_id
         self._graph_name = f"gristle_{self._sanitize_id(repo_id)}"
         self._graph = self._db.select_graph(self._graph_name)

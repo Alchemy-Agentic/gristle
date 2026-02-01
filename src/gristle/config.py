@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     falkordb_host: str = "localhost"
     falkordb_port: int = 6380
+    falkordb_password: str | None = None
 
     max_file_size_bytes: int = 512_000  # 500KB
     repo_storage_path: Path = Path("./repos")

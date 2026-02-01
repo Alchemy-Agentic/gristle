@@ -103,6 +103,7 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
         host=settings.falkordb_host,
         port=settings.falkordb_port,
         repo_id=rid,
+        password=settings.falkordb_password,
     )
     pipeline = IngestionPipeline(graph, _registry)
     result = pipeline.ingest_repo(repo_path_resolved)
