@@ -16,6 +16,14 @@ This returns a `repo_id` (a short hash). All other tools accept an optional `rep
 
 Ingestion parses all source files, builds a graph of functions, classes, imports, and their relationships, then processes documentation. It only needs to be run once per repo. Re-running it rebuilds the graph from scratch.
 
+For GitHub repos (including private ones), use `gristle_ingest_github` instead:
+
+```
+gristle_ingest_github(repo_url="https://github.com/owner/repo", github_token="ghp_...")
+```
+
+This clones the repo and runs full ingestion in one step.
+
 ---
 
 ## Tool Reference
@@ -329,6 +337,47 @@ gristle_watch(action="stop")     # Stop watching
 
 ---
 
+### `gristle_ingest_github(repo_url, github_token?, repo_id?)`
+
+Clone and index a GitHub repository in one step.
+
+**When to use:** The repo is on GitHub and you don't have a local clone. Works with private repos if you provide a `github_token`.
+
+```
+gristle_ingest_github(repo_url="https://github.com/owner/repo")
+```
+```json
+{
+  "repo_id": "a1b2c3d4e5f6",
+  "clone_duration_ms": 1234,
+  "files_processed": 847,
+  "nodes_created": 12340,
+  "relationships_created": 8921,
+  "duration_ms": 4231
+}
+```
+
+For private repos:
+```
+gristle_ingest_github(repo_url="https://github.com/owner/private-repo", github_token="ghp_xxxx")
+```
+
+---
+
+### `gristle_drop(repo_id)`
+
+Remove a repo's graph from FalkorDB entirely.
+
+**When to use:** You no longer need a repo's graph and want to free memory/storage.
+
+```
+gristle_drop(repo_id="a1b2c3d4e5f6")
+```
+
+This is irreversible — re-ingestion is required to restore the graph.
+
+---
+
 ### `gristle_embed(repo_id?)` + `gristle_semantic_search(query, limit?)`
 
 Optional. Requires `pip install gristle[search]`.
@@ -347,9 +396,12 @@ This is useful when you don't know the name but know what the code does.
 ### 1. "I'm new to this codebase"
 
 ```
-gristle_ingest(repo_path="/path/to/repo")
-gristle_conventions()                        # Understand structure
-gristle_explore(entity="<main_module>.py")   # Explore core files
+gristle_ingest(repo_path="/path/to/repo")          # Local repo
+# OR
+gristle_ingest_github(repo_url="owner/repo")        # GitHub repo
+
+gristle_conventions()                                # Understand structure
+gristle_explore(entity="<main_module>.py")           # Explore core files
 ```
 
 ### 2. "I need to modify function X"

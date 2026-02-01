@@ -74,14 +74,16 @@ src/gristle/
     markdown.py            # Markdown document parser (regex-based)
   ingestion/
     walker.py              # .gitignore-aware file discovery
-    pipeline.py            # Three-phase graph builder (~1600 lines, core logic)
+    pipeline.py            # Three-phase graph builder (~1700 lines, core logic)
+    batch.py               # BatchCollector for UNWIND-based bulk writes
     watcher.py             # Async file watcher for incremental updates
   query/
     engine.py              # 15+ Cypher query templates for code analysis
   search/
     embeddings.py          # Optional semantic search (sentence-transformers)
+  logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 13 tools + 2 resources
+    server.py              # MCP server, 15 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -90,7 +92,8 @@ tests/
   test_typescript_parser.py
   test_markdown_parser.py
   test_walker.py
-  test_call_resolution.py  # Cross-file resolution integration tests (~1250 lines)
+  test_call_resolution.py  # Cross-file resolution integration tests
+  test_batch.py            # BatchCollector and batch graph client tests
 ```
 
 ---
@@ -103,13 +106,17 @@ All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py`:
 |---------|---------|-------------|
 | `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB host |
 | `GRISTLE_FALKORDB_PORT` | `6380` | FalkorDB port |
+| `GRISTLE_FALKORDB_PASSWORD` | *(none)* | FalkorDB password (optional) |
 | `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this |
 | `GRISTLE_REPO_STORAGE_PATH` | `./repos` | Where cloned repos are stored |
 | `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | File watcher debounce delay |
+| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched UNWIND query |
 | `GRISTLE_TRANSPORT` | `stdio` | MCP transport: `stdio` or `streamable-http` |
 | `GRISTLE_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
 | `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) |
 | `GRISTLE_API_KEY` | *(none)* | Bearer token for auth; unset = no auth |
+| `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `GRISTLE_LOG_FORMAT` | *(auto)* | `json` for structured, `text` for human-readable; auto-detected from transport if unset |
 
 Excluded directories (always skipped): `node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.venv`, `venv`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `egg-info`, `.eggs`.
 
@@ -314,7 +321,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 
 ## Ingestion Pipeline
 
-The pipeline (`ingestion/pipeline.py`, ~1600 lines) is the core of Gristle. It runs in three phases:
+The pipeline (`ingestion/pipeline.py`, ~1700 lines) is the core of Gristle. It runs in three phases, each using a `BatchCollector` (`ingestion/batch.py`) to group writes into batched Cypher `UNWIND` queries rather than individual round-trips:
 
 ### Phase 1: Parse & Build Nodes
 
@@ -404,6 +411,40 @@ pytest injects fixtures by matching test function parameter names to fixture nam
 
 ---
 
+## Batch Collector
+
+`ingestion/batch.py` provides `BatchCollector`, a write buffer that groups node and relationship creation by label/type and flushes them via `UNWIND` queries in configurable chunks.
+
+```
+BatchCollector(graph, batch_size=200)
+  ├── add_node(label, properties)           → buffers into dict[label, list[dict]]
+  ├── add_relationship(rel_type, ...)       → buffers CREATE rels by type
+  ├── add_merge_relationship(rel_type, ...) → buffers MERGE rels by type
+  └── flush() → dict[str, int]             → flushes nodes first, then rels, chunked by batch_size
+```
+
+Flush order matters: nodes are created before relationships so that `MATCH` clauses in relationship queries find the target nodes. Each phase of the pipeline creates its own `BatchCollector` and flushes once at the end, reducing a 500-file repo from ~15,000 round-trips to ~2,500.
+
+---
+
+## Error Handling
+
+All database and I/O operations use targeted exception types rather than bare `except Exception`:
+
+| Module | Exception | Scenario |
+|--------|-----------|----------|
+| `graph/client.py` | `ResponseError` | FalkorDB query failures |
+| `graph/client.py` | `ConnectionError` | FalkorDB unreachable |
+| `graph/schema.py` | `ResponseError` | Index already exists |
+| `ingestion/pipeline.py` | `OSError`, `UnicodeDecodeError` | File read/parse failures |
+| `ingestion/watcher.py` | `OSError`, `UnicodeDecodeError` | File change processing |
+| `ingestion/walker.py` | `OSError` | `.gitignore` read failure |
+| `search/embeddings.py` | `ResponseError` | Vector index/search failures |
+
+Errors are logged with context (file path, operation, error message) via the structured logging system.
+
+---
+
 ## File Walker
 
 `ingestion/walker.py` discovers files in a repo:
@@ -423,8 +464,10 @@ pytest injects fixtures by matching test function parameter names to fixture nam
 
 - Each repo gets its own graph: `gristle_{sanitized_repo_id}`
 - `repo_id` is either user-provided or a SHA-256 hash of the repo path
-- Methods: `execute(cypher)`, `create_node(label, props)`, `create_relationship(from, to, type)`, `merge_relationship(from, to, type)`, `clear()`, `drop()`
+- Single-item methods: `execute(cypher)`, `create_node(label, props)`, `create_relationship(from, to, type)`, `merge_relationship(from, to, type)`, `clear()`, `drop()`
+- Batch methods (Cypher `UNWIND`): `batch_create_nodes(label, items)`, `batch_create_relationships(rel_type, items)`, `batch_merge_relationships(rel_type, items)` — used by the ingestion pipeline for bulk writes
 - Returns `QueryResult` objects with `records` (list of dicts) and `summary` (stats)
+- Exception handling: `ResponseError` for FalkorDB/Redis failures, `ConnectionError` for network issues
 
 ---
 
@@ -462,8 +505,14 @@ pytest injects fixtures by matching test function parameter names to fixture nam
 The MCP server (`mcp/server.py`) exposes these tools to AI agents:
 
 ### `gristle_ingest(repo_path, repo_id?)`
-Index a local repository. Parses all files, builds the graph.
-Returns: files_processed, nodes_created, relationships_created, test_cases_found, etc.
+Index a local repository. Parses all files, builds the graph using batched writes.
+Returns: files_processed, nodes_created, relationships_created, test_cases_found, duration_ms, etc.
+
+### `gristle_ingest_github(repo_url, github_token?, repo_id?)`
+Clone and index a GitHub repository. Supports private repos via personal access token. Clones to `GRISTLE_REPO_STORAGE_PATH`, then runs full ingestion. Returns clone and ingestion timing.
+
+### `gristle_drop(repo_id)`
+Remove a repo's graph from FalkorDB entirely. Frees memory and storage for repos no longer needed.
 
 ### `gristle_watch(action, repo_id?)`
 Control the file watcher for incremental re-indexing. Actions: `start`, `stop`, `status`.
@@ -530,6 +579,19 @@ Natural language search over code. Requires `gristle_embed` to have been run fir
 - Deduplicates changes per file
 - Calls `pipeline.update_file()` for each changed file
 - State tracked in `_active_watchers` dict, manageable via `gristle_watch` tool
+
+---
+
+## Logging
+
+`logging.py` provides structured logging with two formatters:
+
+- **`JSONFormatter`** — Machine-readable JSON lines for production (auto-selected when transport is `streamable-http`). Fields: `ts`, `level`, `logger`, `msg`, plus any extra keys.
+- **`TextFormatter`** — Coloured, human-readable output for development (auto-selected when transport is `stdio`).
+
+`configure_logging(transport)` is called at startup and auto-detects the format from the transport mode. Override with `GRISTLE_LOG_FORMAT=json` or `GRISTLE_LOG_FORMAT=text`.
+
+A `Timer` context manager is used in the MCP server to measure ingestion duration, emitting `duration_ms` in log entries and tool responses.
 
 ---
 
@@ -656,3 +718,5 @@ Gristle has been tested against these real-world repositories:
 7. **Tree-sitter for AST.** Fast, incremental, language-agnostic parsing framework. No need to execute or type-check the code.
 8. **MCP as the interface.** Tools are exposed via the Model Context Protocol, making Gristle usable by any MCP-compatible AI agent.
 9. **Optional semantic search.** The core graph is useful without embeddings. Semantic search is an add-on for natural language queries.
+10. **Batched writes.** The ingestion pipeline buffers all graph writes per phase and flushes them in `UNWIND` chunks, reducing network round-trips by ~80% for remote FalkorDB instances.
+11. **Targeted exception handling.** All `except` blocks catch specific exception types (`ResponseError`, `OSError`, `ConnectionError`) rather than bare `Exception`, with structured logging for diagnostics.
