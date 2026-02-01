@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (16 tools)       |
+                                          | (18 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -61,7 +61,7 @@ Repository on disk
 ```
 src/gristle/
   __init__.py              # Version (0.1.0)
-  config.py                # Pydantic settings, env-var driven (GRISTLE_ prefix)
+  config.py                # Pydantic settings, env-var driven (GRISTLE_ prefix), with field validators
   models.py                # All parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo graph isolation
@@ -96,24 +96,30 @@ tests/
   test_batch.py            # BatchCollector and batch graph client tests
   test_query_engine.py     # Query engine method tests (all 20 methods)
   test_mcp_server.py       # MCP server tool, resource, and entry point tests
+  test_config.py           # Settings validators (port, batch size, transport)
+  test_graph_client.py     # GraphClient, QueryResult, sanitize, batch ops
+  test_schema.py           # Index creation and error suppression
+  test_logging.py          # JSON/Text formatters, configure_logging, Timer
+  test_watcher.py          # start/stop/is_watching helpers
+  test_parser_registry.py  # Parser dispatch and build_default
 ```
 
 ---
 
 ## Configuration
 
-All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py`:
+All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py` with Pydantic field validators:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB host |
-| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port |
+| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port (validated: 1–65535) |
 | `GRISTLE_FALKORDB_PASSWORD` | *(none)* | FalkorDB password (optional) |
-| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this |
+| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this (validated: >= 1) |
 | `GRISTLE_REPO_STORAGE_PATH` | `./repos` | Where cloned repos are stored |
 | `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | File watcher debounce delay |
-| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched UNWIND query |
-| `GRISTLE_TRANSPORT` | `stdio` | MCP transport: `stdio` or `streamable-http` |
+| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched UNWIND query (validated: >= 1) |
+| `GRISTLE_TRANSPORT` | `stdio` | MCP transport: `stdio` or `streamable-http` (validated) |
 | `GRISTLE_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
 | `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) |
 | `GRISTLE_API_KEY` | *(none)* | Bearer token for auth; unset = no auth |

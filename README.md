@@ -104,6 +104,17 @@ Once connected, the agent has access to these tools:
 | `gristle_conventions` | Infer project patterns and structure |
 | `gristle_watch` | Start/stop file watching for incremental re-indexing |
 | `gristle_drop` | Remove a repo's graph from FalkorDB |
+| `gristle_stats` | Repository statistics — file counts, node counts, language breakdown |
+| `gristle_overview` | High-level codebase summary with key entry points |
+| `gristle_embed` | Generate embeddings for semantic code search (requires `[search]` extra) |
+| `gristle_semantic_search` | Search code by natural language description (requires `[search]` extra) |
+
+### MCP resources
+
+| Resource URI | Description |
+|-------------|-------------|
+| `gristle://repos` | List all ingested repositories |
+| `gristle://repos/{repo_id}/overview` | Statistics and overview for a specific repo |
 
 ### Example workflow
 
@@ -135,6 +146,8 @@ All settings are configured via environment variables with the `GRISTLE_` prefix
 | `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched Cypher query |
 | `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `GRISTLE_LOG_FORMAT` | auto | `json` for structured, `text` for human-readable |
+| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this (bytes) |
+| `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | Debounce interval for file watcher |
 
 ## Performance
 

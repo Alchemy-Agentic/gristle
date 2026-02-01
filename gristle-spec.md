@@ -1,3 +1,16 @@
+> **ARCHIVED — Do not use as reference for current implementation.**
+>
+> This document was the original design specification written before implementation began.
+> The actual implementation diverged significantly — different MCP framework (FastMCP vs custom),
+> 3 language parsers instead of 8, different graph schema, no FastAPI layer.
+>
+> **For current documentation, see:**
+> - [README.md](README.md) — Quick start, tools list, configuration
+> - [ARCHITECTURE.md](ARCHITECTURE.md) — Graph schema, ingestion pipeline, query engine
+> - [MCP_USAGE_GUIDE.md](MCP_USAGE_GUIDE.md) — Tool reference for AI agents
+
+---
+
 # Gristle
 
 ## The Connective Tissue of Your Codebase

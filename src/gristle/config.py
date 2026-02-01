@@ -2,8 +2,12 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+_VALID_TRANSPORTS = {"stdio", "streamable-http"}
 
 
 class Settings(BaseSettings):
@@ -53,6 +57,34 @@ class Settings(BaseSettings):
 
     # Bearer token auth — set GRISTLE_API_KEY to enable, leave unset for no auth
     api_key: str | None = None
+
+    @field_validator("falkordb_port", "http_port")
+    @classmethod
+    def _port_in_range(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError(f"Port must be between 1 and 65535, got {v}")
+        return v
+
+    @field_validator("ingestion_batch_size")
+    @classmethod
+    def _positive_batch_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"Batch size must be >= 1, got {v}")
+        return v
+
+    @field_validator("max_file_size_bytes")
+    @classmethod
+    def _positive_file_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"Max file size must be >= 1, got {v}")
+        return v
+
+    @field_validator("transport")
+    @classmethod
+    def _valid_transport(cls, v: str) -> str:
+        if v not in _VALID_TRANSPORTS:
+            raise ValueError(f"Transport must be one of {_VALID_TRANSPORTS}, got {v!r}")
+        return v
 
     @property
     def effective_port(self) -> int:
