@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 import pathspec
 
 from gristle.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -90,7 +93,8 @@ def _load_gitignore(repo_path: Path) -> pathspec.PathSpec | None:
     try:
         text = gitignore_file.read_text(encoding="utf-8", errors="replace")
         return pathspec.PathSpec.from_lines("gitwildmatch", text.splitlines())
-    except Exception:
+    except OSError as e:
+        logger.warning("Could not read .gitignore: %s", e)
         return None
 
 

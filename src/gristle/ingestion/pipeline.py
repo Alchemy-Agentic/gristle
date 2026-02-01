@@ -237,7 +237,8 @@ class IngestionPipeline:
         # 2. Re-parse
         try:
             content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as e:
+            logger.warning("Cannot read %s for update: %s", relative_path, e)
             return result
 
         parsed = self.registry.parse_file(relative_path, content)
@@ -371,6 +372,7 @@ class IngestionPipeline:
         try:
             parsed = self.registry.parse_file(wf.relative_path, content)
         except Exception as e:
+            logger.warning("Parse error %s: %s", wf.relative_path, e)
             result.errors.append(f"Parse error {wf.relative_path}: {e}")
             result.files_skipped += 1
             return None
@@ -1556,6 +1558,7 @@ class IngestionPipeline:
         try:
             doc = self._md_parser.parse(wf.relative_path, content)
         except Exception as e:
+            logger.warning("Doc parse error %s: %s", wf.relative_path, e)
             result.errors.append(f"Doc parse error {wf.relative_path}: {e}")
             return
 

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 
 from falkordb import FalkorDB
+from redis.exceptions import ResponseError
+
+logger = logging.getLogger(__name__)
 
 
 class QueryResult:
@@ -139,9 +143,11 @@ class GraphClient:
         """Drop the entire graph for this repo."""
         try:
             self._graph.delete()
-        except Exception:
+        except ResponseError:
             # Graph may not exist yet
             pass
+        except ConnectionError:
+            logger.warning("Cannot reach FalkorDB to drop graph %s", self._graph_name)
 
     # ------------------------------------------------------------------
     # Helpers

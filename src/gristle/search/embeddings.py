@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from redis.exceptions import ResponseError
+
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
 
@@ -90,7 +92,7 @@ class SemanticIndex:
                     f"OPTIONS {{dimension: {dim}, similarityFunction: 'cosine'}}"
                 )
                 logger.info("Created vector index on %s.embedding (dim=%d)", label, dim)
-            except Exception:
+            except ResponseError:
                 # Index may already exist
                 pass
 
@@ -185,7 +187,7 @@ class SemanticIndex:
                 for rec in result.records:
                     rec["label"] = label
                     all_results.append(rec)
-            except Exception as e:
+            except ResponseError as e:
                 logger.warning("Vector search on %s failed: %s", label, e)
 
         # Sort by score (cosine distance — lower is more similar)

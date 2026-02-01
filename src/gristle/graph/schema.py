@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
+from redis.exceptions import ResponseError
+
 from gristle.graph.client import GraphClient
+
+logger = logging.getLogger(__name__)
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).
@@ -44,7 +50,7 @@ def ensure_schema(client: GraphClient) -> None:
     for label, prop in _INDEXES:
         try:
             client.execute(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")
-        except Exception:
+        except ResponseError:
             pass  # Index already exists
 
     for idx_name, label, prop in _FULLTEXT_INDEXES:
@@ -52,5 +58,5 @@ def ensure_schema(client: GraphClient) -> None:
             client.execute(
                 f"CALL db.idx.fulltext.createNodeIndex('{label}', '{prop}')"
             )
-        except Exception:
+        except ResponseError:
             pass  # Index already exists or FalkorDB version doesn't support it

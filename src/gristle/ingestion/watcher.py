@@ -73,8 +73,10 @@ async def watch_repo(
                     deleted += 1
                 else:
                     updated += 1
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("Skipping %s: %s", rel_path, e)
             except Exception:
-                logger.exception("Error updating %s", rel_path)
+                logger.exception("Unexpected error updating %s", rel_path)
 
         logger.info(
             "Batch complete: %d updated, %d deleted",
