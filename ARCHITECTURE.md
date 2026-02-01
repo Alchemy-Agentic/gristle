@@ -102,6 +102,8 @@ tests/
   test_logging.py          # JSON/Text formatters, configure_logging, Timer
   test_watcher.py          # start/stop/is_watching helpers
   test_parser_registry.py  # Parser dispatch and build_default
+  test_auth.py             # ApiKeyVerifier token validation
+  test_embeddings.py       # CodeEmbedder and SemanticIndex (mocked model)
 ```
 
 ---
@@ -121,7 +123,7 @@ All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py` w
 | `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched UNWIND query (validated: >= 1) |
 | `GRISTLE_TRANSPORT` | `stdio` | MCP transport: `stdio` or `streamable-http` (validated) |
 | `GRISTLE_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
-| `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) |
+| `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) (validated: 1–65535) |
 | `GRISTLE_API_KEY` | *(none)* | Bearer token for auth; unset = no auth |
 | `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `GRISTLE_LOG_FORMAT` | *(auto)* | `json` for structured, `text` for human-readable; auto-detected from transport if unset |

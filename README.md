@@ -139,14 +139,14 @@ All settings are configured via environment variables with the `GRISTLE_` prefix
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB hostname |
-| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port |
+| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port (1–65535) |
 | `GRISTLE_FALKORDB_PASSWORD` | - | FalkorDB password (optional) |
-| `GRISTLE_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
+| `GRISTLE_TRANSPORT` | `stdio` | `stdio` or `streamable-http` (validated) |
 | `GRISTLE_API_KEY` | - | Bearer token for HTTP auth (optional) |
-| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched Cypher query |
+| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched Cypher query (>= 1) |
 | `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `GRISTLE_LOG_FORMAT` | auto | `json` for structured, `text` for human-readable |
-| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this (bytes) |
+| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this in bytes (>= 1) |
 | `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | Debounce interval for file watcher |
 
 ## Performance
@@ -181,7 +181,7 @@ curl https://gristle-production.up.railway.app/health
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # run tests (383 tests)
+pytest                    # run tests (519 tests)
 ruff check src/ tests/    # lint
 ruff format src/ tests/   # format
 mypy src/                 # type check
