@@ -106,6 +106,70 @@ def _is_gitignored(spec: pathspec.PathSpec | None, path: str) -> bool:
     return spec.match_file(path)
 
 
+def walk_config_files(
+    repo_path: str | Path,
+) -> list[WalkedFile]:
+    """Walk a repository for config files (by exact filename or path pattern).
+
+    Config files are dispatched by filename (e.g. ``Dockerfile``,
+    ``package.json``) rather than extension, so they need a separate walk.
+    """
+    from gristle.parsers.config import CONFIG_FILENAMES, CONFIG_PATH_PATTERNS
+
+    repo_path = Path(repo_path).resolve()
+    gitignore_spec = _load_gitignore(repo_path)
+    results: list[WalkedFile] = []
+
+    for dirpath, dirnames, filenames in os.walk(repo_path, topdown=True):
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d not in settings.excluded_dirs
+            and not _is_gitignored(
+                gitignore_spec,
+                os.path.relpath(os.path.join(dirpath, d), repo_path) + "/",
+            )
+        ]
+
+        for fname in filenames:
+            abs_path = os.path.join(dirpath, fname)
+            try:
+                rel_path = os.path.relpath(abs_path, repo_path).replace("\\", "/")
+            except ValueError:
+                continue
+
+            if _is_gitignored(gitignore_spec, rel_path):
+                continue
+
+            # Check if this is a known config file (by name or path pattern)
+            is_config = fname in CONFIG_FILENAMES
+            if not is_config:
+                for pattern, _config_type in CONFIG_PATH_PATTERNS:
+                    if pattern.search(rel_path):
+                        is_config = True
+                        break
+
+            if not is_config:
+                continue
+
+            try:
+                if os.path.getsize(abs_path) > settings.max_file_size_bytes:
+                    continue
+            except OSError:
+                continue
+
+            ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
+            results.append(
+                WalkedFile(
+                    relative_path=rel_path,
+                    absolute_path=abs_path,
+                    extension=ext,
+                )
+            )
+
+    return results
+
+
 def _is_binary(path: str, chunk_size: int = 8192) -> bool:
     """Heuristic: if the first chunk contains null bytes, treat as binary."""
     try:

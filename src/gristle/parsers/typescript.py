@@ -43,6 +43,12 @@ _ROUTE_METHODS = frozenset({"get", "post", "put", "delete", "patch", "all", "opt
 # Supabase edge function path pattern: supabase/functions/<name>/index.ts
 _SUPABASE_FUNC_RE = re.compile(r"(?:^|/)supabase/functions/([^/]+)/index\.[tj]sx?$")
 
+# Storybook story files
+_STORYBOOK_RE = re.compile(r"\.stories\.[tj]sx?$")
+
+# Serverless handler export patterns (AWS Lambda convention)
+_SERVERLESS_HANDLER_NAMES = frozenset({"handler"})
+
 
 class TypeScriptParser(LanguageParser):
     """Parses TypeScript and TSX source files."""
@@ -78,11 +84,15 @@ class TypeScriptParser(LanguageParser):
                 func.is_component = self._body_contains_jsx(root, src, func)
             if is_test_file or _TEST_FUNC_RE.match(func.name):
                 func.is_test = True
-            if self._is_entry_point(func, file_path):
+            reason = self._classify_entry_point(func, file_path)
+            if reason:
                 func.is_entry_point = True
+                func.entry_point_reason = reason
             # Functions called from inside a serve() handler are entry points
             if func.name in serve_callees:
                 func.is_entry_point = True
+                if not func.entry_point_reason:
+                    func.entry_point_reason = "serve_handler"
 
         # Also check methods in classes
         classes = self._extract_classes(root, src, file_path)
@@ -98,6 +108,11 @@ class TypeScriptParser(LanguageParser):
         # Extract test cases (describe/it/test blocks) from test files
         test_cases = self._extract_test_cases(root, src, file_path) if is_test_file else []
 
+        # Extract env var references
+        from gristle.parsers.env_vars import extract_env_var_refs
+
+        env_var_refs = extract_env_var_refs(content, "typescript")
+
         return ParsedFile(
             path=file_path,
             language="typescript",
@@ -108,10 +123,11 @@ class TypeScriptParser(LanguageParser):
             + self._extract_dynamic_imports(root, src),
             routes=routes,
             test_cases=test_cases,
-            module_docstring=None,
+            module_docstring=self._extract_module_docstring(root, src),
             line_count=content.count("\n") + 1,
             is_test_file=is_test_file,
             todos=file_todos,
+            env_var_refs=env_var_refs,
         )
 
     # ------------------------------------------------------------------
@@ -588,6 +604,62 @@ class TypeScriptParser(LanguageParser):
                 return " ".join(cleaned) if cleaned else None
         return None
 
+    def _extract_module_docstring(self, root: Node, src: bytes) -> str | None:
+        """Extract the leading comment block from a file as the module description.
+
+        Looks for:
+        - A JSDoc block (/** ... */) before any code, preferring @module/@fileoverview tags
+        - A leading // comment block before any code
+        - Skips license/copyright headers
+
+        Truncates to 200 characters.
+        """
+        for child in root.children:
+            if child.type == "comment":
+                text = self._text(child, src)
+                # Skip license/copyright headers
+                lower = text.lower()
+                if "license" in lower or "copyright" in lower:
+                    continue
+                if text.startswith("/**"):
+                    # JSDoc block — extract meaningful content
+                    cleaned = self._clean_jsdoc_for_module(text)
+                    if cleaned:
+                        return cleaned[:200]
+                elif text.startswith("//"):
+                    # Single-line comment block — take the first meaningful line
+                    cleaned = text.lstrip("/").strip()
+                    if cleaned:
+                        return cleaned[:200]
+            elif child.type in ("import_statement", "export_statement"):
+                # Imports/exports before comments are fine — keep looking
+                continue
+            else:
+                # Hit actual code — stop looking
+                break
+        return None
+
+    @staticmethod
+    def _clean_jsdoc_for_module(text: str) -> str | None:
+        """Clean a JSDoc comment for use as a module description."""
+        lines = text.split("\n")
+        cleaned: list[str] = []
+        for line in lines:
+            line = line.strip().lstrip("/*").rstrip("*/").strip()
+            if not line:
+                continue
+            # Prefer @module or @fileoverview content
+            for tag in ("@module", "@fileoverview"):
+                if line.startswith(tag):
+                    content = line[len(tag) :].strip()
+                    if content:
+                        return content
+            # Skip other JSDoc tags
+            if line.startswith("@"):
+                continue
+            cleaned.append(line)
+        return " ".join(cleaned) if cleaned else None
+
     # ------------------------------------------------------------------
     # Complexity
     # ------------------------------------------------------------------
@@ -658,9 +730,12 @@ class TypeScriptParser(LanguageParser):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_entry_point(func: ParsedFunction, file_path: str) -> bool:
-        """Detect if a function is an entry point (route handler, page export, main)."""
-        # Next.js page/route/layout exports
+    def _classify_entry_point(func: ParsedFunction, file_path: str) -> str | None:
+        """Classify a function's entry point reason, or return None if not an entry point.
+
+        Returns the entry_point_reason string.
+        """
+        # Next.js page/route/layout exports (check before generic react_component)
         if _NEXTJS_PAGE_RE.search(file_path):
             if func.is_exported and func.name in (
                 "default",
@@ -674,18 +749,44 @@ class TypeScriptParser(LanguageParser):
                 "generateMetadata",
                 "generateStaticParams",
             ):
-                return True
+                return "nextjs_page"
             # Default exported component in a page file
             if func.is_exported and func.name and func.name[0].isupper():
-                return True
+                return "nextjs_page"
+
+        # Storybook stories (check before generic react_component)
+        if _STORYBOOK_RE.search(file_path) and func.is_exported:
+            return "storybook_story"
+
+        # React components — entry points by convention
+        if func.is_component:
+            return "react_component"
+
+        # Serverless handler exports (AWS Lambda convention)
+        if func.is_exported and func.name in _SERVERLESS_HANDLER_NAMES:
+            return "serverless_handler"
 
         # Express/Hono-style route handler decorators
         for dec in func.decorators:
             if any(m in dec.lower() for m in ("get", "post", "put", "delete", "route")):
-                return True
+                return "route_handler"
+
+        # Exported hooks in barrel files only
+        # use* prefixed functions re-exported from index.{ts,js} are consumed by convention
+        if (
+            func.is_exported
+            and func.name.startswith("use")
+            and len(func.name) > 3
+            and func.name[3].isupper()
+            and re.search(r"(?:^|/)index\.[tj]sx?$", file_path)
+        ):
+            return "react_hook"
 
         # main() function
-        return bool(func.name == "main" and func.is_exported)
+        if func.name == "main" and func.is_exported:
+            return "main"
+
+        return None
 
     @staticmethod
     def _detect_serve_entry_points(root: Node, src: bytes) -> set[str]:
@@ -1202,6 +1303,11 @@ class JavaScriptParser(LanguageParser):
 
         is_test_file = bool(_TEST_FILE_RE.search(file_path))
         # Delegate to TS parser's parse_file logic but with JS language tag
+        # Extract env var references
+        from gristle.parsers.env_vars import extract_env_var_refs
+
+        env_var_refs = extract_env_var_refs(content, "javascript")
+
         ts_result = ParsedFile(
             path=file_path,
             language="javascript",
@@ -1212,10 +1318,11 @@ class JavaScriptParser(LanguageParser):
             + self._ts_parser._extract_dynamic_imports(root, src),
             routes=self._ts_parser._extract_routes(root, src, file_path),
             test_cases=self._ts_parser._extract_test_cases(root, src, file_path) if is_test_file else [],
-            module_docstring=None,
+            module_docstring=self._ts_parser._extract_module_docstring(root, src),
             line_count=content.count("\n") + 1,
             is_test_file=is_test_file,
             todos=self._ts_parser._extract_todos(root, src),
+            env_var_refs=env_var_refs,
         )
 
         # Detect serve() / Deno.serve() entry points
@@ -1228,9 +1335,13 @@ class JavaScriptParser(LanguageParser):
                 func.is_component = self._ts_parser._body_contains_jsx(root, src, func)
             if ts_result.is_test_file or _TEST_FUNC_RE.match(func.name):
                 func.is_test = True
-            if TypeScriptParser._is_entry_point(func, file_path):
+            reason = TypeScriptParser._classify_entry_point(func, file_path)
+            if reason:
                 func.is_entry_point = True
+                func.entry_point_reason = reason
             if func.name in serve_callees:
                 func.is_entry_point = True
+                if not func.entry_point_reason:
+                    func.entry_point_reason = "serve_handler"
 
         return ts_result

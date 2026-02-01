@@ -1394,3 +1394,276 @@ class TestMultiLevelBarrelReexports:
         pipeline = _setup_pipeline([date_file, utils_index, lib_index, consumer])
         result = pipeline._find_callee("formatDate", caller, consumer)
         assert result == "func::src/utils/date.ts::formatDate"
+
+
+class TestTestsFunctionEdges:
+    """TESTS_FUNCTION edges should link test functions to production functions they exercise."""
+
+    def _run_full_resolve(self, parsed_files: list[ParsedFile]) -> tuple[IngestionPipeline, IngestionResult]:
+        """Set up pipeline maps and run full _resolve_calls (populates adjacency + TESTS_FUNCTION)."""
+        pipeline = _setup_pipeline(parsed_files)
+        result = IngestionResult(repo_id="test", repo_path="/tmp")
+        pipeline._resolve_calls(parsed_files, result)
+        return pipeline, result
+
+    def test_direct_call_creates_depth_1_edge(self):
+        """test_foo() -> foo() creates TESTS_FUNCTION edge with depth=1."""
+        prod_func = _make_func("foo", "src/utils.ts", is_exported=True)
+        prod_file = _make_file("src/utils.ts", functions=[prod_func])
+
+        test_func = _make_func(
+            "test_foo",
+            "tests/test_utils.ts",
+            calls=["foo"],
+            is_test=True,
+        )
+        test_file = _make_file(
+            "tests/test_utils.ts",
+            functions=[test_func],
+            imports=[_make_import("../src/utils", imported_names=["foo"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        tf_rels = [(f, t, r) for f, t, r in rels if r == "TESTS_FUNCTION"]
+        assert len(tf_rels) == 1
+        assert tf_rels[0][0] == "func::tests/test_utils.ts::test_foo"
+        assert tf_rels[0][1] == "func::src/utils.ts::foo"
+
+        # Check depth property
+        merge_calls = pipeline.graph.batch_merge_relationships.call_args_list
+        for call in merge_calls:
+            rel_type = call[0][0]
+            items = call[0][1]
+            if rel_type == "TESTS_FUNCTION":
+                for item in items:
+                    if item["to_id"] == "func::src/utils.ts::foo":
+                        assert item["depth"] == 1
+
+    def test_indirect_call_creates_depth_2_edge(self):
+        """test_bar() -> helper() -> target() creates TESTS_FUNCTION with depth=2 for target."""
+        target = _make_func("target", "src/core.ts", is_exported=True)
+        helper = _make_func("helper", "src/core.ts", calls=["target"], is_exported=True)
+        prod_file = _make_file("src/core.ts", functions=[target, helper])
+
+        test_func = _make_func(
+            "test_bar",
+            "tests/test_core.ts",
+            calls=["helper"],
+            is_test=True,
+        )
+        test_file = _make_file(
+            "tests/test_core.ts",
+            functions=[test_func],
+            imports=[_make_import("../src/core", imported_names=["helper"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        tf_rels = [(f, t, r) for f, t, r in rels if r == "TESTS_FUNCTION"]
+        # Should have depth 1 for helper, depth 2 for target
+        tf_targets = {t: [] for _, t, _ in tf_rels}
+        for f, t, _r in tf_rels:
+            tf_targets[t].append(f)
+        assert "func::src/core.ts::helper" in tf_targets
+        assert "func::src/core.ts::target" in tf_targets
+
+        # Verify depths from the raw merge calls
+        merge_calls = pipeline.graph.batch_merge_relationships.call_args_list
+        depths = {}
+        for call in merge_calls:
+            rel_type = call[0][0]
+            items = call[0][1]
+            if rel_type == "TESTS_FUNCTION":
+                for item in items:
+                    depths[item["to_id"]] = item["depth"]
+        assert depths["func::src/core.ts::helper"] == 1
+        assert depths["func::src/core.ts::target"] == 2
+
+    def test_direct_preferred_over_indirect(self):
+        """If a test calls target directly AND indirectly, depth should be 1."""
+        target = _make_func("target", "src/lib.ts", is_exported=True)
+        helper = _make_func("helper", "src/lib.ts", calls=["target"], is_exported=True)
+        prod_file = _make_file("src/lib.ts", functions=[target, helper])
+
+        test_func = _make_func(
+            "test_both",
+            "tests/test_lib.ts",
+            calls=["target", "helper"],
+            is_test=True,
+        )
+        test_file = _make_file(
+            "tests/test_lib.ts",
+            functions=[test_func],
+            imports=[_make_import("../src/lib", imported_names=["target", "helper"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file])
+
+        # target should appear at depth 1 (direct), not duplicated at depth 2
+        merge_calls = pipeline.graph.batch_merge_relationships.call_args_list
+        target_depths = []
+        for call in merge_calls:
+            rel_type = call[0][0]
+            items = call[0][1]
+            if rel_type == "TESTS_FUNCTION":
+                for item in items:
+                    if item["to_id"] == "func::src/lib.ts::target":
+                        target_depths.append(item["depth"])
+        assert target_depths == [1]  # Only one edge, depth 1
+
+    def test_tested_by_count_updated(self):
+        """Production functions should get tested_by_count updated via graph query."""
+        prod_func = _make_func("process", "src/engine.ts", is_exported=True)
+        prod_file = _make_file("src/engine.ts", functions=[prod_func])
+
+        test_a = _make_func("test_a", "tests/test_a.ts", calls=["process"], is_test=True)
+        test_b = _make_func("test_b", "tests/test_b.ts", calls=["process"], is_test=True)
+        test_file_a = _make_file(
+            "tests/test_a.ts",
+            functions=[test_a],
+            imports=[_make_import("../src/engine", imported_names=["process"])],
+            is_test_file=True,
+        )
+        test_file_b = _make_file(
+            "tests/test_b.ts",
+            functions=[test_b],
+            imports=[_make_import("../src/engine", imported_names=["process"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file_a, test_file_b])
+
+        # Check that graph.execute was called with tested_by_count update
+        execute_calls = pipeline.graph.execute.call_args_list
+        update_calls = [c for c in execute_calls if "tested_by_count" in str(c)]
+        assert len(update_calls) > 0
+        # The update should set count=2 for process (two test functions)
+        for call in update_calls:
+            params = call[0][1] if len(call[0]) > 1 else call[1].get("params", {})
+            items = params.get("items", [])
+            for item in items:
+                if item["id"] == "func::src/engine.ts::process":
+                    assert item["count"] == 2
+
+    def test_test_function_not_targeted(self):
+        """Test functions should not get TESTS_FUNCTION edges pointing to them."""
+        prod_func = _make_func("validate", "src/validate.ts", is_exported=True)
+        prod_file = _make_file("src/validate.ts", functions=[prod_func])
+
+        test_helper = _make_func("assert_valid", "tests/helpers.ts", calls=["validate"], is_test=True)
+        test_main = _make_func("test_main", "tests/test_val.ts", calls=["assert_valid"], is_test=True)
+        helper_file = _make_file(
+            "tests/helpers.ts",
+            functions=[test_helper],
+            imports=[_make_import("../src/validate", imported_names=["validate"])],
+            is_test_file=True,
+        )
+        test_file = _make_file(
+            "tests/test_val.ts",
+            functions=[test_main],
+            imports=[_make_import("./helpers", imported_names=["assert_valid"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, helper_file, test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        tf_rels = [(f, t, r) for f, t, r in rels if r == "TESTS_FUNCTION"]
+        # No TESTS_FUNCTION edges should point to test functions
+        for _, to_id, _ in tf_rels:
+            assert to_id not in pipeline._test_func_ids
+
+    def test_no_tests_function_edges_when_no_tests(self):
+        """No TESTS_FUNCTION edges when there are no test functions."""
+        prod_a = _make_func("a", "src/a.ts", is_exported=True)
+        prod_b = _make_func("b", "src/b.ts", calls=["a"], is_exported=True)
+        file_a = _make_file("src/a.ts", functions=[prod_a])
+        file_b = _make_file(
+            "src/b.ts",
+            functions=[prod_b],
+            imports=[_make_import("./a", imported_names=["a"])],
+        )
+
+        pipeline, result = self._run_full_resolve([file_a, file_b])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        tf_rels = [(f, t, r) for f, t, r in rels if r == "TESTS_FUNCTION"]
+        assert len(tf_rels) == 0
+
+    def test_tested_by_count_default_zero(self):
+        """Function nodes should have tested_by_count=0 by default."""
+        prod_func = _make_func("untested", "src/utils.ts", is_exported=True)
+        prod_file = _make_file("src/utils.ts", functions=[prod_func])
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Function")
+        func_nodes = [n for n in nodes if n["name"] == "untested"]
+        assert len(func_nodes) == 1
+        assert func_nodes[0]["tested_by_count"] == 0
+
+
+class TestDependencyVersionExtraction:
+    """Test that dependency versions are extracted from manifest files."""
+
+    def test_package_json_versions(self, tmp_path):
+        import json
+
+        pkg = {
+            "dependencies": {"react": "^18.2.0", "next": "14.0.0"},
+            "devDependencies": {"typescript": "~5.3.0"},
+        }
+        (tmp_path / "package.json").write_text(json.dumps(pkg))
+
+        pipeline = IngestionPipeline(_make_graph_mock())
+        pipeline._extract_dependency_versions(str(tmp_path))
+
+        assert pipeline._dependency_versions["react"] == "^18.2.0"
+        assert pipeline._dependency_versions["next"] == "14.0.0"
+        assert pipeline._dependency_versions["typescript"] == "~5.3.0"
+
+    def test_requirements_txt_versions(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("flask==2.3.0\nrequests>=2.28.0\npytest\n# comment\n-r other.txt\n")
+
+        pipeline = IngestionPipeline(_make_graph_mock())
+        pipeline._extract_dependency_versions(str(tmp_path))
+
+        assert pipeline._dependency_versions["flask"] == "==2.3.0"
+        assert pipeline._dependency_versions["requests"] == ">=2.28.0"
+        # pytest has no version spec
+        assert "pytest" not in pipeline._dependency_versions
+
+    def test_pyproject_toml_versions(self, tmp_path):
+        toml_content = '[project]\ndependencies = [\n  "fastapi>=0.100.0",\n  "uvicorn>=0.23.0",\n  "pydantic",\n]\n'
+        (tmp_path / "pyproject.toml").write_text(toml_content)
+
+        pipeline = IngestionPipeline(_make_graph_mock())
+        pipeline._extract_dependency_versions(str(tmp_path))
+
+        assert pipeline._dependency_versions["fastapi"] == ">=0.100.0"
+        assert pipeline._dependency_versions["uvicorn"] == ">=0.23.0"
+        assert "pydantic" not in pipeline._dependency_versions
+
+    def test_no_manifest_files(self, tmp_path):
+        pipeline = IngestionPipeline(_make_graph_mock())
+        pipeline._extract_dependency_versions(str(tmp_path))
+        assert pipeline._dependency_versions == {}
+
+    def test_version_on_dependency_node(self, tmp_path):
+        """Verify the version property propagates to Dependency graph nodes."""
+        import json
+
+        pkg = {"dependencies": {"lodash": "^4.17.21"}}
+        (tmp_path / "package.json").write_text(json.dumps(pkg))
+
+        mock_graph = _make_graph_mock()
+        pipeline = IngestionPipeline(mock_graph)
+        pipeline._dependency_versions.clear()
+        pipeline._extract_dependency_versions(str(tmp_path))
+
+        assert pipeline._dependency_versions["lodash"] == "^4.17.21"

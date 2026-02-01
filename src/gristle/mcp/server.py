@@ -585,10 +585,14 @@ async def gristle_tests(
     """Query test coverage and find tests for code entities.
 
     Args:
-        entity: Code entity name to find tests for (required for 'find' mode).
+        entity: Code entity name to find tests for (required for 'find' and
+                'coverage_detail' modes).
         mode: One of:
               - 'find': Find tests that exercise a specific entity.
               - 'coverage': Find exported functions with no test coverage.
+              - 'coverage_detail': Detailed coverage for a specific function
+                (tested_by_count, which tests at what depth).
+              - 'untested_critical': Exported functions with callers but no tests.
         repo_id: Repository identifier.
     """
     engine = _resolve_engine(repo_id)
@@ -603,6 +607,15 @@ async def gristle_tests(
             return {"note": f"No tests found that exercise '{entity}'."}
         return {"entity": entity, "count": len(results), "tests": results}
 
+    if mode == "coverage_detail":
+        if not entity:
+            return {"error": "Entity name required for 'coverage_detail' mode."}
+        return engine.get_function_coverage(entity)
+
+    if mode == "untested_critical":
+        results = engine.get_untested_critical()
+        return {"count": len(results), "untested_critical": results}
+
     # Default: untested functions
     results = engine.get_untested_functions()
     return {"count": len(results), "untested_functions": results}
@@ -616,7 +629,9 @@ async def gristle_conventions(
 
     Use this FIRST when starting work on an unfamiliar codebase. Returns
     detected patterns for file organization, component locations, test
-    structure, routes, entry points, and commonly imported modules.
+    structure, routes, entry points, commonly imported modules, and
+    architectural layer violations (e.g. presentation importing directly
+    from data layer, bypassing business logic).
 
     Args:
         repo_id: Repository identifier.
@@ -774,6 +789,36 @@ async def gristle_drop(
 
     engine.graph.drop()
     return {"status": "dropped", "repo_id": repo_id, "was_loaded": True}
+
+
+@mcp.tool()
+async def gristle_config(
+    mode: str = "env_vars",
+    repo_id: str | None = None,
+) -> dict:
+    """Query config files and environment variables in the codebase.
+
+    Modes:
+    - **env_vars**: List all environment variables with where they're defined and used.
+    - **config_files**: List config files (Dockerfile, docker-compose, CI, etc.) with types.
+    - **setup_requirements**: Full setup checklist — required env vars, config files, dependencies.
+
+    Args:
+        mode: Query mode — "env_vars", "config_files", or "setup_requirements".
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    if mode == "env_vars":
+        return engine.get_env_vars()
+    elif mode == "config_files":
+        return engine.get_config_files()
+    elif mode == "setup_requirements":
+        return engine.get_setup_requirements()
+    else:
+        return {"error": f"Unknown mode: {mode}. Use 'env_vars', 'config_files', or 'setup_requirements'."}
 
 
 # ======================================================================

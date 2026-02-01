@@ -350,7 +350,8 @@ class TestImpactAnalysis:
             _qr([impact_rec]),  # main impact query
             _qr(transitive_callers),  # get_callers (inside impact)
             _qr(test_files),  # test file coverage
-            _qr(test_funcs_direct),  # get_tests_for_entity -> direct
+            _empty(),  # get_tests_for_entity -> TESTS_FUNCTION
+            _qr(test_funcs_direct),  # get_tests_for_entity -> CALLS
             _qr(test_funcs_file),  # get_tests_for_entity -> file_level
             _qr(routes),  # routes query
         ]
@@ -372,7 +373,8 @@ class TestImpactAnalysis:
         graph.execute.side_effect = [
             _qr([impact_rec]),  # main impact query
             _empty(),  # get_callers
-            _empty(),  # get_tests_for_entity -> direct
+            _empty(),  # get_tests_for_entity -> TESTS_FUNCTION
+            _empty(),  # get_tests_for_entity -> CALLS
             _empty(),  # get_tests_for_entity -> file_level
             _empty(),  # routes
         ]
@@ -632,7 +634,8 @@ class TestTestQueries:
             },
         ]
         engine, graph = _make_engine()
-        graph.execute.side_effect = [_qr(direct), _empty()]
+        # 3 queries: TESTS_FUNCTION, CALLS, file_level
+        graph.execute.side_effect = [_empty(), _qr(direct), _empty()]
         result = engine.get_tests_for_entity("create_user")
         assert len(result) == 1
         assert result[0]["via"] == "calls"
@@ -640,7 +643,8 @@ class TestTestQueries:
     def test_get_tests_for_entity_file_coverage_only(self):
         file_level = [{"test_file": "test_mod.py", "via": "file_coverage"}]
         engine, graph = _make_engine()
-        graph.execute.side_effect = [_empty(), _qr(file_level)]
+        # 3 queries: TESTS_FUNCTION, CALLS, file_level
+        graph.execute.side_effect = [_empty(), _empty(), _qr(file_level)]
         result = engine.get_tests_for_entity("create_user")
         assert len(result) == 1
         assert result[0]["via"] == "file_coverage"
@@ -659,7 +663,8 @@ class TestTestQueries:
         ]
         file_level = [{"test_file": "test_mod.py", "via": "file_coverage"}]
         engine, graph = _make_engine()
-        graph.execute.side_effect = [_qr(direct), _qr(file_level)]
+        # 3 queries: TESTS_FUNCTION, CALLS, file_level
+        graph.execute.side_effect = [_empty(), _qr(direct), _qr(file_level)]
         result = engine.get_tests_for_entity("create_user")
         # Should not duplicate test_mod.py
         assert len(result) == 1
@@ -712,6 +717,7 @@ class TestInferConventions:
         visibility_stats = [{"visibility": "public", "count": 80}, {"visibility": "private", "count": 20}]
 
         engine, graph = _make_engine()
+        layer_violations = [{"source": "src/routes/users.py", "target": "src/db/models.py"}]
         graph.execute.side_effect = [
             _qr(dir_stats),
             _qr(component_stats),
@@ -720,6 +726,7 @@ class TestInferConventions:
             _qr(entry_points),
             _qr(top_imported),
             _qr(visibility_stats),
+            _qr(layer_violations),  # detect_layer_violations query
         ]
         result = engine.infer_conventions()
         assert result["languages"]["python"] == 30
@@ -728,6 +735,8 @@ class TestInferConventions:
         assert "src/components" in result["component_locations"]
         assert len(result["entry_points"]) == 1
         assert result["visibility_distribution"]["public"] == 80
+        assert "layer_violations" in result
+        assert result["layer_violations"]["total"] == 1
 
 
 # ==================================================================

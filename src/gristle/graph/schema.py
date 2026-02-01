@@ -38,6 +38,8 @@ _INDEXES: list[tuple[str, str]] = [
     ("Route", "method"),
     ("Dependency", "id"),
     ("Dependency", "name"),
+    ("EnvVar", "id"),
+    ("EnvVar", "name"),
 ]
 
 # Full-text indexes for docstring search.

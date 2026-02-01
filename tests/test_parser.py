@@ -432,3 +432,83 @@ class TestRouteExtraction:
         code = "import pytest\n\n@pytest.fixture(scope='session')\ndef db():\n    return 'db'\n"
         result = parser.parse_file("conftest.py", code)
         assert result.functions[0].is_fixture is True
+
+
+class TestEntryPointDetection:
+    """Test framework-aware entry point detection with entry_point_reason."""
+
+    def test_main_is_entry_point(self):
+        parser = PythonParser()
+        code = "def main():\n    print('hello')\n"
+        result = parser.parse_file("app.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "main"
+
+    def test_fixture_is_entry_point(self):
+        parser = PythonParser()
+        code = "import pytest\n\n@pytest.fixture\ndef client():\n    return TestClient()\n"
+        result = parser.parse_file("tests/conftest.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "pytest_fixture"
+
+    def test_fixture_with_scope_is_entry_point(self):
+        parser = PythonParser()
+        code = "import pytest\n\n@pytest.fixture(scope='session')\ndef db():\n    return Database()\n"
+        result = parser.parse_file("tests/conftest.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "pytest_fixture"
+
+    def test_init_is_entry_point(self):
+        parser = PythonParser()
+        code = "class Service:\n    def __init__(self):\n        pass\n"
+        result = parser.parse_file("svc.py", code)
+        init = result.classes[0].methods[0]
+        assert init.is_entry_point is True
+        assert init.entry_point_reason == "constructor"
+
+    def test_django_view_is_entry_point(self):
+        parser = PythonParser()
+        code = "def index(request):\n    return HttpResponse('hello')\n"
+        result = parser.parse_file("myapp/views.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "django_view"
+
+    def test_django_view_private_not_entry_point(self):
+        parser = PythonParser()
+        code = "def _helper(request):\n    return None\n"
+        result = parser.parse_file("myapp/views.py", code)
+        assert result.functions[0].is_entry_point is False
+
+    def test_click_command_is_entry_point(self):
+        parser = PythonParser()
+        code = "import click\n\n@click.command()\ndef serve():\n    pass\n"
+        result = parser.parse_file("cli.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "cli_command"
+
+    def test_typer_command_is_entry_point(self):
+        parser = PythonParser()
+        code = "import typer\n\n@app.command()\ndef run():\n    pass\n"
+        result = parser.parse_file("cli.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "cli_command"
+
+    def test_route_handler_is_entry_point(self):
+        parser = PythonParser()
+        code = '@app.get("/users")\ndef get_users():\n    return []\n'
+        result = parser.parse_file("routes.py", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "route_handler"
+
+    def test_regular_function_not_entry_point(self):
+        parser = PythonParser()
+        code = "def helper():\n    return 42\n"
+        result = parser.parse_file("utils.py", code)
+        assert result.functions[0].is_entry_point is False
+        assert result.functions[0].entry_point_reason is None
+
+    def test_non_views_file_not_django_view(self):
+        parser = PythonParser()
+        code = "def index():\n    pass\n"
+        result = parser.parse_file("myapp/utils.py", code)
+        assert result.functions[0].entry_point_reason != "django_view"

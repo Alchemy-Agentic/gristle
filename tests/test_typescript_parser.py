@@ -332,8 +332,8 @@ class TestEntryPointDetection:
         parser = TypeScriptParser()
         code = "export default function HomePage() {\n  return <div>Home</div>;\n}\n"
         result = parser.parse_file("app/page.tsx", code)
-        # Should detect the page component as an entry point
-        assert any(f.is_entry_point for f in result.functions)
+        func = next(f for f in result.functions if f.is_entry_point)
+        assert func.entry_point_reason == "nextjs_page"
 
     def test_nextjs_route_handler(self):
         parser = TypeScriptParser()
@@ -341,24 +341,148 @@ class TestEntryPointDetection:
         result = parser.parse_file("app/api/users/route.ts", code)
         get_func = result.functions[0]
         assert get_func.is_entry_point is True
+        assert get_func.entry_point_reason == "nextjs_page"
 
     def test_exported_main_is_entry_point(self):
         parser = TypeScriptParser()
         code = "export function main() {\n  console.log('start');\n}\n"
         result = parser.parse_file("src/index.ts", code)
         assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "main"
 
     def test_non_exported_main_not_entry_point(self):
         parser = TypeScriptParser()
         code = "function main() {\n  console.log('start');\n}\n"
         result = parser.parse_file("src/index.ts", code)
         assert result.functions[0].is_entry_point is False
+        assert result.functions[0].entry_point_reason is None
 
     def test_regular_function_not_entry_point(self):
         parser = TypeScriptParser()
         code = "export function helper() { return 1; }\n"
         result = parser.parse_file("src/utils.ts", code)
         assert result.functions[0].is_entry_point is False
+        assert result.functions[0].entry_point_reason is None
+
+    def test_react_component_is_entry_point(self):
+        parser = TypeScriptParser()
+        code = "function Button({ label }: Props) {\n  return <button>{label}</button>;\n}\n"
+        result = parser.parse_file("components/Button.tsx", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "react_component"
+
+    def test_storybook_story_is_entry_point(self):
+        parser = TypeScriptParser()
+        code = "export default { title: 'Button' };\nexport const Primary = () => <Button />;\n"
+        # Note: the arrow function is extracted as a function
+        result = parser.parse_file("components/Button.stories.tsx", code)
+        exported = [f for f in result.functions if f.is_exported]
+        for func in exported:
+            assert func.is_entry_point is True
+            assert func.entry_point_reason == "storybook_story"
+
+    def test_serverless_handler_is_entry_point(self):
+        parser = TypeScriptParser()
+        code = "export const handler = async (event: APIGatewayEvent) => {\n  return { statusCode: 200 };\n};\n"
+        result = parser.parse_file("src/lambda.ts", code)
+        assert result.functions[0].is_entry_point is True
+        assert result.functions[0].entry_point_reason == "serverless_handler"
+
+    def test_serverless_handler_not_exported_not_entry(self):
+        parser = TypeScriptParser()
+        code = "const handler = async (event: APIGatewayEvent) => {\n  return { statusCode: 200 };\n};\n"
+        result = parser.parse_file("src/lambda.ts", code)
+        assert result.functions[0].entry_point_reason != "serverless_handler"
+
+    def test_exported_hook_in_barrel_is_entry_point(self):
+        parser = TypeScriptParser()
+        code = "export function useAuth() { return {}; }\nexport function useTheme() { return {}; }\n"
+        result = parser.parse_file("hooks/index.ts", code)
+        for func in result.functions:
+            assert func.is_entry_point is True
+            assert func.entry_point_reason == "react_hook"
+
+    def test_exported_hook_in_non_barrel_not_entry_point(self):
+        """use* exports in non-barrel files should NOT be marked as entry points."""
+        parser = TypeScriptParser()
+        code = "export function useAuth() { return {}; }\n"
+        result = parser.parse_file("hooks/useAuth.ts", code)
+        assert result.functions[0].entry_point_reason != "react_hook"
+
+    def test_non_hook_in_barrel_not_entry_point(self):
+        parser = TypeScriptParser()
+        code = "export function formatDate() { return ''; }\n"
+        result = parser.parse_file("utils/index.ts", code)
+        assert result.functions[0].entry_point_reason != "react_hook"
+
+
+class TestModuleDocstring:
+    """Test module-level description extraction from leading comments."""
+
+    def test_jsdoc_module_description(self):
+        parser = TypeScriptParser()
+        code = "/** Utility functions for date formatting. */\nimport { format } from 'date-fns';\n"
+        result = parser.parse_file("utils/dates.ts", code)
+        assert result.module_docstring is not None
+        assert "date formatting" in result.module_docstring
+
+    def test_fileoverview_tag(self):
+        parser = TypeScriptParser()
+        code = "/** @fileoverview API client for the users service. */\nconst BASE_URL = '/api';\n"
+        result = parser.parse_file("api/users.ts", code)
+        assert result.module_docstring == "API client for the users service."
+
+    def test_module_tag(self):
+        parser = TypeScriptParser()
+        code = "/** @module UserService */\nexport class UserService {}\n"
+        result = parser.parse_file("services/user.ts", code)
+        assert result.module_docstring == "UserService"
+
+    def test_single_line_comment(self):
+        parser = TypeScriptParser()
+        code = "// Helper utilities for string manipulation\nexport function capitalize(s: string) { return s; }\n"
+        result = parser.parse_file("utils/strings.ts", code)
+        assert result.module_docstring is not None
+        assert "string manipulation" in result.module_docstring
+
+    def test_skips_license_header(self):
+        parser = TypeScriptParser()
+        code = "/** Copyright 2024 Acme Corp. MIT License. */\n/** Data validation helpers. */\nfunction validate() {}\n"
+        result = parser.parse_file("utils/validate.ts", code)
+        assert result.module_docstring is not None
+        assert "validation" in result.module_docstring.lower()
+
+    def test_no_comment_returns_none(self):
+        parser = TypeScriptParser()
+        code = "export function foo() { return 1; }\n"
+        result = parser.parse_file("utils.ts", code)
+        assert result.module_docstring is None
+
+    def test_truncates_to_200_chars(self):
+        parser = TypeScriptParser()
+        long_desc = "A" * 300
+        code = f"/** {long_desc} */\nfunction foo() {{}}\n"
+        result = parser.parse_file("utils.ts", code)
+        assert result.module_docstring is not None
+        assert len(result.module_docstring) <= 200
+
+    def test_js_parser_extracts_module_docstring(self):
+        parser = JavaScriptParser()
+        code = "/** Core business logic module. */\nfunction process() {}\n"
+        result = parser.parse_file("core.js", code)
+        assert result.module_docstring is not None
+        assert "business logic" in result.module_docstring
+
+
+class TestPythonModuleDocstring:
+    """Test that Python module docstrings are extracted (already works, verify)."""
+
+    def test_python_module_docstring(self):
+        from gristle.parsers.python import PythonParser
+        parser = PythonParser()
+        code = '"""Utility functions for data processing."""\n\ndef process():\n    pass\n'
+        result = parser.parse_file("utils.py", code)
+        assert result.module_docstring == "Utility functions for data processing."
 
 
 class TestTodoExtraction:

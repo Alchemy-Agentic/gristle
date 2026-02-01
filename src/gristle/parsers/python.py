@@ -28,6 +28,19 @@ _ROUTE_DECORATOR_RE = re.compile(
 )
 _ROUTE_PATH_RE = re.compile(r"""["']([^"']+)["']""")
 
+# Click/Typer CLI command decorators
+_CLI_COMMAND_RE = re.compile(
+    r"(?:click\.command|click\.group|typer\.command|app\.command|cli\.command|group\.command)",
+    re.IGNORECASE,
+)
+
+# Django views.py detection
+_DJANGO_VIEWS_RE = re.compile(r"(?:^|/)views\.py$")
+
+# Flask/FastAPI dependency injection patterns
+_DEPENDS_RE = re.compile(r"Depends\(")
+_INJECT_RE = re.compile(r"^inject")
+
 
 class PythonParser(LanguageParser):
     """Parses Python source files into structured entities."""
@@ -57,19 +70,26 @@ class PythonParser(LanguageParser):
         for func in functions:
             if is_test_file or _TEST_FUNC_RE.match(func.name):
                 func.is_test = True
-            if self._is_py_entry_point(func, file_path):
+            reason = self._classify_entry_point(func, file_path)
+            if reason:
                 func.is_entry_point = True
+                func.entry_point_reason = reason
             # Extract routes from decorators
             route = self._route_from_decorators(func, file_path)
             if route:
                 routes.append(route)
                 func.is_entry_point = True
+                func.entry_point_reason = "route_handler"
 
         # Also process methods
         for cls in classes:
             for method in cls.methods:
                 if is_test_file or _TEST_FUNC_RE.match(method.name):
                     method.is_test = True
+                reason = self._classify_entry_point(method, file_path)
+                if reason:
+                    method.is_entry_point = True
+                    method.entry_point_reason = reason
 
         # Extract nested classes (classes defined inside functions, common in pytest)
         nested_classes = self._extract_nested_classes(root, src, file_path)
@@ -84,6 +104,11 @@ class PythonParser(LanguageParser):
         # Extract TODOs
         file_todos = self._extract_todos(root, src)
 
+        # Extract env var references
+        from gristle.parsers.env_vars import extract_env_var_refs
+
+        env_var_refs = extract_env_var_refs(content, "python")
+
         return ParsedFile(
             path=file_path,
             language="python",
@@ -96,6 +121,7 @@ class PythonParser(LanguageParser):
             line_count=content.count("\n") + 1,
             is_test_file=is_test_file,
             todos=file_todos,
+            env_var_refs=env_var_refs,
         )
 
     # ------------------------------------------------------------------
@@ -619,12 +645,39 @@ class PythonParser(LanguageParser):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _is_py_entry_point(func: ParsedFunction, file_path: str) -> bool:
-        """Detect Python entry points: main(), CLI commands, etc."""
+    def _classify_entry_point(func: ParsedFunction, file_path: str) -> str | None:
+        """Classify a function's entry point reason, or return None if not an entry point.
+
+        Returns the entry_point_reason string, e.g. "main", "cli_command", "pytest_fixture".
+        """
+        # main() function
         if func.name == "main":
-            return True
-        # Click/Typer CLI commands
-        return any("command" in dec or "cli" in dec for dec in func.decorators)
+            return "main"
+
+        # pytest fixtures — entry points by convention (consumed by pytest, not by code)
+        if func.is_fixture:
+            return "pytest_fixture"
+
+        # __init__ methods — entry points by convention (called by constructors)
+        if func.name == "__init__":
+            return "constructor"
+
+        # Django views — functions in views.py are entry points by convention
+        if _DJANGO_VIEWS_RE.search(file_path) and func.visibility == "public":
+            return "django_view"
+
+        for dec in func.decorators:
+            # Click/Typer CLI commands
+            if _CLI_COMMAND_RE.search(dec):
+                return "cli_command"
+            # Generic "command" or "cli" in decorator (existing behavior)
+            if "command" in dec or "cli" in dec:
+                return "cli_command"
+            # Flask/FastAPI dependency injection
+            if _INJECT_RE.match(dec) or _DEPENDS_RE.search(dec):
+                return "dependency_injection"
+
+        return None
 
     @staticmethod
     def _route_from_decorators(func: ParsedFunction, file_path: str) -> ParsedRoute | None:

@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (18 tools + 2 resources) |
+                                          | (19 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -65,25 +65,27 @@ src/gristle/
   models.py                # All parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo graph isolation
-    schema.py              # Index creation (22 property indexes, 2 full-text)
+    schema.py              # Index creation (24 property indexes, 2 full-text)
   parsers/
     base.py                # Abstract LanguageParser base class
     registry.py            # Extension-based parser dispatch
     python.py              # Python parser (tree-sitter)
     typescript.py          # TypeScript + JavaScript parsers (tree-sitter)
     markdown.py            # Markdown document parser (regex-based)
+    config.py              # Config file parser (package.json, Dockerfile, CI, .env)
+    env_vars.py            # Regex-based env var reference detection
   ingestion/
-    walker.py              # .gitignore-aware file discovery
-    pipeline.py            # Three-phase graph builder (~1700 lines, core logic)
+    walker.py              # .gitignore-aware file discovery (source + config walkers)
+    pipeline.py            # Three-phase + config graph builder (~2000 lines, core logic)
     batch.py               # BatchCollector for UNWIND-based bulk writes
     watcher.py             # Async file watcher for incremental updates
   query/
-    engine.py              # 15+ Cypher query templates for code analysis
+    engine.py              # 25+ Cypher query templates for code analysis
   search/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 16 tools + 2 resources
+    server.py              # MCP server, 19 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -157,6 +159,7 @@ Represents a function or method.
 | `is_component` | `bool` | Returns JSX (React component) |
 | `is_test` | `bool` | test_ prefix or test framework function |
 | `is_entry_point` | `bool` | Route handler, main(), page default export |
+| `entry_point_reason` | `str \| None` | Why it's an entry point (e.g. `"route_handler"`, `"react_component"`, `"nextjs_page"`, `"pytest_fixture"`, `"cli_command"`) |
 | `is_fixture` | `bool` | @pytest.fixture |
 | `visibility` | `str` | `"public"` / `"protected"` / `"private"` |
 | `return_type` | `str \| None` | Return type annotation |
@@ -224,6 +227,26 @@ Container for all entities parsed from a single source file.
 | `line_count` | `int` |
 | `is_test_file` | `bool` |
 | `todos` | `list[str]` |
+| `env_var_refs` | `list[str]` |
+
+### ParsedEnvVar
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Env var name (e.g. `DATABASE_URL`) |
+| `source_file` | `str` | File where defined/referenced |
+| `default_value` | `str \| None` | Default value if set |
+| `required` | `bool` | True for vars without defaults in `.env.example` |
+
+### ParsedConfigFile
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | `str` | File path |
+| `config_type` | `str` | `package` / `tsconfig` / `dockerfile` / `compose` / `ci` / `env_template` |
+| `properties` | `dict[str, str]` | Config-specific properties (e.g. `config_base_image`, `config_scripts`) |
+| `env_vars` | `list[ParsedEnvVar]` | Env vars defined in this config file |
+| `line_count` | `int` | Line count |
 
 ### ParsedDocument (Markdown)
 
@@ -243,15 +266,16 @@ Container for all entities parsed from a single source file.
 
 | Label | Key Properties | Purpose |
 |-------|---------------|---------|
-| `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count` | Source file |
-| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type` | Function or method |
+| `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
+| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count` | Function or method |
 | `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
 | `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative` | Import statement |
 | `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware` | HTTP endpoint |
 | `TestCase` | `id`, `name`, `block_type`, `file_path`, `start_line`, `parent_describe`, `parametrize_count` | Test block |
 | `Document` | `id`, `path`, `title`, `doc_type`, `line_count`, `reference_count` | Markdown file |
 | `DocumentSection` | `id`, `file_path`, `heading`, `level`, `start_line`, `end_line` | Doc section |
-| `Dependency` | `id`, `name` | External package |
+| `Dependency` | `id`, `name`, `version` | External package |
+| `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
 
 ### Edge Types
 
@@ -265,16 +289,19 @@ Container for all entities parsed from a single source file.
 | `INHERITS_FROM` | Class | Class | Class inheritance |
 | `IMPORTS` | File | File | File-level import dependency |
 | `TESTS` | File | File | Test file covers production file |
+| `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper) |
 | `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |
 | `USES_DEPENDENCY` | Function | Dependency | Uses external package |
 | `DEPENDS_ON` | File | Dependency | File-level external dependency |
 | `REFERENCES` | DocumentSection | Function, Class, File | Doc references code |
 | `HAS_SECTION` | Document | DocumentSection | Doc contains section |
 | `HANDLES` | Route | Function | Route handler |
+| `DEFINED_IN` | EnvVar | File | Env var defined in config file |
+| `USES_ENV` | File | EnvVar | Source file references env var |
 
 ### Indexes
 
-22 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
+24 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
 
 ---
 
@@ -294,6 +321,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Tests:** `test_*` functions as `ParsedTestCase`, `Test*` classes as test groups
 - **Parametrize:** `@pytest.mark.parametrize` variant counts
 - **Fixtures:** `@pytest.fixture` detection
+- **Entry points:** `main()`, `@pytest.fixture`, `__init__`, Django views, `@click.command`/`@typer.command`, `@app.get()`/`@router.post()` route handlers, `Depends()`/`@inject` dependency injection — each sets `entry_point_reason`
 - **TODOs:** `TODO`, `FIXME`, `HACK`, `XXX`, `BUG`, `WARN` comments
 - **Visibility:** `public` (normal), `protected` (`_prefix`), `private` (`__prefix`), dunders are public
 - **Complexity:** Cyclomatic complexity via branch counting (`if`, `elif`, `for`, `while`, `except`, `and`, `or`)
@@ -316,6 +344,29 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Tests:** Jest/Mocha/Vitest patterns (`describe`, `it`, `test`, `beforeAll`, etc.)
 - **Next.js:** App router detection (page, route, layout, loading, error files)
 - **Supabase/Deno:** `serve()` / `Deno.serve()` entry point detection and route extraction
+- **Entry points:** Next.js pages, Storybook stories, React components, serverless handlers (`handler` export), barrel-only hooks (`use*` in `index.ts`), `main()` exports, route handlers — each sets `entry_point_reason`
+- **Module docstrings:** Leading JSDoc blocks, `@module`/`@fileoverview` tags, or `//` comments extracted as `module_docstring`
+
+### Config Parser (`parsers/config.py`)
+
+Not a language parser (doesn't extend `LanguageParser`). Dispatches by exact filename or path pattern rather than extension.
+
+**Supported files:** `package.json`, `tsconfig.json`, `Dockerfile`, `docker-compose.yml`/`compose.yaml`, `.github/workflows/*.yml`, `.env.example`/`.env.template`/`.env.sample`, `requirements.txt`, `pyproject.toml`
+
+**Extracts per file type:**
+- **package.json:** scripts, engines → `config_scripts`, `config_engines`
+- **tsconfig.json:** target, module, paths → `config_target`, `config_module`, `config_paths`
+- **Dockerfile:** base image, exposed ports, ENV/ARG directives → `config_base_image`, `config_exposed_ports`, `ParsedEnvVar` list
+- **docker-compose.yml:** service names → `config_services`
+- **CI workflows:** triggers, job names → `config_triggers`, `config_jobs`
+- **.env templates:** variable names, defaults, required flags → `ParsedEnvVar` list
+
+### Env Var Scanner (`parsers/env_vars.py`)
+
+Regex-based env var reference detection. Integrated into Python, TypeScript, and JavaScript parsers to populate `ParsedFile.env_var_refs`.
+
+**Python patterns:** `os.environ["X"]`, `os.environ.get("X")`, `os.getenv("X")`
+**TS/JS patterns:** `process.env.X`, `process.env["X"]`, `Deno.env.get("X")`
 
 ### Markdown Parser (`parsers/markdown.py`)
 
@@ -331,7 +382,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 
 ## Ingestion Pipeline
 
-The pipeline (`ingestion/pipeline.py`, ~1700 lines) is the core of Gristle. It runs in three phases, each using a `BatchCollector` (`ingestion/batch.py`) to group writes into batched Cypher `UNWIND` queries rather than individual round-trips:
+The pipeline (`ingestion/pipeline.py`, ~2000 lines) is the core of Gristle. It runs in three phases plus a config phase, each using a `BatchCollector` (`ingestion/batch.py`) to group writes into batched Cypher `UNWIND` queries rather than individual round-trips:
 
 ### Phase 1: Parse & Build Nodes
 
@@ -364,7 +415,19 @@ This phase creates all relationship edges that require cross-file knowledge:
 5. **Resolve IMPORTS edges** (File -> File) based on import statements.
 6. **Resolve TESTS edges** (test File -> production File) by matching import paths.
 7. **Resolve USES_FIXTURE edges** (test Function -> fixture Function) by parameter name matching.
-8. **Resolve USES_DEPENDENCY edges** for external packages.
+8. **Resolve TESTS_FUNCTION edges** (test Function -> production Function) by walking test functions' CALLS edges to depth 2, then updating `tested_by_count` on production functions.
+9. **Resolve USES_DEPENDENCY edges** for external packages.
+
+### Config Phase: Config Files & Environment Variables
+
+Runs after Phase 2 (so source file entities exist for USES_ENV edges):
+
+1. `walk_config_files()` discovers config files by filename/path pattern (separate from source walker).
+2. Each config file is parsed by `parse_config_file()`.
+3. Creates `File` nodes with `config_type` property and config-specific properties.
+4. Creates `EnvVar` nodes for env vars defined in config files, with `DEFINED_IN` edges.
+5. For source files with `env_var_refs`, creates `EnvVar` nodes (if not already created) and `USES_ENV` edges.
+6. Deduplication: `EnvVar` nodes are keyed by name, so a var defined in `.env.example` and referenced in source creates only one node.
 
 ### Phase 3: Process Documentation
 
@@ -419,6 +482,26 @@ pytest injects fixtures by matching test function parameter names to fixture nam
 2. During Phase 2, for every test function, each parameter name is checked against `_fixture_map`.
 3. Matches produce `USES_FIXTURE` edges.
 
+### TESTS_FUNCTION Resolution
+
+Function-level test coverage is derived from the call graph:
+
+1. During CALLS edge resolution, an in-memory adjacency map (`caller_id → [callee_id]`) and a set of test function IDs are built.
+2. For each test function (`is_test = true`), the pipeline walks its CALLS edges to depth 2.
+3. Any non-test `Function` reached gets a `TESTS_FUNCTION` edge with a `depth` property (1 = direct call, 2 = via helper).
+4. Direct coverage (depth 1) takes priority — if a test calls a function both directly and indirectly, only the depth-1 edge is created.
+5. `tested_by_count` is computed for each production function and written to the graph via a batched `UNWIND` update.
+
+### Dependency Version Extraction
+
+After Phase 1 and before Phase 2, the pipeline reads version information from manifest files:
+
+- `package.json`: `dependencies` + `devDependencies`
+- `requirements.txt`: packages with version specifiers (e.g., `flask==2.3.0`)
+- `pyproject.toml`: `[project] dependencies` array
+
+The extracted versions are stored in `_dependency_versions` and attached to `Dependency` nodes as the `version` property during Phase 2.
+
 ---
 
 ## Batch Collector
@@ -459,11 +542,12 @@ Errors are logged with context (file path, operation, error message) via the str
 
 `ingestion/walker.py` discovers files in a repo:
 
+- `walk_repo()`: discovers source files filtered by parser-supported extensions
+- `walk_config_files()`: discovers config files by filename/path pattern (Dockerfile, package.json, CI workflows, etc.)
 - Respects `.gitignore` patterns (parsed via `pathspec`)
 - Skips configured excluded directories
 - Filters by file size (default max 500KB)
 - Detects binary files (null-byte heuristic)
-- Filters by extension (only supported parser extensions)
 - Returns forward-slash-normalized relative paths
 
 ---
@@ -483,7 +567,7 @@ Errors are logged with context (file path, operation, error message) via the str
 
 ## Query Engine
 
-`query/engine.py` provides 15+ pre-built Cypher query methods:
+`query/engine.py` provides 20+ pre-built Cypher query methods:
 
 | Method | Description |
 |--------|-------------|
@@ -500,12 +584,18 @@ Errors are logged with context (file path, operation, error message) via the str
 | `get_doc_overview()` | Doc type counts, reference stats |
 | `get_routes(method?)` | All HTTP routes, optional method filter |
 | `get_components(limit)` | React components with usage counts |
-| `get_tests_for_entity(name)` | Tests exercising an entity (direct calls + file coverage) |
-| `get_untested_functions()` | Exported functions with no test coverage |
+| `get_tests_for_entity(name)` | Tests exercising an entity (TESTS_FUNCTION edges + CALLS fallback + file coverage) |
+| `get_function_coverage(name)` | Detailed coverage for a function: tested_by_count + which tests at what depth |
+| `get_untested_functions()` | Exported functions with no test coverage (uses `tested_by_count`) |
+| `get_untested_critical(limit)` | Exported functions with callers but zero test coverage |
 | `get_todos(limit)` | Files with TODO counts |
-| `infer_conventions()` | Project patterns: languages, routes, components, tests, imports |
+| `infer_conventions()` | Project patterns: languages, routes, components, tests, imports, layer violations |
 | `get_dependencies(limit)` | External packages ranked by usage |
 | `get_dependency_users(name)` | Files/functions using a specific package |
+| `get_env_vars()` | All env vars with definitions and usage |
+| `get_config_files()` | Config files with types and properties |
+| `get_setup_requirements()` | Full setup checklist: env vars, config files, dependencies |
+| `detect_layer_violations(config?)` | Architectural layer violations from IMPORTS edges |
 | `find_path(from, to, hops)` | Call paths between two entities |
 
 ---
@@ -552,10 +642,13 @@ List React/UI components with usage counts.
 Query dependencies. Without name: list all ranked by usage. With name: show all users.
 
 ### `gristle_tests(entity?, mode?, repo_id?)`
-Test queries. Modes: `find` (tests for entity), `coverage` (untested exported functions).
+Test queries. Modes: `find` (tests for entity), `coverage` (untested exported functions), `coverage_detail` (function-level coverage with depth info), `untested_critical` (exported functions with callers but no tests).
 
 ### `gristle_conventions(repo_id?)`
-Infer project patterns: file structure, routes, components, test locations, entry points, most-imported files, visibility distribution. **Use this first on unfamiliar codebases.**
+Infer project patterns: file structure, routes, components, test locations, entry points, most-imported files, visibility distribution, architectural layer violations. **Use this first on unfamiliar codebases.**
+
+### `gristle_config(mode?, repo_id?)`
+Config and environment variable queries. Modes: `env_vars` (all env vars with definitions and usage), `config_files` (config files with types), `setup_requirements` (full setup checklist).
 
 ### `gristle_embed(repo_id?)`
 Build semantic search index. Requires `pip install gristle[search]` (sentence-transformers).

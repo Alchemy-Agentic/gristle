@@ -33,6 +33,7 @@ class ParsedFunction:
     is_component: bool = False  # Returns JSX (React component)
     is_test: bool = False  # test_ prefix, it()/describe()/test() etc.
     is_entry_point: bool = False  # Route handler, main(), page default export
+    entry_point_reason: str | None = None  # Why it's an entry point (e.g. "route_handler", "react_component")
     is_fixture: bool = False  # pytest.fixture
     visibility: str = "public"  # public / private / protected
     return_type: str | None = None
@@ -87,6 +88,27 @@ class ParsedRoute:
 
 
 @dataclass(slots=True)
+class ParsedEnvVar:
+    """An environment variable reference found in source or config."""
+
+    name: str
+    source_file: str  # File where it was defined/referenced
+    default_value: str | None = None
+    required: bool = False  # True for .env.example vars without defaults
+
+
+@dataclass(slots=True)
+class ParsedConfigFile:
+    """Config file metadata extracted during parsing."""
+
+    path: str
+    config_type: str  # "package", "tsconfig", "dockerfile", "compose", "ci", "env_template"
+    properties: dict[str, str] = field(default_factory=dict)  # config-specific properties
+    env_vars: list[ParsedEnvVar] = field(default_factory=list)
+    line_count: int = 0
+
+
+@dataclass(slots=True)
 class ParsedFile:
     path: str
     language: str
@@ -99,6 +121,7 @@ class ParsedFile:
     line_count: int = 0
     is_test_file: bool = False
     todos: list[str] = field(default_factory=list)  # File-level TODOs
+    env_var_refs: list[str] = field(default_factory=list)  # Env var names referenced in source
 
 
 # ------------------------------------------------------------------

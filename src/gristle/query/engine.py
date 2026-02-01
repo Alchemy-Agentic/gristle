@@ -539,10 +539,26 @@ class QueryEngine:
     def get_tests_for_entity(self, name: str) -> list[dict[str, Any]]:
         """Find test functions that call a given entity.
 
-        Uses both CALLS edges (direct test->function calls) and TESTS
+        Uses TESTS_FUNCTION edges (with depth), CALLS edges, and TESTS
         edges (test file -> production file coverage).
         """
-        # Test functions that directly call the target (via CALLS chain)
+        # Test functions linked via TESTS_FUNCTION edges (preferred, has depth)
+        tf_edges = self.graph.execute(
+            """
+            MATCH (test:Function)-[r:TESTS_FUNCTION]->(target)
+            WHERE (target.name = $name OR target.qualified_name = $name)
+            RETURN DISTINCT test.name AS test_name,
+                   test.qualified_name AS test_qualified_name,
+                   test.file_path AS test_file,
+                   test.start_line AS line,
+                   r.depth AS depth,
+                   'tests_function' AS via
+            ORDER BY r.depth, test_file, test_name
+            """,
+            {"name": name},
+        )
+
+        # Fallback: Test functions that directly call the target (via CALLS chain)
         direct = self.graph.execute(
             """
             MATCH (test:Function)-[:CALLS*1..3]->(target)
@@ -573,12 +589,22 @@ class QueryEngine:
             {"name": name},
         )
 
-        # Merge results, preferring direct call matches
+        # Merge results: TESTS_FUNCTION > CALLS > file_coverage
+        seen_tests: set[str] = set()
         seen_files: set[str] = set()
         results = []
+        for r in tf_edges.records:
+            key = r["test_qualified_name"]
+            if key not in seen_tests:
+                seen_tests.add(key)
+                seen_files.add(r["test_file"])
+                results.append(r)
         for r in direct.records:
-            results.append(r)
-            seen_files.add(r["test_file"])
+            key = r["test_qualified_name"]
+            if key not in seen_tests:
+                seen_tests.add(key)
+                seen_files.add(r["test_file"])
+                results.append(r)
         for r in file_level.records:
             if r["test_file"] not in seen_files:
                 results.append(
@@ -592,23 +618,93 @@ class QueryEngine:
                 )
         return results
 
+    def get_function_coverage(self, name: str) -> dict[str, Any]:
+        """Get detailed test coverage for a specific function.
+
+        Returns the function info, its tested_by_count, and which tests
+        exercise it at what depth.
+        """
+        # Get function info + tested_by_count
+        func_result = self.graph.execute(
+            """
+            MATCH (f:Function)
+            WHERE f.name = $name OR f.qualified_name = $name
+            RETURN f.name AS name,
+                   f.qualified_name AS qualified_name,
+                   f.file_path AS file_path,
+                   f.is_exported AS is_exported,
+                   f.complexity AS complexity,
+                   f.tested_by_count AS tested_by_count
+            LIMIT 1
+            """,
+            {"name": name},
+        )
+        if not func_result.records:
+            return {"error": f"Function '{name}' not found."}
+
+        func_info = func_result.records[0]
+
+        # Get test functions that exercise it via TESTS_FUNCTION
+        tests = self.graph.execute(
+            """
+            MATCH (test:Function)-[r:TESTS_FUNCTION]->(f:Function)
+            WHERE f.name = $name OR f.qualified_name = $name
+            RETURN test.name AS test_name,
+                   test.qualified_name AS test_qualified_name,
+                   test.file_path AS test_file,
+                   r.depth AS depth
+            ORDER BY r.depth, test_file, test_name
+            """,
+            {"name": name},
+        )
+
+        return {
+            "function": func_info,
+            "tests": tests.records,
+        }
+
     def get_untested_functions(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Find non-test exported functions with no test callers."""
+        """Find non-test exported functions with no test coverage."""
         result = self.graph.execute(
             """
             MATCH (f:Function)
             WHERE f.is_test = false
               AND f.is_exported = true
               AND f.is_component = false
-            OPTIONAL MATCH (test:Function)-[:CALLS*1..3]->(f)
-            WHERE test.is_test = true
-            WITH f, count(test) AS test_count
-            WHERE test_count = 0
+              AND f.tested_by_count = 0
             RETURN f.name AS name,
                    f.qualified_name AS qualified_name,
                    f.file_path AS file_path,
                    f.complexity AS complexity
             ORDER BY f.complexity DESC
+            LIMIT $limit
+            """,
+            {"limit": limit},
+        )
+        return result.records
+
+    def get_untested_critical(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Find exported functions with callers but zero test coverage.
+
+        These are high-risk: other code depends on them, but no tests verify
+        their behavior.
+        """
+        result = self.graph.execute(
+            """
+            MATCH (f:Function)
+            WHERE f.is_test = false
+              AND f.is_exported = true
+              AND f.tested_by_count = 0
+            MATCH (caller:Function)-[:CALLS]->(f)
+            WHERE caller.is_test = false
+            WITH f, count(DISTINCT caller) AS caller_count
+            WHERE caller_count > 0
+            RETURN f.name AS name,
+                   f.qualified_name AS qualified_name,
+                   f.file_path AS file_path,
+                   f.complexity AS complexity,
+                   caller_count
+            ORDER BY caller_count DESC, f.complexity DESC
             LIMIT $limit
             """,
             {"limit": limit},
@@ -721,6 +817,9 @@ class QueryEngine:
             top = "/".join(dir_part.split("/")[:2])
             test_dirs[top] = test_dirs.get(top, 0) + 1
 
+        # Layer violations
+        layer_data = self.detect_layer_violations()
+
         return {
             "languages": {r["language"]: r["file_count"] for r in dir_stats.records},
             "route_methods": {r["method"]: r["count"] for r in route_stats.records},
@@ -731,6 +830,99 @@ class QueryEngine:
             ],
             "most_imported_files": [{"path": r["path"], "imports": r["import_count"]} for r in top_imported.records],
             "visibility_distribution": {r["visibility"]: r["count"] for r in visibility_stats.records},
+            "layer_violations": layer_data,
+        }
+
+    # ------------------------------------------------------------------
+    # Layer violation detection
+    # ------------------------------------------------------------------
+
+    # Default layer hierarchy: directory name -> (layer_number, layer_name)
+    _DEFAULT_LAYERS: dict[str, tuple[int, str]] = {
+        "routes": (3, "presentation"),
+        "pages": (3, "presentation"),
+        "handlers": (3, "presentation"),
+        "views": (3, "presentation"),
+        "services": (2, "business"),
+        "usecases": (2, "business"),
+        "logic": (2, "business"),
+        "adapters": (1, "data"),
+        "repositories": (1, "data"),
+        "db": (1, "data"),
+        "database": (1, "data"),
+        "utils": (0, "cross-cutting"),
+        "shared": (0, "cross-cutting"),
+        "lib": (0, "cross-cutting"),
+        "common": (0, "cross-cutting"),
+        "helpers": (0, "cross-cutting"),
+    }
+
+    def _classify_layer(
+        self, file_path: str, layer_config: dict[str, tuple[int, str]] | None = None
+    ) -> tuple[int, str] | None:
+        """Classify a file's architectural layer based on its directory path."""
+        layers = layer_config or self._DEFAULT_LAYERS
+        parts = file_path.replace("\\", "/").split("/")
+        # Check each directory component (deepest match wins)
+        for part in reversed(parts[:-1]):  # exclude filename
+            lower = part.lower()
+            if lower in layers:
+                return layers[lower]
+        return None
+
+    def detect_layer_violations(
+        self, layer_config: dict[str, tuple[int, str]] | None = None
+    ) -> dict[str, Any]:
+        """Detect architectural layer violations from IMPORTS edges.
+
+        A violation occurs when a file in a higher layer imports from a
+        non-adjacent lower layer (skipping layers), e.g. presentation → data.
+        Cross-cutting (layer 0) files are exempt from violations.
+        """
+        # Get all file-to-file imports
+        result = self.graph.execute("""
+            MATCH (a:File)-[:IMPORTS]->(b:File)
+            RETURN a.path AS source, b.path AS target
+        """)
+
+        violations: list[dict[str, Any]] = []
+        layer_summary: dict[str, int] = {}
+
+        for rec in result.records:
+            source_path = rec["source"]
+            target_path = rec["target"]
+
+            source_layer = self._classify_layer(source_path, layer_config)
+            target_layer = self._classify_layer(target_path, layer_config)
+
+            if source_layer is None or target_layer is None:
+                continue
+
+            src_num, src_name = source_layer
+            tgt_num, tgt_name = target_layer
+
+            # Cross-cutting (layer 0) is exempt
+            if tgt_num == 0 or src_num == 0:
+                continue
+
+            # Violation: higher layer imports from non-adjacent lower layer
+            if src_num > tgt_num + 1:
+                violation_type = f"{src_name}→{tgt_name}"
+                violations.append({
+                    "source": source_path,
+                    "target": target_path,
+                    "source_layer": src_name,
+                    "target_layer": tgt_name,
+                    "source_level": src_num,
+                    "target_level": tgt_num,
+                    "violation_type": violation_type,
+                })
+                layer_summary[violation_type] = layer_summary.get(violation_type, 0) + 1
+
+        return {
+            "violations": violations,
+            "total": len(violations),
+            "by_type": layer_summary,
         }
 
     # ------------------------------------------------------------------
@@ -805,6 +997,64 @@ class QueryEngine:
             {"from_name": from_name, "to_name": to_name},
         )
         return result.records
+
+    # ------------------------------------------------------------------
+    # Config & environment queries
+    # ------------------------------------------------------------------
+
+    def get_env_vars(self) -> dict[str, Any]:
+        """List all environment variables with their sources and usage."""
+        # Get all EnvVar nodes with their definitions and usage
+        env_result = self.graph.execute("""
+            MATCH (e:EnvVar)
+            OPTIONAL MATCH (e)-[:DEFINED_IN]->(def_file:File)
+            OPTIONAL MATCH (src:File)-[:USES_ENV]->(e)
+            RETURN e.name AS name,
+                   e.default_value AS default_value,
+                   e.required AS required,
+                   collect(DISTINCT def_file.path) AS defined_in,
+                   collect(DISTINCT src.path) AS used_by
+            ORDER BY e.name
+        """)
+        return {
+            "env_vars": env_result.records,
+            "total": len(env_result.records),
+        }
+
+    def get_config_files(self) -> dict[str, Any]:
+        """List all config files with their types and properties."""
+        result = self.graph.execute("""
+            MATCH (f:File)
+            WHERE f.config_type IS NOT NULL
+            RETURN f.path AS path,
+                   f.config_type AS config_type,
+                   f.line_count AS line_count
+            ORDER BY f.config_type, f.path
+        """)
+        return {
+            "config_files": result.records,
+            "total": len(result.records),
+        }
+
+    def get_setup_requirements(self) -> dict[str, Any]:
+        """Gather setup requirements: env vars, config files, dependencies."""
+        env_data = self.get_env_vars()
+        config_data = self.get_config_files()
+
+        # Required env vars (defined in .env templates or marked required)
+        required = [e for e in env_data["env_vars"] if e.get("required")]
+        optional = [e for e in env_data["env_vars"] if not e.get("required")]
+
+        # Get dependency count
+        dep_result = self.graph.execute("MATCH (d:Dependency) RETURN count(d) AS total")
+        dep_count = dep_result.records[0]["total"] if dep_result.records else 0
+
+        return {
+            "required_env_vars": required,
+            "optional_env_vars": optional,
+            "config_files": config_data["config_files"],
+            "dependency_count": dep_count,
+        }
 
     # ------------------------------------------------------------------
     # Source code loader

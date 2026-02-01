@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,8 +13,9 @@ from typing import TYPE_CHECKING
 from gristle.config import settings
 from gristle.graph.schema import ensure_schema
 from gristle.ingestion.batch import BatchCollector
-from gristle.ingestion.walker import WalkedFile, walk_repo
+from gristle.ingestion.walker import WalkedFile, walk_config_files, walk_repo
 from gristle.logging import Timer
+from gristle.parsers.config import parse_config_file
 from gristle.parsers.markdown import MarkdownParser
 from gristle.parsers.registry import ParserRegistry
 
@@ -49,6 +52,8 @@ class IngestionResult:
     todos_found: int = 0
     dependencies_found: int = 0
     test_coverage_edges: int = 0
+    config_files_processed: int = 0
+    env_vars_found: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -105,6 +110,14 @@ class IngestionPipeline:
         self._class_methods: dict[str, dict[str, str]] = {}
         # Fixture map: fixture_name -> func_id (for USES_FIXTURE edges)
         self._fixture_map: dict[str, str] = {}
+        # Dependency version map: package_name -> version_string
+        self._dependency_versions: dict[str, str] = {}
+        # In-memory call adjacency: caller_id -> [callee_id] (for TESTS_FUNCTION)
+        self._calls_adjacency: dict[str, list[str]] = {}
+        # Set of test function node IDs (is_test=true)
+        self._test_func_ids: set[str] = set()
+        # EnvVar tracking: env_var_name -> node_id (for USES_ENV resolution)
+        self._env_var_ids: dict[str, str] = {}
 
     def _register_name(self, name: str, node_id: str) -> None:
         """Register a name in both exact and case-insensitive lookup maps."""
@@ -145,6 +158,10 @@ class IngestionPipeline:
         self._class_bases.clear()
         self._class_methods.clear()
         self._fixture_map.clear()
+        self._dependency_versions.clear()
+        self._calls_adjacency.clear()
+        self._test_func_ids.clear()
+        self._env_var_ids.clear()
 
         # Walk and collect source files
         files = walk_repo(repo_path, self.registry.supported_extensions)
@@ -181,6 +198,9 @@ class IngestionPipeline:
             },
         )
 
+        # Extract dependency versions from manifest files
+        self._extract_dependency_versions(repo_path)
+
         # Phase 2: Resolve cross-file call relationships
         rels_before = result.relationships_created
         with Timer() as phase2:
@@ -194,6 +214,21 @@ class IngestionPipeline:
                 "duration_ms": phase2.ms,
                 "repo_id": self.graph.repo_id,
                 "rels": result.relationships_created - rels_before,
+            },
+        )
+
+        # Config phase: Walk config files, create EnvVar nodes, resolve USES_ENV edges
+        with Timer() as config_phase:
+            self._process_config_files(repo_path, parsed_files, result)
+
+        logger.info(
+            "Config phase complete: %d config files, %d env vars",
+            result.config_files_processed,
+            result.env_vars_found,
+            extra={
+                "event": "config_phase_done",
+                "duration_ms": config_phase.ms,
+                "repo_id": self.graph.repo_id,
             },
         )
 
@@ -655,7 +690,9 @@ class IngestionPipeline:
                 "is_component": func.is_component,
                 "is_test": func.is_test,
                 "is_entry_point": func.is_entry_point,
+                "entry_point_reason": func.entry_point_reason or "",
                 "todo_count": len(func.todos),
+                "tested_by_count": 0,
             },
         )
 
@@ -712,6 +749,9 @@ class IngestionPipeline:
         # Resolve USES_FIXTURE edges (test function param -> fixture function)
         self._resolve_fixture_edges(parsed_files, batch)
 
+        # Resolve TESTS_FUNCTION edges (test function -> production function, depth 1-2)
+        self._resolve_test_function_edges(result, batch)
+
         # Flush all Phase 2 relationships
         counts = batch.flush()
         result.nodes_created += counts["nodes_created"]
@@ -748,12 +788,87 @@ class IngestionPipeline:
             if fixture_id:
                 batch.add_merge_relationship("USES_FIXTURE", caller_id, fixture_id)
 
+    def _resolve_test_function_edges(
+        self,
+        result: IngestionResult,
+        batch: BatchCollector,
+    ) -> None:
+        """Create TESTS_FUNCTION edges from test functions to production functions.
+
+        For each test function (is_test=true), walk its CALLS edges up to depth 2.
+        Any non-test function reached gets a TESTS_FUNCTION edge with a depth property
+        (1 = direct call, 2 = via helper). Also computes tested_by_count on each
+        production function.
+        """
+        if not self._test_func_ids:
+            return
+
+        # tested_func_id -> set of test_func_ids that exercise it
+        tested_by: dict[str, set[str]] = {}
+
+        for test_id in self._test_func_ids:
+            # Depth 1: direct callees
+            depth1_callees = self._calls_adjacency.get(test_id, [])
+            for callee_id in depth1_callees:
+                # Only target non-test functions (func:: prefix)
+                if not callee_id.startswith("func::"):
+                    continue
+                if callee_id in self._test_func_ids:
+                    continue
+                batch.add_merge_relationship(
+                    "TESTS_FUNCTION",
+                    test_id,
+                    callee_id,
+                    {"depth": 1},
+                )
+                result.test_coverage_edges += 1
+                tested_by.setdefault(callee_id, set()).add(test_id)
+
+            # Depth 2: callees of callees (via helpers)
+            for mid_id in depth1_callees:
+                depth2_callees = self._calls_adjacency.get(mid_id, [])
+                for callee_id in depth2_callees:
+                    if not callee_id.startswith("func::"):
+                        continue
+                    if callee_id in self._test_func_ids:
+                        continue
+                    # Skip if already covered at depth 1
+                    if test_id in tested_by.get(callee_id, set()):
+                        continue
+                    batch.add_merge_relationship(
+                        "TESTS_FUNCTION",
+                        test_id,
+                        callee_id,
+                        {"depth": 2},
+                    )
+                    result.test_coverage_edges += 1
+                    tested_by.setdefault(callee_id, set()).add(test_id)
+
+        # Update tested_by_count on production Function nodes via direct query
+        if tested_by:
+            updates = [{"id": fid, "count": len(tids)} for fid, tids in tested_by.items()]
+            # Flush batch first so TESTS_FUNCTION edges are written, then update counts
+            counts = batch.flush()
+            result.nodes_created += counts["nodes_created"]
+            result.relationships_created += counts["relationships_created"]
+            for i in range(0, len(updates), 200):
+                chunk = updates[i : i + 200]
+                self.graph.execute(
+                    "UNWIND $items AS item MATCH (n:Function) WHERE n.id = item.id SET n.tested_by_count = item.count",
+                    {"items": chunk},
+                )
+
     def _resolve_function_calls(self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector) -> None:
         caller_id = f"func::{func.qualified_name}"
+        # Track test function IDs for TESTS_FUNCTION resolution
+        if func.is_test:
+            self._test_func_ids.add(caller_id)
         for call_name in func.calls:
             callee_id = self._find_callee(call_name, func, pf)
             if callee_id:
                 batch.add_merge_relationship("CALLS", caller_id, callee_id)
+                # Build in-memory call adjacency for TESTS_FUNCTION traversal
+                self._calls_adjacency.setdefault(caller_id, []).append(callee_id)
 
             # Create USES_HOOK edge for React hook calls (use* convention)
             bare_name = call_name.split(".")[-1] if "." in call_name else call_name
@@ -1177,12 +1292,18 @@ class IngestionPipeline:
         # Create Dependency nodes
         for pkg_name, importers in external_deps.items():
             dep_id = f"dep::{pkg_name}"
+            # Look up version from manifest files (try exact name, then normalized)
+            version = self._dependency_versions.get(pkg_name, "")
+            if not version:
+                normalized = pkg_name.lower().replace("-", "_")
+                version = self._dependency_versions.get(normalized, "")
             batch.add_node(
                 "Dependency",
                 {
                     "id": dep_id,
                     "name": pkg_name,
                     "import_count": len(importers),
+                    "version": version,
                 },
             )
             result.dependencies_found += 1
@@ -1193,6 +1314,166 @@ class IngestionPipeline:
 
         # Link functions to the external dependencies they use
         self._resolve_dependency_usage(parsed_files, batch)
+
+    def _extract_dependency_versions(self, repo_path: str) -> None:
+        """Extract dependency version strings from manifest files.
+
+        Reads package.json, requirements.txt, and pyproject.toml to build
+        a package_name -> version_string map used when creating Dependency nodes.
+        """
+        root = Path(repo_path)
+
+        # package.json (JS/TS)
+        pkg_json = root / "package.json"
+        if pkg_json.is_file():
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8"))
+                for section in ("dependencies", "devDependencies", "peerDependencies"):
+                    deps = data.get(section, {})
+                    if isinstance(deps, dict):
+                        for name, version in deps.items():
+                            if isinstance(version, str):
+                                self._dependency_versions[name] = version
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # requirements.txt (Python)
+        for req_file in ("requirements.txt", "requirements-dev.txt", "requirements_dev.txt"):
+            req_path = root / req_file
+            if req_path.is_file():
+                try:
+                    for line in req_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#") or line.startswith("-"):
+                            continue
+                        # Parse: package==1.0.0, package>=1.0.0, package~=1.0.0, etc.
+                        m = re.match(r"^([a-zA-Z0-9_.-]+)\s*([><=!~]+.+)?", line)
+                        if m:
+                            pkg = m.group(1).lower().replace("-", "_")
+                            version = m.group(2)
+                            if version:
+                                self._dependency_versions[pkg] = version.strip()
+                except OSError:
+                    pass
+
+        # pyproject.toml (Python)
+        pyproject = root / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                import tomllib
+
+                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                # PEP 621: [project.dependencies]
+                project_deps = data.get("project", {}).get("dependencies", [])
+                for dep_str in project_deps:
+                    if isinstance(dep_str, str):
+                        m = re.match(r"^([a-zA-Z0-9_.-]+)\s*([><=!~]+.+)?", dep_str)
+                        if m:
+                            pkg = m.group(1).lower().replace("-", "_")
+                            version = m.group(2)
+                            if version:
+                                self._dependency_versions[pkg] = version.strip()
+                # Optional deps
+                optional = data.get("project", {}).get("optional-dependencies", {})
+                for group_deps in optional.values():
+                    if isinstance(group_deps, list):
+                        for dep_str in group_deps:
+                            if isinstance(dep_str, str):
+                                m = re.match(r"^([a-zA-Z0-9_.-]+)\s*([><=!~]+.+)?", dep_str)
+                                if m:
+                                    pkg = m.group(1).lower().replace("-", "_")
+                                    version = m.group(2)
+                                    if version:
+                                        self._dependency_versions[pkg] = version.strip()
+            except (ImportError, OSError, Exception):
+                pass
+
+    def _process_config_files(
+        self,
+        repo_path: str,
+        parsed_files: list[ParsedFile],
+        result: IngestionResult,
+    ) -> None:
+        """Walk config files, create File/EnvVar nodes, and resolve USES_ENV edges."""
+        batch = BatchCollector(self.graph, self._batch_size)
+
+        # 1. Walk and parse config files
+        config_walked = walk_config_files(repo_path)
+        for wf in config_walked:
+            try:
+                content = Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                logger.warning("Cannot read config file %s: %s", wf.relative_path, e)
+                continue
+
+            parsed_config = parse_config_file(wf.relative_path, content)
+            if parsed_config is None:
+                continue
+
+            result.config_files_processed += 1
+            file_id = f"file::{wf.relative_path}"
+
+            # Create File node with config_type and config-specific properties
+            props: dict[str, object] = {
+                "id": file_id,
+                "path": wf.relative_path,
+                "language": "config",
+                "line_count": parsed_config.line_count,
+                "is_test_file": False,
+                "config_type": parsed_config.config_type,
+            }
+            # Add config-specific properties (config_scripts, config_target, etc.)
+            for key, value in parsed_config.properties.items():
+                props[key] = value
+
+            batch.add_node("File", props)
+
+            # Create EnvVar nodes from this config file
+            for env_var in parsed_config.env_vars:
+                env_id = f"envvar::{env_var.name}"
+                if env_var.name not in self._env_var_ids:
+                    batch.add_node(
+                        "EnvVar",
+                        {
+                            "id": env_id,
+                            "name": env_var.name,
+                            "default_value": env_var.default_value or "",
+                            "required": env_var.required,
+                        },
+                    )
+                    self._env_var_ids[env_var.name] = env_id
+                    result.env_vars_found += 1
+                # Link EnvVar to the config file it was defined in
+                batch.add_merge_relationship("DEFINED_IN", env_id, file_id)
+
+        # 2. Create EnvVar nodes from source file env_var_refs (if not already created)
+        # and resolve USES_ENV edges from source files to EnvVar nodes
+        for pf in parsed_files:
+            if not pf.env_var_refs:
+                continue
+            file_id = f"file::{pf.path}"
+            for var_name in pf.env_var_refs:
+                env_id = f"envvar::{var_name}"
+                if var_name not in self._env_var_ids:
+                    # Create the EnvVar node (referenced but not defined in a config)
+                    batch.add_node(
+                        "EnvVar",
+                        {
+                            "id": env_id,
+                            "name": var_name,
+                            "default_value": "",
+                            "required": False,
+                        },
+                    )
+                    self._env_var_ids[var_name] = env_id
+                    result.env_vars_found += 1
+                # USES_ENV: source file -> env var
+                batch.add_merge_relationship("USES_ENV", file_id, env_id)
+
+        # Flush config batch
+        counts = batch.flush()
+        result.nodes_created += counts["nodes_created"]
+        result.relationships_created += counts["relationships_created"]
 
     def _register_python_source_roots(self, parsed_files: list[ParsedFile]) -> None:
         """Detect Python source roots (e.g. ``src/``) and register module
