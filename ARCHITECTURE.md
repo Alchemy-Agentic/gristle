@@ -9,7 +9,7 @@ Graph-based code intelligence for AI agents. Gristle parses source repositories 
 | Language | Python 3.11+ |
 | Graph DB | FalkorDB (Redis-based, runs on port 6380) |
 | AST engine | tree-sitter (Python, TypeScript, JavaScript) |
-| Protocol | MCP (Model Context Protocol) over stdio |
+| Protocol | MCP (Model Context Protocol) over stdio or Streamable HTTP |
 | Entry point | `gristle` CLI or `gristle.mcp.server:main` |
 | Package | `pip install -e .` from repo root |
 
@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (13 tools)       |
+                                          | (16 tools)       |
                                           +------------------+
                                                     |
                                                     v
@@ -83,7 +83,7 @@ src/gristle/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 15 tools + 2 resources
+    server.py              # MCP server, 16 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
