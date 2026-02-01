@@ -142,6 +142,10 @@ Ingestion uses batched Cypher `UNWIND` queries to minimize FalkorDB round-trips.
 
 Tune with `GRISTLE_INGESTION_BATCH_SIZE` — larger values use more memory but fewer round-trips.
 
+## Error handling
+
+All database and I/O operations use targeted exception handling — `ResponseError` for FalkorDB/Redis failures, `OSError` for filesystem issues, `UnicodeDecodeError` for encoding problems. Errors are logged with context (file path, operation) rather than silently swallowed, making production issues easier to diagnose.
+
 ## Observability
 
 Gristle outputs structured JSON logs in production (HTTP transport) and coloured human-readable logs in development (stdio). All ingestion operations include timing data:
