@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # File watcher debounce in seconds
     watcher_debounce_seconds: float = 2.0
 
+    # Batch size for UNWIND Cypher queries during ingestion
+    ingestion_batch_size: int = 200
+
     # MCP transport: "stdio" (local dev) or "streamable-http" (remote/Railway)
     transport: str = "stdio"
 

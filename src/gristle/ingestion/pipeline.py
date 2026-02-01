@@ -12,6 +12,7 @@ from gristle.logging import Timer
 from gristle.config import settings
 from gristle.graph.client import GraphClient
 from gristle.graph.schema import ensure_schema
+from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.walker import WalkedFile, walk_repo
 from gristle.models import (
     CodeReference,
@@ -55,9 +56,15 @@ class IngestionPipeline:
 
     _DOC_EXTENSIONS = frozenset({"md", "mdx"})
 
-    def __init__(self, graph: GraphClient, registry: ParserRegistry | None = None):
+    def __init__(
+        self,
+        graph: GraphClient,
+        registry: ParserRegistry | None = None,
+        batch_size: int | None = None,
+    ):
         self.graph = graph
         self.registry = registry or ParserRegistry().build_default()
+        self._batch_size = batch_size or settings.ingestion_batch_size
         self._md_parser = MarkdownParser()
         # Maps qualified_name -> node id for cross-file call resolution
         self._id_map: dict[str, str] = {}
@@ -185,9 +192,13 @@ class IngestionPipeline:
 
         # Phase 3: Walk and process documentation files
         with Timer() as phase3:
+            doc_batch = BatchCollector(self.graph, self._batch_size)
             doc_files = walk_repo(repo_path, self._DOC_EXTENSIONS)
             for wf in doc_files:
-                self._process_document(wf, result)
+                self._process_document(wf, result, doc_batch)
+            doc_counts = doc_batch.flush()
+            result.nodes_created += doc_counts["nodes_created"]
+            result.relationships_created += doc_counts["relationships_created"]
 
         logger.info(
             "Phase 3 complete: processed %d docs (%d/%d refs resolved)",
@@ -399,6 +410,7 @@ class IngestionPipeline:
 
     def _build_file_graph(self, parsed: ParsedFile, result: IngestionResult) -> None:
         """Create graph nodes and structural edges for a single parsed file."""
+        batch = BatchCollector(self.graph, self._batch_size)
         file_id = f"file::{parsed.path}"
 
         # Track file path for document reference resolution
@@ -410,7 +422,7 @@ class IngestionPipeline:
         self._register_name(basename, file_id)
 
         # File node
-        self.graph.create_node("File", {
+        batch.add_node("File", {
             "id": file_id,
             "path": parsed.path,
             "language": parsed.language,
@@ -419,7 +431,6 @@ class IngestionPipeline:
             "is_test_file": parsed.is_test_file,
             "todo_count": len(parsed.todos),
         })
-        result.nodes_created += 1
 
         # Track test files for TESTS edge resolution
         if parsed.is_test_file:
@@ -454,7 +465,7 @@ class IngestionPipeline:
         # Import nodes
         for imp in parsed.imports:
             imp_id = f"import::{parsed.path}::{imp.line}"
-            self.graph.create_node("Import", {
+            batch.add_node("Import", {
                 "id": imp_id,
                 "file_path": parsed.path,
                 "line": imp.line,
@@ -462,31 +473,34 @@ class IngestionPipeline:
                 "imported_names": imp.imported_names,
                 "is_relative": imp.is_relative,
             })
-            self.graph.create_relationship(file_id, imp_id, "CONTAINS")
-            result.nodes_created += 1
-            result.relationships_created += 1
+            batch.add_relationship("CONTAINS", file_id, imp_id)
 
         # Classes
         for cls in parsed.classes:
-            self._build_class(file_id, cls, result)
+            self._build_class(file_id, cls, batch)
 
         # Module-level functions
         for func in parsed.functions:
-            self._build_function(file_id, None, func, result)
+            self._build_function(file_id, None, func, batch)
 
         # Routes
         for route in parsed.routes:
-            self._build_route(file_id, route, result)
+            self._build_route(file_id, route, batch)
 
         # Test cases (describe/it/test blocks)
         for tc in parsed.test_cases:
-            self._build_test_case(file_id, tc, result)
+            self._build_test_case(file_id, tc, batch)
+
+        # Flush all buffered nodes and relationships for this file
+        counts = batch.flush()
+        result.nodes_created += counts["nodes_created"]
+        result.relationships_created += counts["relationships_created"]
 
     def _build_route(
-        self, file_id: str, route: ParsedRoute, result: IngestionResult
+        self, file_id: str, route: ParsedRoute, batch: BatchCollector
     ) -> None:
         route_id = f"route::{route.file_path}::L{route.line}::{route.method}"
-        self.graph.create_node("Route", {
+        batch.add_node("Route", {
             "id": route_id,
             "method": route.method,
             "path": route.path,
@@ -496,11 +510,9 @@ class IngestionPipeline:
             "end_line": route.end_line,
             "middleware": route.middleware,
         })
-        result.nodes_created += 1
 
         # Link route to its file
-        self.graph.create_relationship(file_id, route_id, "CONTAINS")
-        result.relationships_created += 1
+        batch.add_relationship("CONTAINS", file_id, route_id)
 
         # Link route to its handler function if we can find it
         handler_id = self._id_map.get(route.handler_name)
@@ -508,14 +520,13 @@ class IngestionPipeline:
             scoped = f"{route.file_path}::{route.handler_name}"
             handler_id = self._id_map.get(scoped)
         if handler_id:
-            self.graph.create_relationship(route_id, handler_id, "HANDLES")
-            result.relationships_created += 1
+            batch.add_relationship("HANDLES", route_id, handler_id)
 
     def _build_test_case(
-        self, file_id: str, tc: ParsedTestCase, result: IngestionResult
+        self, file_id: str, tc: ParsedTestCase, batch: BatchCollector
     ) -> None:
         tc_id = f"testcase::{tc.file_path}::L{tc.start_line}"
-        self.graph.create_node("TestCase", {
+        batch.add_node("TestCase", {
             "id": tc_id,
             "name": tc.name,
             "block_type": tc.block_type,
@@ -525,13 +536,11 @@ class IngestionPipeline:
             "parent_describe": tc.parent_describe or "",
             "parametrize_count": tc.parametrize_count,
         })
-        result.nodes_created += 1
 
-        self.graph.create_relationship(file_id, tc_id, "CONTAINS")
-        result.relationships_created += 1
+        batch.add_relationship("CONTAINS", file_id, tc_id)
 
     def _build_class(
-        self, file_id: str, cls: ParsedClass, result: IngestionResult
+        self, file_id: str, cls: ParsedClass, batch: BatchCollector
     ) -> None:
         class_id = f"class::{cls.qualified_name}"
         self._id_map[cls.qualified_name] = class_id
@@ -543,7 +552,7 @@ class IngestionPipeline:
         if cls.is_exported:
             self._exported_file_entities.setdefault(cls.file_path, {})[cls.name] = class_id
 
-        self.graph.create_node("Class", {
+        batch.add_node("Class", {
             "id": class_id,
             "name": cls.name,
             "qualified_name": cls.qualified_name,
@@ -559,15 +568,12 @@ class IngestionPipeline:
             "kind": cls.kind,
             "is_exported": cls.is_exported,
         })
-        result.nodes_created += 1
 
-        self.graph.create_relationship(file_id, class_id, "CONTAINS")
-        self.graph.create_relationship(class_id, file_id, "DEFINED_IN")
-        result.relationships_created += 2
+        batch.add_relationship("CONTAINS", file_id, class_id)
+        batch.add_relationship("DEFINED_IN", class_id, file_id)
 
         if cls.is_exported:
-            self.graph.create_relationship(file_id, class_id, "EXPORTS")
-            result.relationships_created += 1
+            batch.add_relationship("EXPORTS", file_id, class_id)
 
         # Store class method map for inheritance-aware resolution
         method_map: dict[str, str] = {}
@@ -578,14 +584,14 @@ class IngestionPipeline:
 
         # Methods
         for method in cls.methods:
-            self._build_function(file_id, class_id, method, result)
+            self._build_function(file_id, class_id, method, batch)
 
     def _build_function(
         self,
         file_id: str,
         class_id: str | None,
         func: ParsedFunction,
-        result: IngestionResult,
+        batch: BatchCollector,
     ) -> None:
         func_id = f"func::{func.qualified_name}"
         self._id_map[func.qualified_name] = func_id
@@ -609,7 +615,7 @@ class IngestionPipeline:
         if func.is_fixture:
             self._fixture_map[func.name] = func_id
 
-        self.graph.create_node("Function", {
+        batch.add_node("Function", {
             "id": func_id,
             "name": func.name,
             "qualified_name": func.qualified_name,
@@ -633,21 +639,16 @@ class IngestionPipeline:
             "is_entry_point": func.is_entry_point,
             "todo_count": len(func.todos),
         })
-        result.nodes_created += 1
 
-        self.graph.create_relationship(func_id, file_id, "DEFINED_IN")
-        result.relationships_created += 1
+        batch.add_relationship("DEFINED_IN", func_id, file_id)
 
         if class_id:
-            self.graph.create_relationship(class_id, func_id, "CONTAINS")
-            result.relationships_created += 1
+            batch.add_relationship("CONTAINS", class_id, func_id)
         else:
-            self.graph.create_relationship(file_id, func_id, "CONTAINS")
-            result.relationships_created += 1
+            batch.add_relationship("CONTAINS", file_id, func_id)
 
         if func.is_exported:
-            self.graph.create_relationship(file_id, func_id, "EXPORTS")
-            result.relationships_created += 1
+            batch.add_relationship("EXPORTS", file_id, func_id)
 
     # ------------------------------------------------------------------
     # Phase 2: Cross-file resolution
@@ -657,6 +658,8 @@ class IngestionPipeline:
         self, parsed_files: list[ParsedFile], result: IngestionResult
     ) -> None:
         """Create CALLS edges by resolving call targets to known functions."""
+        batch = BatchCollector(self.graph, self._batch_size)
+
         # Compute source roots for path alias resolution (needs all files)
         self._source_roots = self._detect_source_roots(parsed_files)
         self._import_cache.clear()
@@ -664,11 +667,11 @@ class IngestionPipeline:
         for pf in parsed_files:
             # Module-level functions
             for func in pf.functions:
-                self._resolve_function_calls(func, pf, result)
+                self._resolve_function_calls(func, pf, batch)
             # Methods
             for cls in pf.classes:
                 for method in cls.methods:
-                    self._resolve_function_calls(method, pf, result)
+                    self._resolve_function_calls(method, pf, batch)
 
         # Resolve INHERITS_FROM edges and build inheritance map
         for pf in parsed_files:
@@ -678,25 +681,29 @@ class IngestionPipeline:
                 for base_name in cls.bases:
                     base_id = self._resolve_base(base_name, pf)
                     if base_id:
-                        self.graph.create_relationship(
-                            class_id, base_id, "INHERITS_FROM"
+                        batch.add_relationship(
+                            "INHERITS_FROM", class_id, base_id
                         )
-                        result.relationships_created += 1
                         bases.append(base_id)
                 if bases:
                     self._class_bases[class_id] = bases
 
         # Resolve IMPORTS (File -> File) edges
-        self._resolve_imports(parsed_files, result)
+        self._resolve_imports(parsed_files, result, batch)
 
         # Resolve TESTS (test File -> production File) edges
-        self._resolve_test_edges(parsed_files, result)
+        self._resolve_test_edges(parsed_files, result, batch)
 
         # Resolve USES_FIXTURE edges (test function param -> fixture function)
-        self._resolve_fixture_edges(parsed_files, result)
+        self._resolve_fixture_edges(parsed_files, batch)
+
+        # Flush all Phase 2 relationships
+        counts = batch.flush()
+        result.nodes_created += counts["nodes_created"]
+        result.relationships_created += counts["relationships_created"]
 
     def _resolve_fixture_edges(
-        self, parsed_files: list[ParsedFile], result: IngestionResult
+        self, parsed_files: list[ParsedFile], batch: BatchCollector
     ) -> None:
         """Create USES_FIXTURE edges from test functions to pytest fixtures.
 
@@ -711,15 +718,15 @@ class IngestionPipeline:
             for func in pf.functions:
                 if not func.is_test:
                     continue
-                self._link_func_to_fixtures(func, result)
+                self._link_func_to_fixtures(func, batch)
             for cls in pf.classes:
                 for method in cls.methods:
                     if not method.is_test:
                         continue
-                    self._link_func_to_fixtures(method, result)
+                    self._link_func_to_fixtures(method, batch)
 
     def _link_func_to_fixtures(
-        self, func: ParsedFunction, result: IngestionResult
+        self, func: ParsedFunction, batch: BatchCollector
     ) -> None:
         """Link a test function to fixtures it uses via parameter names."""
         caller_id = f"func::{func.qualified_name}"
@@ -728,30 +735,22 @@ class IngestionPipeline:
                 continue  # skip *args/**kwargs
             fixture_id = self._fixture_map.get(param)
             if fixture_id:
-                self.graph.merge_relationship(caller_id, fixture_id, "USES_FIXTURE")
-                result.relationships_created += 1
+                batch.add_merge_relationship("USES_FIXTURE", caller_id, fixture_id)
 
     def _resolve_function_calls(
-        self, func: ParsedFunction, pf: ParsedFile, result: IngestionResult
+        self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector
     ) -> None:
         caller_id = f"func::{func.qualified_name}"
         for call_name in func.calls:
             callee_id = self._find_callee(call_name, func, pf)
             if callee_id:
-                self.graph.merge_relationship(caller_id, callee_id, "CALLS")
-                result.relationships_created += 1
+                batch.add_merge_relationship("CALLS", caller_id, callee_id)
 
             # Create USES_HOOK edge for React hook calls (use* convention)
             bare_name = call_name.split(".")[-1] if "." in call_name else call_name
             if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper():
                 if callee_id:
-                    self.graph.merge_relationship(caller_id, callee_id, "USES_HOOK")
-                    result.relationships_created += 1
-                else:
-                    # Hook not in our graph (e.g. useState, useEffect from React)
-                    # Create the edge to a synthetic node if we want to track it
-                    # For now, just record as a property — could be extended later
-                    pass
+                    batch.add_merge_relationship("USES_HOOK", caller_id, callee_id)
 
     def _find_callee(
         self,
@@ -1002,7 +1001,10 @@ class IngestionPipeline:
         )
 
     def _resolve_test_edges(
-        self, parsed_files: list[ParsedFile], result: IngestionResult
+        self,
+        parsed_files: list[ParsedFile],
+        result: IngestionResult,
+        batch: BatchCollector,
     ) -> None:
         """Create TESTS edges from test files to the production files they import.
 
@@ -1034,12 +1036,11 @@ class IngestionPipeline:
                     continue
                 targets_seen.add(target_id)
 
-                self.graph.merge_relationship(test_file_id, target_id, "TESTS")
-                result.relationships_created += 1
+                batch.add_merge_relationship("TESTS", test_file_id, target_id)
                 result.test_coverage_edges += 1
 
     def _resolve_dependency_usage(
-        self, parsed_files: list[ParsedFile], result: IngestionResult
+        self, parsed_files: list[ParsedFile], batch: BatchCollector
     ) -> None:
         """Create USES_DEPENDENCY edges from functions to external dependencies.
 
@@ -1052,17 +1053,17 @@ class IngestionPipeline:
                 continue
 
             for func in pf.functions:
-                self._link_func_to_deps(func, pf, ext_map, result)
+                self._link_func_to_deps(func, pf, ext_map, batch)
             for cls in pf.classes:
                 for method in cls.methods:
-                    self._link_func_to_deps(method, pf, ext_map, result)
+                    self._link_func_to_deps(method, pf, ext_map, batch)
 
     def _link_func_to_deps(
         self,
         func: ParsedFunction,
         context_file: ParsedFile,
         ext_map: dict[str, str],
-        result: IngestionResult,
+        batch: BatchCollector,
     ) -> None:
         """Check each call in a function against external imports."""
         caller_id = f"func::{func.qualified_name}"
@@ -1080,8 +1081,7 @@ class IngestionPipeline:
             dep_id = ext_map.get(bare) or ext_map.get(obj)
             if dep_id and dep_id not in seen_deps:
                 seen_deps.add(dep_id)
-                self.graph.merge_relationship(caller_id, dep_id, "USES_DEPENDENCY")
-                result.relationships_created += 1
+                batch.add_merge_relationship("USES_DEPENDENCY", caller_id, dep_id)
 
     def _resolve_base(self, base_name: str, context_file: ParsedFile) -> str | None:
         """Resolve a base/extends name to a known class node ID.
@@ -1123,7 +1123,10 @@ class IngestionPipeline:
         return None
 
     def _resolve_imports(
-        self, parsed_files: list[ParsedFile], result: IngestionResult
+        self,
+        parsed_files: list[ParsedFile],
+        result: IngestionResult,
+        batch: BatchCollector,
     ) -> None:
         """Create IMPORTS edges between File nodes based on import statements.
 
@@ -1145,8 +1148,7 @@ class IngestionPipeline:
                     self._source_roots,
                 )
                 if target_id and target_id != file_id:
-                    self.graph.merge_relationship(file_id, target_id, "IMPORTS")
-                    result.relationships_created += 1
+                    batch.add_merge_relationship("IMPORTS", file_id, target_id)
                 elif not target_id and not imp.is_relative:
                     # Unresolved non-relative import = external dependency
                     pkg = self._extract_package_name(imp.module_path, pf.language)
@@ -1171,21 +1173,19 @@ class IngestionPipeline:
         # Create Dependency nodes
         for pkg_name, importers in external_deps.items():
             dep_id = f"dep::{pkg_name}"
-            self.graph.create_node("Dependency", {
+            batch.add_node("Dependency", {
                 "id": dep_id,
                 "name": pkg_name,
                 "import_count": len(importers),
             })
-            result.nodes_created += 1
             result.dependencies_found += 1
             # Link importing files to the dependency
             for file_path in importers:
                 file_id = f"file::{file_path}"
-                self.graph.merge_relationship(file_id, dep_id, "DEPENDS_ON")
-                result.relationships_created += 1
+                batch.add_merge_relationship("DEPENDS_ON", file_id, dep_id)
 
         # Link functions to the external dependencies they use
-        self._resolve_dependency_usage(parsed_files, result)
+        self._resolve_dependency_usage(parsed_files, batch)
 
     def _register_python_source_roots(
         self, parsed_files: list[ParsedFile]
@@ -1545,7 +1545,9 @@ class IngestionPipeline:
     # Phase 3: Document processing
     # ------------------------------------------------------------------
 
-    def _process_document(self, wf: WalkedFile, result: IngestionResult) -> None:
+    def _process_document(
+        self, wf: WalkedFile, result: IngestionResult, batch: BatchCollector
+    ) -> None:
         """Parse a markdown file and build document nodes with code references."""
         try:
             content = Path(wf.absolute_path).read_text(
@@ -1565,7 +1567,7 @@ class IngestionPipeline:
         doc_id = f"doc::{doc.path}"
 
         # Create Document node
-        self.graph.create_node("Document", {
+        batch.add_node("Document", {
             "id": doc_id,
             "path": doc.path,
             "title": doc.title,
@@ -1574,12 +1576,11 @@ class IngestionPipeline:
             "section_count": len(doc.sections),
             "reference_count": len(doc.code_references),
         })
-        result.nodes_created += 1
 
         # Create DocumentSection nodes
         for i, section in enumerate(doc.sections):
             section_id = f"docsec::{doc.path}::L{section.start_line}"
-            self.graph.create_node("DocumentSection", {
+            batch.add_node("DocumentSection", {
                 "id": section_id,
                 "heading": section.heading,
                 "level": section.level,
@@ -1588,22 +1589,18 @@ class IngestionPipeline:
                 "file_path": doc.path,
                 "reference_count": len(section.code_references),
             })
-            self.graph.create_relationship(doc_id, section_id, "HAS_SECTION")
-            result.nodes_created += 1
-            result.relationships_created += 1
+            batch.add_relationship("HAS_SECTION", doc_id, section_id)
 
             # Resolve code references in this section
             for ref in section.code_references:
-                self._resolve_and_link_reference(
-                    ref, section_id, result
-                )
+                self._resolve_and_link_reference(ref, section_id, result, batch)
 
         # Resolve top-level references (before first heading)
         for ref in doc.code_references:
             if not any(
                 ref in section.code_references for section in doc.sections
             ):
-                self._resolve_and_link_reference(ref, doc_id, result)
+                self._resolve_and_link_reference(ref, doc_id, result, batch)
 
         result.docs_processed += 1
 
@@ -1612,6 +1609,7 @@ class IngestionPipeline:
         ref: CodeReference,
         source_id: str,
         result: IngestionResult,
+        batch: BatchCollector,
     ) -> None:
         """Resolve a code reference and create a REFERENCES edge if possible."""
         result.doc_references_total += 1
@@ -1620,8 +1618,7 @@ class IngestionPipeline:
         if target_id:
             ref.resolved = True
             ref.resolved_to = target_id
-            self.graph.merge_relationship(source_id, target_id, "REFERENCES")
-            result.relationships_created += 1
+            batch.add_merge_relationship("REFERENCES", source_id, target_id)
             result.doc_references_resolved += 1
 
     def _resolve_doc_reference(self, ref: CodeReference) -> str | None:

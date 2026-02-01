@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.pipeline import IngestionPipeline, IngestionResult
 from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedTestCase
 
@@ -14,7 +15,43 @@ def _make_graph_mock() -> MagicMock:
     """Create a mock GraphClient that tracks node/relationship creation."""
     mock = MagicMock()
     mock.repo_id = "test"
+    mock.batch_create_nodes.return_value = 0
+    mock.batch_create_relationships.return_value = 0
+    mock.batch_merge_relationships.return_value = 0
     return mock
+
+
+def _extract_batch_merge_rels(mock_graph: MagicMock) -> list[tuple[str, str, str]]:
+    """Extract (from_id, to_id, rel_type) tuples from batch_merge_relationships calls."""
+    rels = []
+    for call in mock_graph.batch_merge_relationships.call_args_list:
+        rel_type = call[0][0]
+        items = call[0][1]
+        for item in items:
+            rels.append((item["from_id"], item["to_id"], rel_type))
+    return rels
+
+
+def _extract_batch_create_rels(mock_graph: MagicMock) -> list[tuple[str, str, str]]:
+    """Extract (from_id, to_id, rel_type) tuples from batch_create_relationships calls."""
+    rels = []
+    for call in mock_graph.batch_create_relationships.call_args_list:
+        rel_type = call[0][0]
+        items = call[0][1]
+        for item in items:
+            rels.append((item["from_id"], item["to_id"], rel_type))
+    return rels
+
+
+def _extract_batch_nodes(mock_graph: MagicMock, label: str | None = None) -> list[dict]:
+    """Extract node property dicts from batch_create_nodes calls, optionally filtering by label."""
+    nodes = []
+    for call in mock_graph.batch_create_nodes.call_args_list:
+        call_label = call[0][0]
+        items = call[0][1]
+        if label is None or call_label == label:
+            nodes.extend(items)
+    return nodes
 
 
 def _make_func(
@@ -385,7 +422,9 @@ class TestTestCoverageEdges:
         """Set up pipeline maps and run _resolve_test_edges."""
         pipeline = _setup_pipeline(parsed_files)
         result = IngestionResult(repo_id="test", repo_path="/tmp")
-        pipeline._resolve_test_edges(parsed_files, result)
+        batch = BatchCollector(pipeline.graph, batch_size=200)
+        pipeline._resolve_test_edges(parsed_files, result, batch)
+        batch.flush()
         return pipeline, result
 
     def test_test_file_creates_tests_edge(self):
@@ -405,11 +444,8 @@ class TestTestCoverageEdges:
         pipeline, result = self._run_test_edges([prod_file, test_file])
 
         assert result.test_coverage_edges == 1
-        pipeline.graph.merge_relationship.assert_any_call(
-            "file::src/__tests__/graph/client.test.ts",
-            "file::src/graph/client.ts",
-            "TESTS",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("file::src/__tests__/graph/client.test.ts", "file::src/graph/client.ts", "TESTS") in rels
 
     def test_non_test_file_creates_no_tests_edge(self):
         """A non-test file importing another file does NOT create a TESTS edge."""
@@ -600,7 +636,9 @@ class TestDependencyUsageEdges:
         """Set up pipeline, run import resolution (which creates deps), return result."""
         pipeline = _setup_pipeline(parsed_files)
         result = IngestionResult(repo_id="test", repo_path="/tmp")
-        pipeline._resolve_imports(parsed_files, result)
+        batch = BatchCollector(pipeline.graph, batch_size=200)
+        pipeline._resolve_imports(parsed_files, result, batch)
+        batch.flush()
         return pipeline, result
 
     def test_function_using_external_import_gets_edge(self):
@@ -613,11 +651,8 @@ class TestDependencyUsageEdges:
 
         # Should have created a Dependency node and USES_DEPENDENCY edge
         assert result.dependencies_found == 1
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::src/cache.ts::initCache",
-            "dep::redis",
-            "USES_DEPENDENCY",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::src/cache.ts::initCache", "dep::redis", "USES_DEPENDENCY") in rels
 
     def test_function_calling_internal_gets_no_dep_edge(self):
         """A function calling an internal function should NOT create USES_DEPENDENCY."""
@@ -642,11 +677,8 @@ class TestDependencyUsageEdges:
         pipeline, result = self._run_dependency_resolution([api_file])
 
         assert result.dependencies_found == 1
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::src/api.ts::fetchData",
-            "dep::axios",
-            "USES_DEPENDENCY",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::src/api.ts::fetchData", "dep::axios", "USES_DEPENDENCY") in rels
 
     def test_aliased_external_import_links_to_dep(self):
         """import { Redis as RedisClient } from 'ioredis' -> RedisClient() links to ioredis."""
@@ -662,11 +694,8 @@ class TestDependencyUsageEdges:
         pipeline, result = self._run_dependency_resolution([db_file])
 
         assert result.dependencies_found == 1
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::src/db.ts::connect",
-            "dep::ioredis",
-            "USES_DEPENDENCY",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::src/db.ts::connect", "dep::ioredis", "USES_DEPENDENCY") in rels
 
     def test_multiple_deps_per_function(self):
         """A function using names from two different packages gets two USES_DEPENDENCY edges."""
@@ -678,16 +707,9 @@ class TestDependencyUsageEdges:
         pipeline, result = self._run_dependency_resolution([app_file])
 
         assert result.dependencies_found == 2
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::src/app.ts::init",
-            "dep::redis",
-            "USES_DEPENDENCY",
-        )
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::src/app.ts::init",
-            "dep::zod",
-            "USES_DEPENDENCY",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::src/app.ts::init", "dep::redis", "USES_DEPENDENCY") in rels
+        assert ("func::src/app.ts::init", "dep::zod", "USES_DEPENDENCY") in rels
 
 
 class TestIncrementalUpdate:
@@ -811,12 +833,12 @@ class TestPythonSourceRoots:
             classes=[], imports=[imp],
         )
         pipeline = _setup_pipeline_with_resolution([init, mod, test_file])
-        calls = pipeline.graph.merge_relationship.call_args_list
-        import_calls = [c for c in calls if c[0][2] == "IMPORTS"]
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        import_rels = [(f, t, r) for f, t, r in rels if r == "IMPORTS"]
         assert any(
-            c[0][0] == "file::tests/test_core.py" and c[0][1] == "file::src/mylib/core.py"
-            for c in import_calls
-        ), f"Expected IMPORTS edge not found. Import calls: {import_calls}"
+            f == "file::tests/test_core.py" and t == "file::src/mylib/core.py"
+            for f, t, _ in import_rels
+        ), f"Expected IMPORTS edge not found. Import rels: {import_rels}"
 
     def test_relative_import_dot_resolves(self):
         """'from . import fields' in __init__.py resolves to sibling module."""
@@ -831,12 +853,12 @@ class TestPythonSourceRoots:
             classes=[], imports=[],
         )
         pipeline = _setup_pipeline_with_resolution([init, fields_mod])
-        calls = pipeline.graph.merge_relationship.call_args_list
-        import_calls = [c for c in calls if c[0][2] == "IMPORTS"]
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        import_rels = [(f, t, r) for f, t, r in rels if r == "IMPORTS"]
         assert any(
-            c[0][0] == "file::src/pkg/__init__.py" and c[0][1] == "file::src/pkg/fields.py"
-            for c in import_calls
-        ), f"Expected IMPORTS edge not found. Import calls: {import_calls}"
+            f == "file::src/pkg/__init__.py" and t == "file::src/pkg/fields.py"
+            for f, t, _ in import_rels
+        ), f"Expected IMPORTS edge not found. Import rels: {import_rels}"
 
     def test_relative_import_dotname_resolves(self):
         """'from .schema import Schema' resolves to sibling module."""
@@ -856,12 +878,12 @@ class TestPythonSourceRoots:
             imports=[],
         )
         pipeline = _setup_pipeline_with_resolution([init, mod, schema_mod])
-        calls = pipeline.graph.merge_relationship.call_args_list
-        import_calls = [c for c in calls if c[0][2] == "IMPORTS"]
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        import_rels = [(f, t, r) for f, t, r in rels if r == "IMPORTS"]
         assert any(
-            c[0][0] == "file::src/pkg/utils.py" and c[0][1] == "file::src/pkg/schema.py"
-            for c in import_calls
-        ), f"Expected IMPORTS edge not found. Import calls: {import_calls}"
+            f == "file::src/pkg/utils.py" and t == "file::src/pkg/schema.py"
+            for f, t, _ in import_rels
+        ), f"Expected IMPORTS edge not found. Import rels: {import_rels}"
 
     def test_init_package_registered_as_module(self):
         """__init__.py registers the package name as a module key."""
@@ -1103,11 +1125,8 @@ class TestFixtureEdges:
 
         pipeline, result = self._run_fixture_resolution([conftest, test_file])
 
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::tests/test_api.py::test_get",
-            "func::tests/conftest.py::client",
-            "USES_FIXTURE",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::tests/test_api.py::test_get", "func::tests/conftest.py::client", "USES_FIXTURE") in rels
 
     def test_non_fixture_param_ignored(self):
         """Params that don't match fixture names create no edges."""
@@ -1122,12 +1141,10 @@ class TestFixtureEdges:
 
         pipeline, result = self._run_fixture_resolution([test_file])
 
-        # No USES_FIXTURE calls
-        fixture_calls = [
-            c for c in pipeline.graph.merge_relationship.call_args_list
-            if len(c[0]) >= 3 and c[0][2] == "USES_FIXTURE"
-        ]
-        assert len(fixture_calls) == 0
+        # No USES_FIXTURE edges
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        fixture_rels = [(f, t, r) for f, t, r in rels if r == "USES_FIXTURE"]
+        assert len(fixture_rels) == 0
 
     def test_class_method_links_to_fixture(self):
         """A test method inside a class with a fixture param creates an edge."""
@@ -1152,11 +1169,8 @@ class TestFixtureEdges:
 
         pipeline, result = self._run_fixture_resolution([conftest, test_file])
 
-        pipeline.graph.merge_relationship.assert_any_call(
-            "func::tests/test_db.py::TestDatabase.test_insert",
-            "func::tests/conftest.py::db",
-            "USES_FIXTURE",
-        )
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::tests/test_db.py::TestDatabase.test_insert", "func::tests/conftest.py::db", "USES_FIXTURE") in rels
 
 
 class TestBarrelFileReexportResolution:

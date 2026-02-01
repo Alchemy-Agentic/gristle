@@ -132,8 +132,15 @@ All settings are configured via environment variables with the `GRISTLE_` prefix
 | `GRISTLE_FALKORDB_PASSWORD` | - | FalkorDB password (optional) |
 | `GRISTLE_TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 | `GRISTLE_API_KEY` | - | Bearer token for HTTP auth (optional) |
+| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched Cypher query |
 | `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `GRISTLE_LOG_FORMAT` | auto | `json` for structured, `text` for human-readable |
+
+## Performance
+
+Ingestion uses batched Cypher `UNWIND` queries to minimize FalkorDB round-trips. Instead of one query per node or edge, Gristle groups writes by label/type and flushes them in configurable chunks (default 200). For a 500-file repo this reduces network round-trips from ~15,000 to ~2,500.
+
+Tune with `GRISTLE_INGESTION_BATCH_SIZE` — larger values use more memory but fewer round-trips.
 
 ## Observability
 

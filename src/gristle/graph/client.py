@@ -132,6 +132,71 @@ class GraphClient:
         self.execute(query, params)
 
     # ------------------------------------------------------------------
+    # Batch operations (UNWIND)
+    # ------------------------------------------------------------------
+
+    def batch_create_nodes(self, label: str, items: list[dict[str, Any]]) -> int:
+        """Create multiple nodes of the same label in a single UNWIND query.
+
+        All dicts in ``items`` must have the same keys.
+        Returns the number of nodes created.
+        """
+        if not items:
+            return 0
+        keys = list(items[0].keys())
+        set_clauses = ", ".join(f"{k}: item.{k}" for k in keys)
+        query = f"UNWIND $items AS item CREATE (n:{label} {{{set_clauses}}})"
+        result = self.execute(query, {"items": items})
+        return result.summary["nodes_created"]
+
+    def batch_create_relationships(
+        self, rel_type: str, items: list[dict[str, Any]]
+    ) -> int:
+        """Create multiple relationships of the same type via UNWIND.
+
+        Each item must have ``from_id`` and ``to_id`` keys.
+        Additional keys become relationship properties.
+        """
+        if not items:
+            return 0
+        prop_keys = [k for k in items[0] if k not in ("from_id", "to_id")]
+        props_clause = ""
+        if prop_keys:
+            props_inner = ", ".join(f"{k}: rel.{k}" for k in prop_keys)
+            props_clause = f" {{{props_inner}}}"
+        query = (
+            "UNWIND $rels AS rel "
+            "MATCH (a), (b) "
+            "WHERE a.id = rel.from_id AND b.id = rel.to_id "
+            f"CREATE (a)-[:{rel_type}{props_clause}]->(b)"
+        )
+        result = self.execute(query, {"rels": items})
+        return result.summary["relationships_created"]
+
+    def batch_merge_relationships(
+        self, rel_type: str, items: list[dict[str, Any]]
+    ) -> int:
+        """Merge (upsert) multiple relationships of the same type via UNWIND.
+
+        Each item must have ``from_id`` and ``to_id`` keys.
+        """
+        if not items:
+            return 0
+        prop_keys = [k for k in items[0] if k not in ("from_id", "to_id")]
+        props_clause = ""
+        if prop_keys:
+            props_inner = ", ".join(f"{k}: rel.{k}" for k in prop_keys)
+            props_clause = f" {{{props_inner}}}"
+        query = (
+            "UNWIND $rels AS rel "
+            "MATCH (a), (b) "
+            "WHERE a.id = rel.from_id AND b.id = rel.to_id "
+            f"MERGE (a)-[:{rel_type}{props_clause}]->(b)"
+        )
+        result = self.execute(query, {"rels": items})
+        return result.summary["relationships_created"]
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
