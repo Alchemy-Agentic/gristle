@@ -47,11 +47,11 @@ Graph namespaces are isolated:
 | `gristle_ingest_github` | Audit start | `repo_url`, `github_token`, `repo_id` (optional — used for persistent graphs) |
 | `gristle_drop` | Audit cleanup | `repo_id` (only for ephemeral graphs) |
 | `gristle_stats` | After ingestion | `repo_id` (to cache stats on Ziggy's CodeGraph node) |
-| `gristle_dead_exports` | Architecture analysis | `repo_id` — returns exported entities with no importers |
-| `gristle_cycles` | Architecture analysis | `repo_id`, `max_length` (optional, default 10) |
-| `gristle_public_api` | Architecture/onboarding | `repo_id`, `include_internal` (optional, default false) |
+| `gristle_dead_exports` | (available, not used) | `repo_id` — Ziggy uses direct Cypher via `QUERY_DEAD_EXPORTS` instead |
+| `gristle_cycles` | (available, not used) | `repo_id` — Ziggy uses direct Cypher via `QUERY_IMPORT_CYCLES_FULL` instead |
+| `gristle_public_api` | (available, not used) | `repo_id` — Ziggy uses direct Cypher via `QUERY_PUBLIC_API` instead |
 
-Ziggy's `GristleClient` (`src/agents/shared/code-graph.ts` in the Ziggy repo) wraps these MCP calls via a lightweight JSON-RPC-over-HTTP client.
+Ziggy's `GristleClient` (`src/agents/shared/code-graph.ts` in the Ziggy repo) wraps MCP calls for writes and direct FalkorDB queries for reads. The three code quality tools (`dead_exports`, `cycles`, `public_api`) are available via MCP but Ziggy agents use direct Cypher equivalents for consistency with the existing read pattern (no IPC overhead).
 
 ### Direct Cypher Queries
 
@@ -105,7 +105,7 @@ WHERE target.name = $name
 RETURN caller.qualified_name, caller.file_path
 ```
 
-#### Cartographer Agent (onboarding guides)
+#### Cartographer Agent (onboarding guides + public API)
 ```cypher
 -- Entry points with reason
 MATCH (fn:Function {is_entry_point: true})
@@ -124,6 +124,36 @@ RETURN r.method, r.path, fn.name, fn.file_path
 MATCH (d:Dependency)
 RETURN d.name, d.import_count, d.version
 ORDER BY d.import_count DESC
+
+-- Public API surface (doc coverage %)
+MATCH (file:File)-[:EXPORTS]->(entity)
+WHERE NOT file.is_test_file
+  AND (entity.visibility IS NULL OR entity.visibility = 'public')
+  AND NOT file.path CONTAINS '__'
+  AND NOT file.path CONTAINS '/internal/'
+  AND NOT file.path CONTAINS '/_'
+RETURN entity.qualified_name, entity.name, file.path,
+       labels(entity)[0] AS entityType, entity.docstring
+```
+
+#### Architect Agent (dead exports + improved cycles)
+```cypher
+-- Dead exports (exported but never imported)
+MATCH (file:File)-[:EXPORTS]->(entity)
+WHERE NOT EXISTS {
+  MATCH (other:File)-[:IMPORTS]->(file)
+  WHERE other.path <> file.path
+}
+AND (entity.is_entry_point IS NULL OR entity.is_entry_point = false)
+AND file.is_test_file = false
+RETURN entity.qualified_name, entity.name, file.path, labels(entity)[0]
+
+-- Import cycles (configurable depth, dedup in TypeScript)
+MATCH path = (a:File)-[:IMPORTS*2..${maxLen}]->(a)
+WHERE a.is_test_file = false
+WITH [n IN nodes(path) | n.path] AS files, length(path) AS length
+RETURN files, length
+ORDER BY length ASC
 ```
 
 #### Sentinel Agent (security enrichment)
@@ -160,7 +190,8 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `complexity` | Architect, Pathfinder | Complexity hotspot detection, test gap prioritization |
 | `entry_point_reason` | Cartographer, Pathfinder | **Phase A** — categorized reason: `"react_component"`, `"route_handler"`, `"pytest_fixture"`, etc. |
 | `tested_by_count` | Pathfinder, Sentinel (enrichment) | **Phase A** — number of test functions exercising this function (via `TESTS_FUNCTION` edges) |
-| `docstring` | Cartographer | Function documentation for abstraction descriptions |
+| `visibility` | Cartographer | Public API surface filtering (`IS NULL OR 'public'`) |
+| `docstring` | Cartographer | Function documentation for abstraction descriptions and public API doc coverage |
 
 ### Dependency Node
 | Property | Used By | How |
@@ -175,7 +206,7 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `path` | All agents | File identification |
 | `language` | Cartographer, Architect | Language breakdown |
 | `line_count` | Architect | File size analysis |
-| `is_test_file` | Pathfinder | Test vs production file classification |
+| `is_test_file` | Pathfinder, Architect, Cartographer | Test vs production file classification, cycle/dead export/public API filtering |
 
 ### Class Node
 | Property | Used By | How |
@@ -196,7 +227,8 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 |------|---------|-----|
 | `CALLS` | Pathfinder, Sentinel, Architect | Call chains, blast radius, dead code |
 | `PASSED_TO` | Pathfinder, Sentinel, Architect | **Phase D** — callback/handler detection (middleware, event handlers, array method callbacks). Traversed alongside `CALLS` in impact analysis, dead code, call paths. |
-| `IMPORTS` | Architect | Cycle detection, coupling analysis |
+| `IMPORTS` | Architect | Cycle detection (configurable depth), coupling analysis |
+| `EXPORTS` | Architect, Cartographer | Dead export detection, public API surface mapping |
 | `TESTS` | Pathfinder, Sentinel | Test coverage (file-level, fallback) |
 | `TESTS_FUNCTION` | Pathfinder | **Phase A** — function-level test coverage (test Function → prod Function) |
 | `INHERITS_FROM` | Cartographer | Abstraction hierarchy |
