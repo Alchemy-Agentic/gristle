@@ -10,7 +10,6 @@ from redis.exceptions import ResponseError
 
 from gristle.graph.client import QueryResult
 
-
 # ------------------------------------------------------------------
 # CodeEmbedder
 # ------------------------------------------------------------------

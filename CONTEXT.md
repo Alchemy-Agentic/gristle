@@ -30,14 +30,15 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
-- 18 tools: ingest, ingest_github, drop, watch, explore, impact, trace, search, docs, routes, components, deps, tests, conventions, embed, semantic_search, stats, overview
+- 21 tools: ingest, ingest_github, drop, watch, explore, impact, trace, search, docs, routes, components, deps, tests, conventions, embed, semantic_search, stats, overview, dead_exports, cycles, public_api
 - 2 resources: `gristle://repos`, `gristle://repos/{repo_id}/overview`
 - Transports: stdio (local) + streamable-http (remote/Railway)
 - Optional bearer token auth (`GRISTLE_API_KEY`)
 
 ### Query Engine
-- 15+ pre-built Cypher query templates
+- 20+ pre-built Cypher query templates
 - Impact analysis, call tracing, convention inference, test coverage, dependency analysis
+- Code quality queries: dead exports, import cycles, public API surface
 
 ### Infrastructure
 - FalkorDB graph database (per-repo isolation: `gristle_{repo_id}`)
@@ -46,7 +47,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - Incremental file watcher
 - Optional semantic search (sentence-transformers)
 - Structured logging (JSON for prod, text for dev)
-- 520+ tests (mock graph clients, no FalkorDB needed for CI)
+- 642 tests (mock graph clients, no FalkorDB needed for CI)
 
 ---
 
@@ -119,6 +120,12 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 
 **Phase D** ✅ (Gristle-side):
 - Callback/handler detection (`PASSED_TO` edges for middleware, event handlers, array method callbacks)
+- 69 test cases covering TS/JS and Python callback patterns
+
+**Additional Features** ✅ (beyond original spec):
+- Dead export detection (`gristle_dead_exports` tool) — finds exported entities never imported by other files, excludes entry points
+- Import cycle detection (`gristle_cycles` tool) — detects circular import chains with configurable max length, deduplicated by normalized cycle start
+- Public API surface mapping (`gristle_public_api` tool) — maps all public exported entities excluding test/internal files, includes documentation percentage
 
 ---
 
@@ -128,7 +135,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 |------|---------|
 | `src/gristle/config.py` | All settings (GRISTLE_ prefix, Pydantic) |
 | `src/gristle/models.py` | 8 dataclasses for parsed entities |
-| `src/gristle/mcp/server.py` | MCP server (18 tools + 2 resources) |
+| `src/gristle/mcp/server.py` | MCP server (21 tools + 2 resources) |
 | `src/gristle/mcp/auth.py` | Bearer token auth |
 | `src/gristle/ingestion/pipeline.py` | Three-phase graph builder (~1700 lines, core logic) |
 | `src/gristle/ingestion/batch.py` | BatchCollector for UNWIND writes |
@@ -138,7 +145,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 | `src/gristle/parsers/typescript.py` | TS/JS parser (~1500 lines) |
 | `src/gristle/parsers/markdown.py` | Markdown parser (~200 lines) |
 | `src/gristle/parsers/registry.py` | Extension-based dispatch |
-| `src/gristle/query/engine.py` | 15+ Cypher query templates |
+| `src/gristle/query/engine.py` | 20+ Cypher query templates |
 | `src/gristle/graph/client.py` | FalkorDB wrapper, per-repo isolation |
 | `src/gristle/graph/schema.py` | Index creation (22 + 2 full-text) |
 
@@ -148,7 +155,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 
 ```bash
 pip install -e ".[dev]"       # install with dev deps
-pytest                        # run 520+ tests
+pytest                        # run 642 tests
 ruff check src/ tests/        # lint
 ruff format src/ tests/       # format
 mypy src/                     # type check

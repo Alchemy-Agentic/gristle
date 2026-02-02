@@ -403,6 +403,38 @@ async def gristle_impact(
 
 
 @mcp.tool()
+async def gristle_impact_score(
+    entity_name: str,
+    include_source: bool = False,
+    repo_id: str | None = None,
+) -> dict:
+    """Analyze change impact with blast radius scoring (0-100).
+
+    Returns enhanced impact analysis with:
+    - blast_radius_score (0-100): Combined impact metric
+    - risk_level: low/medium/high/critical classification
+    - direct_impact_score: Based on callers, callbacks, routes
+    - transitive_impact_score: Based on affected files, test coverage
+
+    Higher scores = more risky to modify. Critical (85+) requires extra care.
+
+    Args:
+        entity_name: Name of the function or class to analyze.
+        include_source: Include source code in response (default False).
+        repo_id: Repository identifier.
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    result = engine.get_impact_analysis(entity_name, include_source=include_source)
+    if result is None:
+        return {"error": f"Entity '{entity_name}' not found."}
+
+    return result
+
+
+@mcp.tool()
 async def gristle_trace(
     from_entity: str,
     to_entity: str,
@@ -819,6 +851,73 @@ async def gristle_config(
         return engine.get_setup_requirements()
     else:
         return {"error": f"Unknown mode: {mode}. Use 'env_vars', 'config_files', or 'setup_requirements'."}
+
+
+@mcp.tool()
+async def gristle_dead_exports(
+    repo_id: str | None = None,
+) -> dict:
+    """Find exported functions/classes that are never imported by other files.
+
+    Identifies unused public API surface — entities that are exported but
+    never imported. Excludes entry points (they're meant to be external).
+    Useful for finding dead code in barrel files and library APIs.
+
+    Returns counts and a list of dead exports with their location.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.detect_dead_exports()
+
+
+@mcp.tool()
+async def gristle_cycles(
+    max_length: int = 10,
+    repo_id: str | None = None,
+) -> dict:
+    """Detect circular import dependencies in the codebase.
+
+    Finds all import cycles up to max_length. Returns cycle paths as lists
+    of file paths, grouped by cycle length. Cycles are deduplicated.
+
+    Args:
+        max_length: Maximum cycle length to detect (default: 10). Lower values are faster.
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.detect_import_cycles(max_length=max_length)
+
+
+@mcp.tool()
+async def gristle_public_api(
+    include_internal: bool = False,
+    repo_id: str | None = None,
+) -> dict:
+    """List all public API entities (exported functions and classes).
+
+    Returns the public API surface — all exported, non-test entities.
+    Excludes files in paths containing 'internal', '__', or '_private'
+    unless include_internal=True.
+
+    Useful for documenting library APIs or understanding what's exposed.
+
+    Args:
+        include_internal: Include entities from internal paths (default: False).
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.get_public_api(include_internal=include_internal)
 
 
 # ======================================================================

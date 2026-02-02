@@ -332,6 +332,69 @@ class TestGristleImpact:
 
 
 # ==================================================================
+# gristle_impact_score
+# ==================================================================
+
+
+class TestGristleImpactScore:
+    @pytest.mark.asyncio
+    async def test_no_repo(self):
+        from gristle.mcp.server import gristle_impact_score
+
+        result = await gristle_impact_score(entity_name="foo")
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_entity_not_found(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_impact_score
+
+        engine = _mock_engine()
+        engine.get_impact_analysis.return_value = None
+        srv._engines["r1"] = engine
+        result = await gristle_impact_score(entity_name="missing")
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_scored_impact(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_impact_score
+
+        engine = _mock_engine()
+        engine.get_impact_analysis.return_value = {
+            "target": "mod.foo",
+            "direct_callers": ["bar"],
+            "blast_radius_score": 65.5,
+            "risk_level": "high",
+            "direct_impact_score": 50.0,
+            "transitive_impact_score": 40.0,
+        }
+        srv._engines["r1"] = engine
+        result = await gristle_impact_score(entity_name="foo")
+        assert result["target"] == "mod.foo"
+        assert result["blast_radius_score"] == 65.5
+        assert result["risk_level"] == "high"
+        engine.get_impact_analysis.assert_called_once_with("foo", include_source=False)
+
+    @pytest.mark.asyncio
+    async def test_include_source(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_impact_score
+
+        engine = _mock_engine()
+        engine.get_impact_analysis.return_value = {
+            "target": "mod.foo",
+            "blast_radius_score": 30.0,
+            "risk_level": "medium",
+            "source": "def foo(): pass",
+        }
+        srv._engines["r1"] = engine
+        result = await gristle_impact_score(entity_name="foo", include_source=True)
+        assert "source" in result
+        engine.get_impact_analysis.assert_called_once_with("foo", include_source=True)
+
+
+# ==================================================================
 # gristle_trace
 # ==================================================================
 

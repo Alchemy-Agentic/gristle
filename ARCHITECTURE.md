@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (19 tools + 2 resources) |
+                                          | (23 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -85,7 +85,7 @@ src/gristle/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 19 tools + 2 resources
+    server.py              # MCP server, 23 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -107,6 +107,7 @@ tests/
   test_auth.py             # ApiKeyVerifier token validation
   test_embeddings.py       # CodeEmbedder and SemanticIndex (mocked model)
   test_callback_detection.py # Callback/handler detection (PASSED_TO edges) for TS/JS and Python
+  test_code_quality.py     # Dead export detection, import cycle detection, public API mapping
 ```
 
 ---
@@ -584,6 +585,7 @@ Errors are logged with context (file path, operation, error message) via the str
 | `get_callers(name, depth)` | Transitive callers up to N hops |
 | `get_callees(name, depth)` | Transitive callees up to N hops |
 | `impact_analysis(name)` | Blast radius: callers, affected files, test coverage, routes |
+| `get_impact_analysis(name, include_source)` | Enhanced impact analysis with scoring (0-100) and risk levels |
 | `search(term, type)` | Search by name, docstring, or both |
 | `get_repo_overview()` | Node/edge stats, file list, languages, most-called functions |
 | `get_docs_for_entity(name)` | Documentation referencing an entity |
@@ -603,6 +605,9 @@ Errors are logged with context (file path, operation, error message) via the str
 | `get_config_files()` | Config files with types and properties |
 | `get_setup_requirements()` | Full setup checklist: env vars, config files, dependencies |
 | `detect_layer_violations(config?)` | Architectural layer violations from IMPORTS edges |
+| `detect_dead_exports()` | Exported entities never imported (dead public API surface) |
+| `detect_import_cycles(max_length?)` | Circular import dependencies, grouped by cycle length |
+| `get_public_api(include_internal?)` | All public API entities with documentation stats |
 | `find_path(from, to, hops)` | Call paths between two entities |
 
 ---
@@ -630,6 +635,15 @@ Explore a code entity (function, class, or file). Auto-detects type. Falls back 
 ### `gristle_impact(entity_name, repo_id?)`
 Analyze blast radius of changing a function or class. Returns direct callers, transitive callers, affected files, test coverage, routes.
 
+### `gristle_impact_score(entity_name, include_source?, repo_id?)`
+Enhanced impact analysis with blast radius scoring (0-100) and risk classification. Returns:
+- `blast_radius_score` (0-100): Combined impact metric
+- `risk_level`: low/medium/high/critical classification
+- `direct_impact_score`: Based on direct callers, callbacks, routes, entry points
+- `transitive_impact_score`: Based on transitive callers, affected files, test coverage
+
+Higher scores indicate more risk. Critical (85+) changes require extra care.
+
 ### `gristle_trace(from_entity, to_entity, max_hops?, repo_id?)`
 Find call paths between two functions. Useful for understanding data flow and execution paths.
 
@@ -656,6 +670,15 @@ Infer project patterns: file structure, routes, components, test locations, entr
 
 ### `gristle_config(mode?, repo_id?)`
 Config and environment variable queries. Modes: `env_vars` (all env vars with definitions and usage), `config_files` (config files with types), `setup_requirements` (full setup checklist).
+
+### `gristle_dead_exports(repo_id?)`
+Find exported functions/classes that are never imported by other files. Identifies unused public API surface — useful for finding dead code in barrel files and libraries. Excludes entry points.
+
+### `gristle_cycles(max_length?, repo_id?)`
+Detect circular import dependencies. Returns cycle paths as file path lists, grouped by cycle length. Cycles are deduplicated.
+
+### `gristle_public_api(include_internal?, repo_id?)`
+List all public API entities (exported functions and classes). Returns total count, entities list, counts by type/file, and documentation percentage. Excludes test files and internal paths by default.
 
 ### `gristle_embed(repo_id?)`
 Build semantic search index. Requires `pip install gristle[search]` (sentence-transformers).

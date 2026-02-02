@@ -384,6 +384,177 @@ class TestImpactAnalysis:
 
 
 # ==================================================================
+# 6b. Impact Analysis with Scoring
+# ==================================================================
+
+
+class TestImpactScoring:
+    def test_low_impact_function(self):
+        """Function with no callers should have low impact score."""
+        # Base impact_analysis mock
+        impact_rec = {
+            "target": "mod.helper",
+            "target_type": "Function",
+            "target_file": "mod.py",
+            "direct_callers": [],
+            "affected_files": [],
+        }
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([impact_rec]),  # impact_analysis base
+            _empty(),  # get_callers
+            _empty(),  # test files
+            _empty(),  # get_tests_for_entity
+            _empty(),
+            _empty(),
+            _empty(),  # routes
+            _qr([{"is_entry_point": False, "is_exported": False}]),  # entity check
+            _qr([{"count": 0}]),  # PASSED_TO count
+        ]
+        result = engine.get_impact_analysis("mod.helper")
+        assert result is not None
+        assert result["direct_callers_count"] == 0
+        assert result["passed_to_count"] == 0
+        assert result["risk_level"] == "low"
+        assert result["blast_radius_score"] < 30
+
+    def test_high_impact_route_handler(self):
+        """Route handler with many callers should have high impact."""
+        impact_rec = {
+            "target": "api.get_users",
+            "target_type": "Function",
+            "target_file": "api.py",
+            "direct_callers": ["api.auth", "api.validate", "api.log"],
+            "affected_files": ["api.py", "auth.py"],
+            "routes": [{"method": "GET", "path": "/users", "file_path": "api.py", "line": 10}],
+        }
+        transitive_callers = [
+            {"caller": f"api.caller{i}", "file_path": f"mod{i}.py", "depth": i % 2 + 1}
+            for i in range(10)
+        ]
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([impact_rec]),  # base impact
+            _qr(transitive_callers),  # get_callers
+            _empty(),  # test files
+            _empty(),  # get_tests_for_entity
+            _empty(),
+            _empty(),
+            _empty(),  # routes
+            _qr([{"is_entry_point": True, "is_exported": True}]),  # entity check
+            _qr([{"count": 2}]),  # PASSED_TO count (callbacks)
+        ]
+        result = engine.get_impact_analysis("api.get_users")
+        assert result is not None
+        assert result["direct_callers_count"] == 3
+        assert result["passed_to_count"] == 2
+        assert result["has_route"] is True
+        assert result["is_entry_point"] is True
+        assert result["risk_level"] in ("high", "critical")
+        assert result["blast_radius_score"] >= 60
+
+    def test_critical_impact_no_tests(self):
+        """High usage with no tests = high/critical risk."""
+        impact_rec = {
+            "target": "core.process",
+            "target_type": "Function",
+            "target_file": "core.py",
+            "direct_callers": [f"mod.caller{i}" for i in range(8)],  # Many direct callers
+            "affected_files": [f"mod{i}.py" for i in range(15)],  # Many affected files
+        }
+        transitive_callers = [
+            {"caller": f"transitive{i}", "file_path": f"file{i}.py", "depth": 2}
+            for i in range(25)  # Many transitive callers
+        ]
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([impact_rec]),
+            _qr(transitive_callers),
+            _empty(),  # NO test files
+            _empty(),  # get_tests_for_entity
+            _empty(),
+            _empty(),
+            _empty(),  # routes
+            _qr([{"is_entry_point": False, "is_exported": True}]),
+            _qr([{"count": 0}]),
+        ]
+        result = engine.get_impact_analysis("core.process")
+        assert result is not None
+        assert result["has_tests"] is False
+        assert result["risk_level"] in ("high", "critical")
+        assert result["blast_radius_score"] >= 60
+
+    def test_medium_impact_with_tests(self):
+        """Moderate usage with test coverage = low/medium risk."""
+        impact_rec = {
+            "target": "util.format",
+            "target_type": "Function",
+            "target_file": "util.py",
+            "direct_callers": ["app.main", "app.helper"],
+            "affected_files": ["util.py", "app.py"],
+            "test_files": ["test_util.py"],
+        }
+        transitive_callers = [
+            {"caller": "app.main", "file_path": "app.py", "depth": 1},
+            {"caller": "app.helper", "file_path": "app.py", "depth": 1},
+        ]
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([impact_rec]),
+            _qr(transitive_callers),
+            _qr([{"test_file": "test_util.py"}]),  # Has tests
+            _empty(),
+            _empty(),
+            _empty(),
+            _empty(),  # routes
+            _qr([{"is_entry_point": False, "is_exported": False}]),
+            _qr([{"count": 0}]),
+        ]
+        result = engine.get_impact_analysis("util.format")
+        assert result is not None
+        assert result["has_tests"] is True
+        assert result["risk_level"] in ("low", "medium")
+        assert result["blast_radius_score"] < 60
+
+    def test_callback_heavy_function(self):
+        """Function passed as callback many times = medium+ direct impact."""
+        impact_rec = {
+            "target": "handlers.on_click",
+            "target_type": "Function",
+            "target_file": "handlers.py",
+            "direct_callers": ["app.setup"],
+            "affected_files": ["handlers.py", "app.py"],
+        }
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([impact_rec]),
+            _empty(),  # transitive
+            _empty(),  # test files
+            _empty(),
+            _empty(),
+            _empty(),
+            _empty(),  # routes
+            _qr([{"is_entry_point": False, "is_exported": False}]),
+            _qr([{"count": 10}]),  # PASSED_TO 10 times (high callback usage)
+        ]
+        result = engine.get_impact_analysis("handlers.on_click")
+        assert result is not None
+        assert result["passed_to_count"] == 10
+        # 10 callbacks * 8 pts/callback (capped at 20) + 1 direct caller * 5 = 25 direct score
+        assert result["direct_impact_score"] >= 20  # Callbacks contribute significantly
+        assert result["risk_level"] in ("low", "medium", "high")  # Depends on transitive
+
+    def test_missing_entity(self):
+        """Non-existent entity should return None."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _empty(),  # impact_analysis returns None
+        ]
+        result = engine.get_impact_analysis("nonexistent")
+        assert result is None
+
+
+# ==================================================================
 # 7. search
 # ==================================================================
 

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from redis.exceptions import ResponseError
 
 from gristle.graph.client import GraphClient, QueryResult
-
 
 # ------------------------------------------------------------------
 # QueryResult

@@ -289,6 +289,123 @@ class QueryEngine:
 
         return rec
 
+    def get_impact_analysis(
+        self,
+        name: str,
+        include_source: bool = False,
+    ) -> dict[str, Any] | None:
+        """Analyze impact of changing a function/class with blast radius scoring.
+
+        Returns impact analysis with scores:
+        - direct_impact_score (0-100): Based on direct callers, callbacks, routes
+        - transitive_impact_score (0-100): Based on transitive callers, affected files
+        - blast_radius_score (0-100): Combined weighted score
+        - risk_level: low/medium/high/critical classification
+        """
+        # Get base impact data
+        base = self.impact_analysis(name)
+        if not base:
+            return None
+
+        # Count direct relationships
+        direct_callers_count = len(base.get("direct_callers") or [])
+        has_route = bool(base.get("routes"))
+        is_entry_point = False
+        is_exported = False
+
+        # Check if entry point or exported
+        entity_check = self.graph.execute(
+            """
+            MATCH (target)
+            WHERE (target:Function OR target:Class)
+              AND (target.name = $name OR target.qualified_name = $name)
+            RETURN target.is_entry_point AS is_entry_point,
+                   target.is_exported AS is_exported
+            """,
+            {"name": name},
+        )
+        if entity_check.records:
+            is_entry_point = entity_check.records[0].get("is_entry_point") or False
+            is_exported = entity_check.records[0].get("is_exported") or False
+
+        # Count PASSED_TO (callback) relationships
+        callback_count = self.graph.execute(
+            """
+            MATCH (passer:Function)-[:PASSED_TO]->(target)
+            WHERE (target:Function OR target:Class)
+              AND (target.name = $name OR target.qualified_name = $name)
+            RETURN count(DISTINCT passer) AS count
+            """,
+            {"name": name},
+        )
+        passed_to_count = callback_count.records[0].get("count", 0) if callback_count.records else 0
+
+        # Transitive metrics
+        transitive_callers = base.get("transitive_callers") or []
+        affected_files = base.get("total_affected_files") or []
+        test_files = base.get("test_files") or []
+        has_tests = len(test_files) > 0
+
+        # Calculate Direct Impact Score (0-100)
+        direct_score = 0.0
+        direct_score += min(direct_callers_count * 5, 40)  # Max 40 points for direct callers
+        direct_score += min(passed_to_count * 8, 20)  # Max 20 points for callbacks (higher weight)
+        if has_route:
+            direct_score += 20  # Route handlers are important
+        if is_entry_point:
+            direct_score += 15  # Entry points are critical
+        if is_exported:
+            direct_score += 5  # Exported = part of public API
+
+        direct_score = min(direct_score, 100)
+
+        # Calculate Transitive Impact Score (0-100)
+        transitive_score = 0.0
+        transitive_score += min(len(transitive_callers) * 2, 50)  # Max 50 for transitive callers
+        transitive_score += min(len(affected_files) * 5, 30)  # Max 30 for affected files
+        if not has_tests:
+            transitive_score += 20  # No tests = higher risk
+
+        transitive_score = min(transitive_score, 100)
+
+        # Combined Blast Radius Score (weighted average: 60% direct, 40% transitive)
+        blast_radius = direct_score * 0.6 + transitive_score * 0.4
+
+        # Risk classification
+        if blast_radius >= 85:
+            risk_level = "critical"
+        elif blast_radius >= 60:
+            risk_level = "high"
+        elif blast_radius >= 30:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+
+        # Build result
+        result = {
+            **base,
+            "direct_callers_count": direct_callers_count,
+            "passed_to_count": passed_to_count,
+            "transitive_callers_count": len(transitive_callers),
+            "affected_files_count": len(affected_files),
+            "has_route": has_route,
+            "is_entry_point": is_entry_point,
+            "is_exported": is_exported,
+            "has_tests": has_tests,
+            "direct_impact_score": round(direct_score, 1),
+            "transitive_impact_score": round(transitive_score, 1),
+            "blast_radius_score": round(blast_radius, 1),
+            "risk_level": risk_level,
+        }
+
+        # Optionally include source code
+        if include_source and base.get("target_file"):
+            source = self._load_source(base["target_file"], base.get("start_line"), base.get("end_line"))
+            if source:
+                result["source"] = source
+
+        return result
+
     # ------------------------------------------------------------------
     # 7. Search
     # ------------------------------------------------------------------
@@ -1054,6 +1171,148 @@ class QueryEngine:
             "optional_env_vars": optional,
             "config_files": config_data["config_files"],
             "dependency_count": dep_count,
+        }
+
+    # ------------------------------------------------------------------
+    # Code quality analysis
+    # ------------------------------------------------------------------
+
+    def detect_dead_exports(self) -> dict[str, Any]:
+        """Find exported entities that are never imported by other files.
+
+        Excludes entry points (they're meant to be external-facing).
+        Useful for identifying unused public API surface.
+        """
+        query = """
+        MATCH (file:File)-[:EXPORTS]->(entity)
+        WHERE NOT EXISTS {
+            MATCH (other:File)-[:IMPORTS]->(target:File)
+            WHERE target.path = file.path
+              AND other.path <> file.path
+        }
+        AND NOT entity.is_entry_point
+        RETURN entity.qualified_name AS qualified_name,
+               entity.name AS name,
+               file.path AS file,
+               labels(entity)[0] AS type
+        ORDER BY file.path, entity.name
+        """
+        result = self.graph.execute(query)
+        exports = [
+            {
+                "qualified_name": r["qualified_name"],
+                "name": r["name"],
+                "file": r["file"],
+                "type": r["type"],
+            }
+            for r in result.records
+        ]
+        return {"total": len(exports), "dead_exports": exports}
+
+    def detect_import_cycles(self, max_length: int = 10) -> dict[str, Any]:
+        """Find all import cycles up to max_length.
+
+        Returns cycles as file path lists, grouped by length.
+        Cycles are deduplicated (a→b→a is same as b→a→b).
+        """
+        query = """
+        MATCH path = (a:File)-[:IMPORTS*1..{max_len}]->(a)
+        WHERE ALL(r IN relationships(path) WHERE type(r) = 'IMPORTS')
+        WITH [n IN nodes(path) | n.path] AS cycle_files,
+             length(path) AS cycle_length
+        RETURN cycle_files, cycle_length
+        ORDER BY cycle_length ASC, cycle_files[0] ASC
+        """
+        result = self.graph.execute(query, {"max_len": max_length})
+
+        cycles = []
+        by_length: dict[int, int] = {}
+        seen_cycles: set[str] = set()
+
+        for r in result.records:
+            files = r["cycle_files"]
+            length = r["cycle_length"]
+
+            # Normalize cycle for deduplication (rotate to start with lexicographically smallest)
+            min_idx = files.index(min(files[:-1]))  # Exclude last (duplicate of first)
+            normalized = tuple(files[min_idx:-1] + files[:min_idx] + [files[min_idx]])
+            cycle_key = str(normalized)
+
+            if cycle_key not in seen_cycles:
+                seen_cycles.add(cycle_key)
+                cycles.append({"files": files, "length": length})
+                by_length[length] = by_length.get(length, 0) + 1
+
+        return {
+            "total": len(cycles),
+            "cycles": cycles,
+            "by_length": by_length,
+        }
+
+    def get_public_api(self, include_internal: bool = False) -> dict[str, Any]:
+        """Return all public API entities (exported, non-test, non-internal).
+
+        Args:
+            include_internal: If True, include entities in paths containing 'internal', '__', or '_private'.
+
+        Returns dict with:
+            - total: count of public API entities
+            - entities: list of {qualified_name, name, file, type, has_docs}
+            - by_type: counts grouped by entity type (Function, Class)
+            - by_file: counts grouped by file
+        """
+        internal_filter = ""
+        if not include_internal:
+            internal_filter = """
+            AND NOT file.path CONTAINS '__'
+            AND NOT file.path CONTAINS '/internal/'
+            AND NOT file.path CONTAINS '/_'
+            """
+
+        query = f"""
+        MATCH (file:File)-[:EXPORTS]->(entity)
+        WHERE NOT file.is_test_file
+          AND entity.visibility = 'public'
+          {internal_filter}
+        RETURN entity.qualified_name AS qualified_name,
+               entity.name AS name,
+               file.path AS file,
+               labels(entity)[0] AS type,
+               entity.docstring AS docstring
+        ORDER BY type, entity.name
+        """
+        result = self.graph.execute(query)
+
+        entities = []
+        by_type: dict[str, int] = {}
+        by_file: dict[str, int] = {}
+        documented_count = 0
+
+        for r in result.records:
+            has_docs = bool(r["docstring"])
+            if has_docs:
+                documented_count += 1
+
+            entity = {
+                "qualified_name": r["qualified_name"],
+                "name": r["name"],
+                "file": r["file"],
+                "type": r["type"],
+                "has_docs": has_docs,
+            }
+            entities.append(entity)
+            by_type[r["type"]] = by_type.get(r["type"], 0) + 1
+            by_file[r["file"]] = by_file.get(r["file"], 0) + 1
+
+        doc_percentage = int(documented_count / len(entities) * 100) if entities else 0
+
+        return {
+            "total": len(entities),
+            "entities": entities,
+            "by_type": by_type,
+            "by_file": by_file,
+            "documented_count": documented_count,
+            "doc_percentage": doc_percentage,
         }
 
     # ------------------------------------------------------------------

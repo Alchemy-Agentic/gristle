@@ -94,6 +94,7 @@ Once connected, the agent has access to these tools:
 | `gristle_ingest_github` | Clone and index a GitHub repo (supports private repos with token) |
 | `gristle_explore` | Look up a function, class, or file with full context |
 | `gristle_impact` | Blast radius analysis — what breaks if you change something |
+| `gristle_impact_score` | Enhanced impact analysis with blast radius scoring (0-100) and risk levels |
 | `gristle_trace` | Find call paths between two functions |
 | `gristle_search` | Search by name or docstring |
 | `gristle_docs` | Find documentation referencing code entities |
@@ -103,6 +104,9 @@ Once connected, the agent has access to these tools:
 | `gristle_tests` | Find tests for an entity, list untested functions, or get function-level coverage detail |
 | `gristle_conventions` | Infer project patterns, structure, and architectural layer violations |
 | `gristle_config` | Query config files, environment variables, and setup requirements |
+| `gristle_dead_exports` | Find exported entities that are never imported (dead public API surface) |
+| `gristle_cycles` | Detect circular import dependencies |
+| `gristle_public_api` | List all public API entities (exported functions/classes) |
 | `gristle_watch` | Start/stop file watching for incremental re-indexing |
 | `gristle_drop` | Remove a repo's graph from FalkorDB |
 | `gristle_stats` | Repository statistics — file counts, node counts, language breakdown |
@@ -182,7 +186,7 @@ curl https://gristle-production.up.railway.app/health
 
 ```bash
 pip install -e ".[dev]"
-pytest                    # run tests (617 tests)
+pytest                    # run tests (642 tests)
 ruff check src/ tests/    # lint
 ruff format src/ tests/   # format
 mypy src/                 # type check

@@ -47,6 +47,9 @@ Graph namespaces are isolated:
 | `gristle_ingest_github` | Audit start | `repo_url`, `github_token`, `repo_id` (optional — used for persistent graphs) |
 | `gristle_drop` | Audit cleanup | `repo_id` (only for ephemeral graphs) |
 | `gristle_stats` | After ingestion | `repo_id` (to cache stats on Ziggy's CodeGraph node) |
+| `gristle_dead_exports` | Architecture analysis | `repo_id` — returns exported entities with no importers |
+| `gristle_cycles` | Architecture analysis | `repo_id`, `max_length` (optional, default 10) |
+| `gristle_public_api` | Architecture/onboarding | `repo_id`, `include_internal` (optional, default false) |
 
 Ziggy's `GristleClient` (`src/agents/shared/code-graph.ts` in the Ziggy repo) wraps these MCP calls via a lightweight JSON-RPC-over-HTTP client.
 
@@ -243,6 +246,11 @@ All planned improvements from the spec at `../Ziggy/docs/specs/gristle-improveme
 
 ### Phase D (Complete) — Call Graph Completeness
 9. ✅ **Callback/handler detection** — `PASSED_TO` edges for middleware, event handlers, array method callbacks. All Ziggy queries now traverse `[:CALLS|PASSED_TO]`
+
+### Additional Features (Beyond Original Spec)
+10. ✅ **Dead export detection** — `gristle_dead_exports` MCP tool. Finds exported entities never imported by other files. Excludes entry points (route handlers, React components, etc.) to avoid false positives.
+11. ✅ **Import cycle detection** — `gristle_cycles` MCP tool. Detects circular import chains with configurable `max_length` (default 10). Deduplicates by normalizing cycles to lexicographically smallest start node.
+12. ✅ **Public API surface** — `gristle_public_api` MCP tool. Maps all public exported entities excluding test/internal files. Returns entity names, types, file paths, and documentation percentage.
 
 ---
 

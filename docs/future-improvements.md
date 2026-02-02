@@ -2,13 +2,19 @@
 
 This document outlines potential enhancements to Gristle based on how Ziggy's AI agents use the code graph. Ideas are prioritized by impact vs. effort.
 
+**Status Legend:**
+- ✅ **COMPLETED** - Implemented and tested
+- 🚧 **IN PROGRESS** - Currently being worked on
+- 📋 **TODO** - Not yet started
+
 ---
 
 ## Quick Wins (< 1 week, High Impact)
 
-### 1. Dead Export Detection
+### 1. Dead Export Detection ✅ **COMPLETED**
 **Effort:** ~1 day
 **Impact:** High (Pathfinder)
+**Completed:** Phase D implementation
 
 **Problem:** Pathfinder reports dead code but misses "exported but never imported" functions — a common source of API bloat in libraries and barrel files.
 
@@ -64,9 +70,10 @@ async def gristle_dead_exports(repo_id: str) -> list[types.TextContent]:
 
 ---
 
-### 2. Circular Dependency Detection with Path Visualization
+### 2. Circular Dependency Detection with Path Visualization ✅ **COMPLETED**
 **Effort:** ~2 days
 **Impact:** High (Pathfinder)
+**Completed:** Phase D implementation
 
 **Problem:** Import cycles exist but Gristle doesn't explicitly detect or visualize them. Ziggy has to manually traverse IMPORTS edges to find cycles.
 
@@ -109,9 +116,10 @@ def detect_import_cycles(self, max_length: int = 10) -> dict:
 
 ---
 
-### 3. Public API Surface Mapping
+### 3. Public API Surface Mapping ✅ **COMPLETED**
 **Effort:** ~2-3 days
 **Impact:** High (Cartographer)
+**Completed:** Phase D implementation
 
 **Problem:** For libraries/SDKs, Ziggy needs to document the public API surface, but Gristle doesn't distinguish "public API" from "internal implementation."
 
@@ -175,9 +183,10 @@ def get_public_api(self, include_internal: bool = False) -> dict:
 
 ## Short-Term (1-2 weeks, High Value)
 
-### 4. Change Impact Scoring
+### 4. Change Impact Scoring ✅ **COMPLETED**
 **Effort:** ~3-4 days
 **Impact:** High (Architect)
+**Completed:** Latest session
 
 **Problem:** Architect knows *what's* impacted by a change (via `get_impact_analysis`), but can't prioritize — is changing `utils/format.ts` high-risk or low-risk?
 
@@ -275,7 +284,7 @@ def score_change_impact(self, entity_id: str) -> dict:
 
 ---
 
-### 5. Type Flow Analysis
+### 5. Type Flow Analysis 📋 **TODO**
 **Effort:** ~5-7 days
 **Impact:** Very High (Architect)
 
@@ -332,7 +341,7 @@ def get_data_contract(self, func_qualified_name: str) -> dict:
 
 ## Medium-Term (3-4 weeks, Specialized Value)
 
-### 6. Security Pattern Detection
+### 6. Security Pattern Detection 📋 **TODO**
 **Effort:** ~6-8 days
 **Impact:** High (New Use Case for Pathfinder)
 
@@ -404,7 +413,7 @@ def get_security_issues(self, severity: str | None = None) -> dict:
 
 ---
 
-### 7. Framework Convention Detection
+### 7. Framework Convention Detection 📋 **TODO**
 **Effort:** ~4-6 days per framework
 **Impact:** Medium (Cartographer)
 
@@ -434,7 +443,7 @@ def get_security_issues(self, severity: str | None = None) -> dict:
 
 ---
 
-### 8. Dependency Staleness Tracking
+### 8. Dependency Staleness Tracking 📋 **TODO**
 **Effort:** ~3-4 days
 **Impact:** Medium (Pathfinder)
 
@@ -472,7 +481,7 @@ for dep in parsed_dependencies:
 
 ## Nice-to-Have (Lower Priority)
 
-### 9. Mocking Recommendations
+### 9. Mocking Recommendations 📋 **TODO**
 **Effort:** ~2-3 days
 **Impact:** Low-Medium (Pathfinder)
 
@@ -494,7 +503,7 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 
 ---
 
-### 10. Changelog Generation from Commits
+### 10. Changelog Generation from Commits 📋 **TODO**
 **Effort:** ~5-7 days
 **Impact:** Medium (Cartographer)
 
@@ -527,26 +536,59 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 
 ## Summary: Priority Matrix
 
-| Improvement | Effort | Impact | Priority |
-|-------------|--------|--------|----------|
-| Dead Export Detection | 1 day | High | **Immediate** |
-| Circular Dependency Detection | 2 days | High | **Immediate** |
-| Public API Surface Mapping | 2-3 days | High | **Immediate** |
-| Change Impact Scoring | 3-4 days | High | Short-term |
-| Type Flow Analysis | 5-7 days | Very High | Short-term |
-| Security Pattern Detection | 6-8 days | High (new use case) | Medium-term |
-| Framework Convention Detection | 4-6 days/framework | Medium | Medium-term |
-| Dependency Staleness | 3-4 days | Medium | Medium-term |
-| Mocking Recommendations | 2-3 days | Low-Medium | Nice-to-have |
-| Changelog Generation | 5-7 days | Medium | Nice-to-have |
+| Improvement | Effort | Impact | Priority | Status |
+|-------------|--------|--------|----------|--------|
+| Dead Export Detection | 1 day | High | Immediate | ✅ **DONE** |
+| Circular Dependency Detection | 2 days | High | Immediate | ✅ **DONE** |
+| Public API Surface Mapping | 2-3 days | High | Immediate | ✅ **DONE** |
+| Change Impact Scoring | 3-4 days | High | Short-term | ✅ **DONE** |
+| Type Flow Analysis | 5-7 days | Very High | Short-term | 📋 TODO |
+| Security Pattern Detection | 6-8 days | High (new use case) | Medium-term | 📋 TODO |
+| Framework Convention Detection | 4-6 days/framework | Medium | Medium-term | 📋 TODO |
+| Dependency Staleness | 3-4 days | Medium | Medium-term | 📋 TODO |
+| Mocking Recommendations | 2-3 days | Low-Medium | Nice-to-have | 📋 TODO |
+| Changelog Generation | 5-7 days | Medium | Nice-to-have | 📋 TODO |
+
+---
+
+## Completed Features
+
+### ✅ Phase 1: Code Quality (Completed)
+1. **Dead Export Detection** - Find exported entities never imported elsewhere
+2. **Circular Dependency Detection** - Detect import cycles with path visualization
+3. **Public API Surface Mapping** - List all public API entities with documentation percentage
+
+### ✅ Phase 2: Impact Analysis (Completed)
+4. **Change Impact Scoring** - Blast radius scoring (0-100) with risk classification
+
+**Results:**
+- Added 3 new query methods: `detect_dead_exports()`, `detect_import_cycles()`, `get_public_api()`
+- Added 2 new MCP tools: `gristle_dead_exports`, `gristle_cycles`, `gristle_public_api`, `gristle_impact_score`
+- Enhanced impact analysis with scoring algorithm
+- 642 tests passing (added 25 new tests)
 
 ---
 
 ## Next Steps
 
-**Recommended immediate actions:**
-1. **Dead Export Detection** — Easiest, highest value/effort ratio
-2. **Circular Dependency Detection** — Common pain point, 2-day investment
-3. **Public API Mapping** — Essential for library documentation
+**Recommended next priorities:**
 
-After these three, reassess based on user feedback from Ziggy agents.
+1. **Type Flow Analysis** (~5-7 days, Very High Impact)
+   - Track TypeScript interfaces/types and Python type hints as nodes
+   - Add RETURNS and ACCEPTS edges for data contract visibility
+   - Enables breaking change detection and DTO suggestions
+   - **HIGHEST VALUE** for Architect agent
+
+2. **Security Pattern Detection** (~6-8 days, High Impact - New Use Case)
+   - SQL injection risk detection
+   - Hardcoded secrets scanning
+   - Missing auth check detection
+   - Unsafe deserialization patterns
+   - **NEW CAPABILITY** for Pathfinder agent
+
+3. **Dependency Staleness Tracking** (~3-4 days, Medium Impact)
+   - Check dependencies against npm/PyPI for latest versions
+   - Flag outdated packages
+   - Quick win for security posture
+
+**Recommendation:** Start with **Type Flow Analysis** as it unlocks the most value for Ziggy's Architect agent and enables data contract validation.
