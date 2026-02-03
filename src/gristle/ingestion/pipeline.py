@@ -51,6 +51,8 @@ class IngestionResult:
     test_cases_found: int = 0
     todos_found: int = 0
     dependencies_found: int = 0
+    dependencies_outdated: int = 0
+    dependencies_vulnerable: int = 0
     test_coverage_edges: int = 0
     config_files_processed: int = 0
     env_vars_found: int = 0
@@ -112,6 +114,8 @@ class IngestionPipeline:
         self._fixture_map: dict[str, str] = {}
         # Dependency version map: package_name -> version_string
         self._dependency_versions: dict[str, str] = {}
+        # Dependency ecosystem map: package_name -> "npm" | "PyPI"
+        self._dependency_ecosystems: dict[str, str] = {}
         # In-memory call adjacency: caller_id -> [callee_id] (for TESTS_FUNCTION)
         self._calls_adjacency: dict[str, list[str]] = {}
         # Set of test function node IDs (is_test=true)
@@ -163,6 +167,7 @@ class IngestionPipeline:
         self._class_methods.clear()
         self._fixture_map.clear()
         self._dependency_versions.clear()
+        self._dependency_ecosystems.clear()
         self._calls_adjacency.clear()
         self._test_func_ids.clear()
         self._env_var_ids.clear()
@@ -1446,7 +1451,28 @@ class IngestionPipeline:
                         mod_base = imp.module_path.rsplit("/", 1)[-1].split(".")[0]
                         ext_map[mod_base] = dep_id
 
-        # Create Dependency nodes
+        # Create Dependency nodes — with optional staleness/vulnerability enrichment
+        from gristle.ingestion.dependency_checker import check_dependencies
+
+        deps_to_check: list[tuple[str, str, str]] = []
+        for pkg_name in external_deps:
+            version = self._dependency_versions.get(pkg_name, "")
+            if not version:
+                normalized = pkg_name.lower().replace("-", "_")
+                version = self._dependency_versions.get(normalized, "")
+            ecosystem = self._dependency_ecosystems.get(
+                pkg_name, self._dependency_ecosystems.get(pkg_name.lower().replace("-", "_"), "")
+            )
+            if version and ecosystem:
+                deps_to_check.append((pkg_name, version, ecosystem))
+
+        enrichments = check_dependencies(
+            deps_to_check,
+            timeout=settings.dependency_timeout_seconds,
+            max_workers=settings.dependency_concurrency,
+            enabled=settings.dependency_check_enabled,
+        )
+
         for pkg_name, importers in external_deps.items():
             dep_id = f"dep::{pkg_name}"
             # Look up version from manifest files (try exact name, then normalized)
@@ -1454,6 +1480,8 @@ class IngestionPipeline:
             if not version:
                 normalized = pkg_name.lower().replace("-", "_")
                 version = self._dependency_versions.get(normalized, "")
+
+            health = enrichments.get(pkg_name)
             batch.add_node(
                 "Dependency",
                 {
@@ -1461,9 +1489,18 @@ class IngestionPipeline:
                     "name": pkg_name,
                     "import_count": len(importers),
                     "version": version,
+                    "latest_version": health.latest_version if health else "",
+                    "is_outdated": health.is_outdated if health else False,
+                    "vulnerability_count": len(health.vulnerability_ids) if health else 0,
+                    "vulnerabilities": health.vulnerability_ids if health else [],
+                    "checked_at": health.checked_at if health else "",
                 },
             )
             result.dependencies_found += 1
+            if health and health.is_outdated:
+                result.dependencies_outdated += 1
+            if health and health.vulnerability_ids:
+                result.dependencies_vulnerable += 1
             # Link importing files to the dependency
             for file_path in importers:
                 file_id = f"file::{file_path}"
@@ -1491,6 +1528,7 @@ class IngestionPipeline:
                         for name, version in deps.items():
                             if isinstance(version, str):
                                 self._dependency_versions[name] = version
+                                self._dependency_ecosystems[name] = "npm"
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -1510,6 +1548,7 @@ class IngestionPipeline:
                             version = m.group(2)
                             if version:
                                 self._dependency_versions[pkg] = version.strip()
+                                self._dependency_ecosystems[pkg] = "PyPI"
                 except OSError:
                     pass
 
@@ -1530,6 +1569,7 @@ class IngestionPipeline:
                             version = m.group(2)
                             if version:
                                 self._dependency_versions[pkg] = version.strip()
+                                self._dependency_ecosystems[pkg] = "PyPI"
                 # Optional deps
                 optional = data.get("project", {}).get("optional-dependencies", {})
                 for group_deps in optional.values():
@@ -1542,6 +1582,7 @@ class IngestionPipeline:
                                     version = m.group(2)
                                     if version:
                                         self._dependency_versions[pkg] = version.strip()
+                                        self._dependency_ecosystems[pkg] = "PyPI"
             except (ImportError, OSError, Exception):
                 pass
 

@@ -203,6 +203,11 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `name` | Cartographer, Exodus | Dependency identification |
 | `version` | Cartographer, Exodus | **Phase A** — declared version string from lockfiles |
 | `import_count` | Cartographer | Usage frequency |
+| `latest_version` | Exodus | Latest version from npm/PyPI registry |
+| `is_outdated` | Exodus | Whether declared < latest |
+| `vulnerability_count` | Exodus | Number of known CVEs (from OSV.dev + PyPI) |
+| `vulnerabilities` | Exodus | List of CVE/GHSA IDs |
+| `checked_at` | Exodus | ISO timestamp of last check |
 
 ### File Node
 | Property | Used By | How |

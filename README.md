@@ -86,9 +86,9 @@ Railway auto-injects `PORT` which Gristle picks up. The transport defaults to `s
 
 ## MCP tools
 
-Gristle exposes 27 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips.
+Gristle exposes 28 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips.
 
-Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_trace`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`.
+Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_trace`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`.
 
 ## Development
 

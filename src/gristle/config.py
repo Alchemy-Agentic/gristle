@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     http_host: str = "0.0.0.0"
     http_port: int = 8080
 
+    # Dependency staleness & vulnerability checking
+    dependency_check_enabled: bool = True
+    dependency_timeout_seconds: float = 5.0
+    dependency_concurrency: int = 20
+
     # Bearer token auth — set GRISTLE_API_KEY to enable, leave unset for no auth
     api_key: str | None = None
 

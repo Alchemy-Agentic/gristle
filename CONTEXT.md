@@ -30,7 +30,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
-- 27 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components, deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes
+- 28 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components, deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health
 - 2 resources: `gristle://repos`, `gristle://repos/{repo_id}/overview`
 - Transports: stdio (local) + streamable-http (remote/Railway)
 - Optional bearer token auth (`GRISTLE_API_KEY`)

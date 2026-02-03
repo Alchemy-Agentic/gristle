@@ -448,15 +448,28 @@ List all public API entities (exported functions and classes). Returns total cou
 
 ### `gristle_security(repo_id?)`
 
-Combined security overview: code findings + unauthenticated routes. Detects hardcoded secrets, SQL injection risks, unsafe calls (eval, exec, pickle), and LLM insecure output handling (OWASP LLM05). Also identifies routes lacking authentication decorators or middleware.
+Combined security overview: code findings + unauthenticated routes + vulnerable dependencies. Detects hardcoded secrets, SQL injection risks, unsafe calls (eval, exec, pickle), LLM insecure output handling (OWASP LLM05), routes lacking authentication, and dependencies with known CVEs.
 
-Returns `total_issues`, `code_findings` (grouped by category), and `unauthenticated_routes`.
+Returns `total_issues`, `code_findings` (grouped by category), `unauthenticated_routes`, and `vulnerable_dependencies`.
 
 ---
 
 ### `gristle_unauthenticated_routes(repo_id?)`
 
 Find HTTP routes whose handlers lack authentication decorators or middleware. Checks for common auth patterns (`login_required`, `jwt`, `protect`, `verify`, etc.) and middleware presence. Useful for focused auth audits — call `gristle_security` for the full picture.
+
+---
+
+### `gristle_dependency_health(severity?, repo_id?)`
+
+Check dependency staleness and known vulnerabilities. Compares declared versions against latest releases from npm/PyPI registries and reports known CVEs from OSV.dev.
+
+**Parameters:**
+- `severity`: `"all"` (all outdated, default), `"vulnerable"` (CVEs only), `"safe"` (outdated but no CVEs)
+
+Returns `total`, `outdated` (list with name, declared_version, latest_version, vulnerability_count, vulnerabilities), `vulnerable_count`, and `summary`.
+
+**Config:** Set `GRISTLE_DEPENDENCY_CHECK_ENABLED=false` to disable API calls (CI, air-gapped). `GRISTLE_DEPENDENCY_TIMEOUT_SECONDS` (default 5.0) and `GRISTLE_DEPENDENCY_CONCURRENCY` (default 20) control fetch behavior.
 
 ---
 

@@ -932,13 +932,15 @@ class TestDependencies:
         funcs = [
             {"name": "fetch", "qualified_name": "api.fetch", "file_path": "api.py", "start_line": 10, "is_test": False},
         ]
+        health = [{"version": ">=2.28.0", "latest_version": "2.31.0", "is_outdated": True, "vulnerability_count": 0, "vulnerabilities": []}]
         engine, graph = _make_engine()
-        graph.execute.side_effect = [_qr(files), _qr(funcs)]
+        graph.execute.side_effect = [_qr(files), _qr(funcs), _qr(health)]
         result = engine.get_dependency_users("requests")
         assert result["dependency"] == "requests"
         assert result["file_count"] == 2
         assert result["function_count"] == 1
         assert "api.py" in result["files"]
+        assert result["latest_version"] == "2.31.0"
 
 
 # ==================================================================

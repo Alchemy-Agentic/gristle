@@ -1087,8 +1087,27 @@ class QueryEngine:
             """,
             {"name": dep_name},
         )
+        # Dependency health info
+        dep_info = self.graph.execute(
+            """
+            MATCH (d:Dependency {name: $name})
+            RETURN d.version AS version,
+                   d.latest_version AS latest_version,
+                   d.is_outdated AS is_outdated,
+                   d.vulnerability_count AS vulnerability_count,
+                   d.vulnerabilities AS vulnerabilities
+            """,
+            {"name": dep_name},
+        )
+        health = dep_info.records[0] if dep_info.records else {}
+
         return {
             "dependency": dep_name,
+            "version": health.get("version", ""),
+            "latest_version": health.get("latest_version", ""),
+            "is_outdated": health.get("is_outdated", False),
+            "vulnerability_count": health.get("vulnerability_count", 0),
+            "vulnerabilities": health.get("vulnerabilities", []),
             "files": [r["file_path"] for r in files.records],
             "functions": funcs.records,
             "file_count": len(files.records),
@@ -1622,15 +1641,53 @@ class QueryEngine:
 
         return {"total": len(routes), "unauthenticated_routes": routes}
 
-    def get_security_overview(self) -> dict[str, Any]:
-        """Combined security overview: code findings + unauthenticated routes."""
-        code_findings = self.detect_security_issues()
-        unauth_routes = self.detect_unauthenticated_routes()
+    def get_outdated_dependencies(self, severity: str = "all") -> dict[str, Any]:
+        """Find outdated dependencies with optional vulnerability filtering.
+
+        severity: "all" (all outdated), "vulnerable" (CVEs only), "safe" (outdated, no CVEs)
+        """
+        result = self.graph.execute(
+            """
+            MATCH (d:Dependency)
+            WHERE d.is_outdated = true
+            OPTIONAL MATCH (f:File)-[:DEPENDS_ON]->(d)
+            RETURN d.name AS name,
+                   d.version AS declared_version,
+                   d.latest_version AS latest_version,
+                   d.vulnerability_count AS vulnerability_count,
+                   d.vulnerabilities AS vulnerabilities,
+                   d.checked_at AS checked_at,
+                   count(DISTINCT f) AS file_count
+            ORDER BY d.vulnerability_count DESC, file_count DESC
+            """,
+        )
+        outdated = result.records
+
+        if severity == "vulnerable":
+            outdated = [r for r in outdated if (r.get("vulnerability_count") or 0) > 0]
+        elif severity == "safe":
+            outdated = [r for r in outdated if (r.get("vulnerability_count") or 0) == 0]
+
+        vuln_count = sum(1 for r in result.records if (r.get("vulnerability_count") or 0) > 0)
 
         return {
-            "total_issues": code_findings["total"] + unauth_routes["total"],
+            "total": len(outdated),
+            "outdated": outdated,
+            "vulnerable_count": vuln_count,
+            "summary": {"total_outdated": len(result.records), "with_vulnerabilities": vuln_count},
+        }
+
+    def get_security_overview(self) -> dict[str, Any]:
+        """Combined security overview: code findings + unauthenticated routes + vulnerable deps."""
+        code_findings = self.detect_security_issues()
+        unauth_routes = self.detect_unauthenticated_routes()
+        vuln_deps = self.get_outdated_dependencies(severity="vulnerable")
+
+        return {
+            "total_issues": code_findings["total"] + unauth_routes["total"] + vuln_deps["total"],
             "code_findings": code_findings,
             "unauthenticated_routes": unauth_routes,
+            "vulnerable_dependencies": vuln_deps,
         }
 
     # ------------------------------------------------------------------

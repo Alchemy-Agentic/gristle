@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (27 tools + 2 resources) |
+                                          | (28 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -80,13 +80,14 @@ src/gristle/
     pipeline.py            # Three-phase + config graph builder (~2000 lines, core logic)
     batch.py               # BatchCollector for UNWIND-based bulk writes
     watcher.py             # Async file watcher for incremental updates
+    dependency_checker.py  # Dependency staleness + vulnerability checking (npm/PyPI/OSV)
   query/
     engine.py              # 30+ Cypher query templates for code analysis
   search/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 27 tools + 2 resources
+    server.py              # MCP server, 28 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -111,6 +112,7 @@ tests/
   test_code_quality.py     # Dead export detection, import cycle detection, public API mapping
   test_type_flow.py        # Type field extraction, typed params, generic unwrapping, data contracts
   test_security.py         # Security detection: secrets, SQL injection, unsafe calls, LLM risks, MCP tools
+  test_dependency_checker.py # Dependency staleness, vulnerability checking, version utils, API mocks
 ```
 
 ---
@@ -547,7 +549,8 @@ Errors are logged with context (file path, operation, error message) via the str
 | `get_type_usage(name)` | All usage of a type: accepted_by, returned_by, referenced_in_fields |
 | `detect_security_issues()` | Functions with security findings (secrets, SQL injection, unsafe calls, LLM risks) |
 | `detect_unauthenticated_routes()` | Routes lacking auth decorators or middleware |
-| `get_security_overview()` | Combined security overview: code findings + unauthenticated routes |
+| `get_security_overview()` | Combined security overview: code findings + unauthenticated routes + vulnerable deps |
+| `get_outdated_dependencies(severity)` | Outdated dependencies with optional vulnerability filtering |
 | `find_path(from, to, hops)` | Call paths between two entities |
 
 ---

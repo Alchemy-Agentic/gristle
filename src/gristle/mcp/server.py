@@ -976,14 +976,14 @@ async def gristle_public_api(
 async def gristle_security(
     repo_id: str | None = None,
 ) -> dict:
-    """Combined security overview: code findings + unauthenticated routes.
+    """Combined security overview: code findings + unauthenticated routes + vulnerable deps.
 
     Detects hardcoded secrets, SQL injection risks, unsafe calls (eval, exec,
-    pickle), LLM insecure output handling (OWASP LLM05), and routes lacking
-    authentication decorators or middleware.
+    pickle), LLM insecure output handling (OWASP LLM05), routes lacking
+    authentication decorators or middleware, and dependencies with known CVEs.
 
-    Returns total issue count, code findings grouped by category, and a list
-    of unauthenticated routes.
+    Returns total issue count, code findings grouped by category, unauthenticated
+    routes, and vulnerable dependencies.
 
     Args:
         repo_id: Repository identifier (optional, uses most recent if omitted).
@@ -1015,6 +1015,28 @@ async def gristle_unauthenticated_routes(
         return {"error": "No repository loaded. Run gristle_ingest first."}
 
     return engine.detect_unauthenticated_routes()
+
+
+@mcp.tool()
+async def gristle_dependency_health(
+    severity: str = "all",
+    repo_id: str | None = None,
+) -> dict:
+    """Check dependency staleness and known vulnerabilities.
+
+    Finds outdated dependencies by comparing declared versions against latest
+    releases from npm/PyPI registries. Also reports known CVEs from OSV.dev.
+
+    Args:
+        severity: Filter level — "all" (all outdated), "vulnerable" (CVEs only),
+                  "safe" (outdated but no CVEs). Default "all".
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.get_outdated_dependencies(severity=severity)
 
 
 # ======================================================================

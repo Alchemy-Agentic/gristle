@@ -443,7 +443,7 @@ def get_security_issues(self, severity: str | None = None) -> dict:
 
 ---
 
-### 8. Dependency Staleness Tracking 📋 **TODO**
+### 8. Dependency Staleness Tracking ✅ **COMPLETED**
 **Effort:** ~3-4 days
 **Impact:** Medium (Pathfinder)
 
@@ -545,7 +545,7 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 | Type Flow Analysis | 5-7 days | Very High | Short-term | ✅ **DONE** |
 | Security Pattern Detection | 6-8 days | High (new use case) | Medium-term | ✅ COMPLETED |
 | Framework Convention Detection | 4-6 days/framework | Medium | Medium-term | 📋 TODO |
-| Dependency Staleness | 3-4 days | Medium | Medium-term | 📋 TODO |
+| Dependency Staleness | 3-4 days | Medium | Medium-term | ✅ COMPLETED |
 | Mocking Recommendations | 2-3 days | Low-Medium | Nice-to-have | 📋 TODO |
 | Changelog Generation | 5-7 days | Medium | Nice-to-have | 📋 TODO |
 

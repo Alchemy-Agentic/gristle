@@ -476,7 +476,7 @@ class TestQuerySecurity:
 
     def test_get_security_overview(self):
         engine, mock_graph = _make_engine()
-        # First call for code findings, second for unauthenticated routes
+        # First call for code findings, second for unauthenticated routes, third for vulnerable deps
         mock_graph.execute.side_effect = [
             _qr([{
                 "qualified_name": "mod.run",
@@ -494,12 +494,14 @@ class TestQuerySecurity:
                 "decorators": [],
                 "file": "routes.py",
             }]),
+            _empty(),  # get_outdated_dependencies (no vulnerable deps)
         ]
 
         result = engine.get_security_overview()
         assert result["total_issues"] == 2
         assert result["code_findings"]["total"] == 1
         assert result["unauthenticated_routes"]["total"] == 1
+        assert "vulnerable_dependencies" in result
 
 
 # ======================================================================
