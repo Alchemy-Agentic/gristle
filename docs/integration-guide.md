@@ -1,6 +1,8 @@
-# Gristle MCP Usage Guide
+# Gristle Integration Guide
 
-This guide is for AI agents that have Gristle configured as an MCP server. It explains when to call each tool, what to pass, what you get back, and how to chain tools together for common workflows.
+For AI agents and applications that consume Gristle via MCP. This is the single reference for graph schema, tool usage, configuration, and deployment.
+
+For internal architecture (parsers, pipeline, call resolution), see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
@@ -26,7 +28,53 @@ This clones the repo and runs full ingestion in one step.
 
 ---
 
-## Tool Reference
+## Graph Schema
+
+### Node Types
+
+| Label | Key Properties | Purpose |
+|-------|---------------|---------|
+| `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
+| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count` | Function or method |
+| `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
+| `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative` | Import statement |
+| `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware` | HTTP endpoint |
+| `TestCase` | `id`, `name`, `block_type`, `file_path`, `start_line`, `parent_describe`, `parametrize_count` | Test block |
+| `Document` | `id`, `path`, `title`, `doc_type`, `line_count`, `reference_count` | Markdown file |
+| `DocumentSection` | `id`, `file_path`, `heading`, `level`, `start_line`, `end_line` | Doc section |
+| `Dependency` | `id`, `name`, `version` | External package |
+| `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
+
+### Edge Types
+
+| Type | From | To | Description |
+|------|------|----|-------------|
+| `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase | Container relationship |
+| `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
+| `EXPORTS` | File | Function, Class | Module exports |
+| `CALLS` | Function | Function | Function call (with `depth` property) |
+| `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument) |
+| `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
+| `INHERITS_FROM` | Class | Class | Class inheritance |
+| `IMPORTS` | File | File | File-level import dependency |
+| `TESTS` | File | File | Test file covers production file |
+| `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper) |
+| `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |
+| `USES_DEPENDENCY` | Function | Dependency | Uses external package |
+| `DEPENDS_ON` | File | Dependency | File-level external dependency |
+| `REFERENCES` | DocumentSection | Function, Class, File | Doc references code |
+| `HAS_SECTION` | Document | DocumentSection | Doc contains section |
+| `HANDLES` | Route | Function | Route handler |
+| `DEFINED_IN` | EnvVar | File | Env var defined in config file |
+| `USES_ENV` | File | EnvVar | Source file references env var |
+
+### Indexes
+
+24 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
+
+---
+
+## MCP Tools Reference
 
 ### Recommended First Call: `gristle_conventions`
 
@@ -184,6 +232,18 @@ Key fields to check:
 
 ---
 
+### `gristle_impact_score(entity_name, include_source?)`
+
+Enhanced impact analysis with blast radius scoring (0-100) and risk classification. Returns:
+- `blast_radius_score` (0-100): Combined impact metric
+- `risk_level`: low/medium/high/critical classification
+- `direct_impact_score`: Based on direct callers, callbacks, routes, entry points
+- `transitive_impact_score`: Based on transitive callers, affected files, test coverage
+
+Higher scores indicate more risk. Critical (85+) changes require extra care.
+
+---
+
 ### `gristle_search(query, search_type?, limit?)`
 
 **When to use:** You don't know the exact name. You're looking for something related to a concept.
@@ -249,6 +309,10 @@ Returns test functions that call this entity (directly or transitively up to 3 h
 gristle_tests(mode="coverage")
 ```
 Returns exported, non-test functions with no test callers, ordered by complexity (most complex untested functions first).
+
+**Mode `"coverage_detail"`** — function-level coverage with depth info.
+
+**Mode `"untested_critical"`** — exported functions with callers but no tests.
 
 ---
 
@@ -326,7 +390,47 @@ For React/TypeScript projects. Lists components (PascalCase functions returning 
 
 ---
 
-### `gristle_watch(action, repo_id?)`
+### `gristle_config(mode?)`
+
+Config and environment variable queries.
+
+- **`mode="env_vars"`** — all env vars with definitions and usage
+- **`mode="config_files"`** — config files with types (package.json, Dockerfile, CI, etc.)
+- **`mode="setup_requirements"`** — full setup checklist: env vars, config files, dependencies
+
+---
+
+### `gristle_dead_exports()`
+
+Find exported functions/classes that are never imported by other files. Identifies unused public API surface — useful for finding dead code in barrel files and libraries. Excludes entry points.
+
+---
+
+### `gristle_cycles(max_length?)`
+
+Detect circular import dependencies. Returns cycle paths as file path lists, grouped by cycle length. Cycles are deduplicated.
+
+---
+
+### `gristle_public_api(include_internal?)`
+
+List all public API entities (exported functions and classes). Returns total count, entities list, counts by type/file, and documentation percentage. Excludes test files and internal paths by default.
+
+---
+
+### `gristle_stats()`
+
+Repository statistics — file counts, node counts, language breakdown. Quick way to verify ingestion worked.
+
+---
+
+### `gristle_overview()`
+
+High-level codebase summary with key entry points, most-called functions, and relationship counts.
+
+---
+
+### `gristle_watch(action)`
 
 Start incremental re-indexing so the graph stays up to date as files change:
 ```
@@ -337,7 +441,7 @@ gristle_watch(action="stop")     # Stop watching
 
 ---
 
-### `gristle_ingest_github(repo_url, github_token?, repo_id?)`
+### `gristle_ingest_github(repo_url, github_token?)`
 
 Clone and index a GitHub repository in one step.
 
@@ -388,6 +492,36 @@ gristle_semantic_search(query="validates email addresses")
 ```
 
 This is useful when you don't know the name but know what the code does.
+
+---
+
+## MCP Resources
+
+| Resource URI | Description |
+|-------------|-------------|
+| `gristle://repos` | List all ingested repositories |
+| `gristle://repos/{repo_id}/overview` | Statistics and overview for a specific repo |
+
+---
+
+## Entity Name Resolution
+
+Gristle tools accept entity names in several formats. Here is how resolution works, from most to least specific:
+
+| You pass | Gristle matches | Notes |
+|----------|----------------|-------|
+| `src/marshmallow/schema.py::Schema.validate` | Exact qualified name | Always unambiguous |
+| `Schema.validate` | Name search | Usually unique, may match multiple classes |
+| `validate` | Short name search | May match many functions named "validate" |
+| `src/marshmallow/schema.py` | File path | Returns file overview in `gristle_explore` |
+
+**Best practice:** Start with short names for discovery. Once you find the right entity, use the qualified name from the response for follow-up queries.
+
+**Qualified name format:**
+- Functions: `file_path::function_name`
+- Methods: `file_path::ClassName.method_name`
+- Classes: `file_path::ClassName`
+- Files: just the relative path (forward slashes)
 
 ---
 
@@ -457,24 +591,137 @@ Supabase edge functions at `supabase/functions/<name>/index.ts` are automaticall
 
 ---
 
-## Entity Name Resolution
+## Configuration Reference
 
-Gristle tools accept entity names in several formats. Here is how resolution works, from most to least specific:
+All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py` with Pydantic field validators:
 
-| You pass | Gristle matches | Notes |
-|----------|----------------|-------|
-| `src/marshmallow/schema.py::Schema.validate` | Exact qualified name | Always unambiguous |
-| `Schema.validate` | Name search | Usually unique, may match multiple classes |
-| `validate` | Short name search | May match many functions named "validate" |
-| `src/marshmallow/schema.py` | File path | Returns file overview in `gristle_explore` |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB host |
+| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port (validated: 1-65535) |
+| `GRISTLE_FALKORDB_PASSWORD` | *(none)* | FalkorDB password (optional) |
+| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this (validated: >= 1) |
+| `GRISTLE_REPO_STORAGE_PATH` | `./repos` | Where cloned repos are stored |
+| `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | File watcher debounce delay |
+| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched UNWIND query (validated: >= 1) |
+| `GRISTLE_TRANSPORT` | `stdio` | MCP transport: `stdio` or `streamable-http` (validated) |
+| `GRISTLE_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
+| `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) (validated: 1-65535) |
+| `GRISTLE_API_KEY` | *(none)* | Bearer token for auth; unset = no auth |
+| `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `GRISTLE_LOG_FORMAT` | *(auto)* | `json` for structured, `text` for human-readable; auto-detected from transport if unset |
 
-**Best practice:** Start with short names for discovery. Once you find the right entity, use the qualified name from the response for follow-up queries.
+Excluded directories (always skipped): `node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.venv`, `venv`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `egg-info`, `.eggs`.
 
-**Qualified name format:**
-- Functions: `file_path::function_name`
-- Methods: `file_path::ClassName.method_name`
-- Classes: `file_path::ClassName`
-- Files: just the relative path (forward slashes)
+---
+
+## Deployment
+
+### Prerequisites
+
+```bash
+# Start FalkorDB (Redis-compatible graph database)
+docker run -d -p 6390:6379 falkordb/falkordb
+```
+
+### Installation
+
+```bash
+cd gristle
+pip install -e ".[dev]"
+# Optional: pip install -e ".[search]" for semantic search
+```
+
+### Local (stdio)
+
+Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "gristle": {
+      "command": "gristle"
+    }
+  }
+}
+```
+
+Then the agent can call:
+1. `gristle_ingest(repo_path="/path/to/repo")` to index
+2. `gristle_conventions()` to understand project structure
+3. `gristle_explore("function_name")` to inspect entities
+4. `gristle_impact("function_name")` before making changes
+
+### Remote (Streamable HTTP)
+
+For remote access, run with Streamable HTTP transport:
+
+```bash
+GRISTLE_TRANSPORT=streamable-http GRISTLE_HTTP_PORT=8080 gristle
+```
+
+MCP clients connect via URL:
+
+```json
+{
+  "mcpServers": {
+    "gristle": {
+      "type": "streamable-http",
+      "url": "https://your-host/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Set `GRISTLE_API_KEY` to enable bearer token auth. When unset, no authentication is required (suitable for private networks).
+
+### Docker
+
+Multi-stage Dockerfile included. Build and run:
+
+```bash
+docker build -t gristle .
+docker run -p 8080:8080 \
+  -e GRISTLE_FALKORDB_HOST=host.docker.internal \
+  gristle
+```
+
+Health check endpoint at `GET /health` (no auth required).
+
+### Railway
+
+Gristle includes `railway.toml` for one-click Railway deployment. Deploy as a service in the same project as your FalkorDB instance:
+
+| Env Variable | Value |
+|-------------|-------|
+| `GRISTLE_FALKORDB_HOST` | `falkordb.railway.internal` |
+| `GRISTLE_FALKORDB_PORT` | `6390` |
+| `GRISTLE_API_KEY` | *(your token)* |
+
+Railway injects `PORT` automatically. The Dockerfile sets `GRISTLE_TRANSPORT=streamable-http` by default.
+
+---
+
+## Health & Diagnostics
+
+Gristle outputs structured JSON logs in production (HTTP transport) and coloured human-readable logs in development (stdio). All ingestion operations include timing data:
+
+```json
+{"ts": "2026-01-31T14:22:03", "level": "INFO", "logger": "gristle.ingestion.pipeline",
+ "msg": "Ingestion complete: 847 files, 12 docs, 12340 nodes, 8921 relationships in 4.2s",
+ "event": "ingestion_done", "duration_ms": 4231.7, "repo_id": "a1b2c3d4e5f6",
+ "files": 847, "nodes": 12340, "rels": 8921}
+```
+
+The `/health` endpoint returns server status without auth:
+
+```bash
+curl https://gristle-production.up.railway.app/health
+# {"status": "ok", "server": "gristle", "version": "0.1.0", "repos_loaded": 2, ...}
+```
 
 ---
 
@@ -484,7 +731,7 @@ Gristle tools accept entity names in several formats. Here is how resolution wor
 - All functions and methods (signature, parameters, docstring, return type, complexity, decorators)
 - All classes (bases, methods, inheritance chain)
 - All imports (module path, named imports, aliases, relative imports, dynamic `import()` and `require()` calls)
-- Barrel file re-exports — `export { X } from './module'` and `export * from './module'` in TS/JS `index.ts` files (and Python `__init__.py`) are followed to the original definition, including multi-level barrel chains (barrel → barrel → definition)
+- Barrel file re-exports — `export { X } from './module'` and `export * from './module'` in TS/JS `index.ts` files (and Python `__init__.py`) are followed to the original definition, including multi-level barrel chains (barrel -> barrel -> definition)
 - Call relationships (which function calls which, resolved across files, through inheritance, and through barrel file re-exports)
 - HTTP routes (method, path, handler) — including Express, Hono, Fastify, Next.js, FastAPI, Flask, Django, and Supabase/Deno edge functions
 - Test coverage (which test files cover which production files, which tests call which functions)
@@ -494,13 +741,12 @@ Gristle tools accept entity names in several formats. Here is how resolution wor
 - TODO/FIXME/HACK comments
 - React components and their usage (JS/TS)
 - React hook usage (USES_HOOK edges for custom hooks like `useAuth`, `useMetrics`)
+- Config files and environment variables
 
 ### It does NOT track:
 - Runtime behavior or dynamic dispatch
 - Variable types or type inference (only annotated return types)
-- Configuration files (YAML, TOML, JSON) beyond pyproject.toml for source root detection
 - Database schemas or SQL queries
-- Environment variables
 - Conditional imports (`if TYPE_CHECKING:` imports are tracked but not distinguished)
 - Monkey-patching or dynamic attribute assignment
 
@@ -512,7 +758,21 @@ Gristle tools accept entity names in several formats. Here is how resolution wor
 
 ---
 
-## Tips
+## Validated Against
+
+Gristle has been tested against these real-world repositories:
+
+| Repository | Language | Files | Nodes | Relationships | Test Cases | Fixtures |
+|-----------|----------|-------|-------|--------------|------------|----------|
+| marshmallow | Python | 38 | 2,151 | 5,758 | 656 | 19 |
+| httpx | Python | 60 | -- | -- | 541 | 7 |
+| Flask | Python | 83 | -- | -- | 399 | 24 |
+| Django REST Framework | Python | 158 | -- | -- | 1,038 | 0 |
+| pig-knuckle | TypeScript | 365 | 28,791 | 49,814 | 0 | 0 |
+
+---
+
+## Tips for Effective Use
 
 1. **Call `gristle_conventions` first** on any new repo. It gives you the lay of the land in one call.
 

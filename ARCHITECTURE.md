@@ -1,6 +1,6 @@
 # Gristle Architecture
 
-Graph-based code intelligence for AI agents. Gristle parses source repositories into a FalkorDB graph database, preserving structural relationships (calls, imports, inheritance, data flow) so AI agents can query code structure through graph traversal rather than vector search over chunked text.
+Internal design reference for contributors. For tool usage, graph schema, configuration, and deployment, see the [Integration Guide](docs/integration-guide.md).
 
 ## Quick Reference
 
@@ -112,33 +112,11 @@ tests/
 
 ---
 
-## Configuration
-
-All settings use the `GRISTLE_` env prefix. Defined in `src/gristle/config.py` with Pydantic field validators:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `GRISTLE_FALKORDB_HOST` | `localhost` | FalkorDB host |
-| `GRISTLE_FALKORDB_PORT` | `6390` | FalkorDB port (validated: 1–65535) |
-| `GRISTLE_FALKORDB_PASSWORD` | *(none)* | FalkorDB password (optional) |
-| `GRISTLE_MAX_FILE_SIZE_BYTES` | `512000` | Skip files larger than this (validated: >= 1) |
-| `GRISTLE_REPO_STORAGE_PATH` | `./repos` | Where cloned repos are stored |
-| `GRISTLE_WATCHER_DEBOUNCE_SECONDS` | `2.0` | File watcher debounce delay |
-| `GRISTLE_INGESTION_BATCH_SIZE` | `200` | Nodes/edges per batched UNWIND query (validated: >= 1) |
-| `GRISTLE_TRANSPORT` | `stdio` | MCP transport: `stdio` or `streamable-http` (validated) |
-| `GRISTLE_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
-| `GRISTLE_HTTP_PORT` | `8080` | HTTP port (Railway overrides via `PORT`) (validated: 1–65535) |
-| `GRISTLE_API_KEY` | *(none)* | Bearer token for auth; unset = no auth |
-| `GRISTLE_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `GRISTLE_LOG_FORMAT` | *(auto)* | `json` for structured, `text` for human-readable; auto-detected from transport if unset |
-
-Excluded directories (always skipped): `node_modules`, `.git`, `__pycache__`, `dist`, `build`, `.venv`, `venv`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `egg-info`, `.eggs`.
-
----
-
 ## Data Models
 
 All models are defined in `src/gristle/models.py` as `@dataclass(slots=True)`.
+
+For the full graph schema (node types, edge types, indexes), see the [Integration Guide](docs/integration-guide.md#graph-schema).
 
 ### ParsedFunction
 
@@ -263,52 +241,6 @@ Container for all entities parsed from a single source file.
 
 ---
 
-## Graph Schema
-
-### Node Types
-
-| Label | Key Properties | Purpose |
-|-------|---------------|---------|
-| `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
-| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count` | Function or method |
-| `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
-| `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative` | Import statement |
-| `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware` | HTTP endpoint |
-| `TestCase` | `id`, `name`, `block_type`, `file_path`, `start_line`, `parent_describe`, `parametrize_count` | Test block |
-| `Document` | `id`, `path`, `title`, `doc_type`, `line_count`, `reference_count` | Markdown file |
-| `DocumentSection` | `id`, `file_path`, `heading`, `level`, `start_line`, `end_line` | Doc section |
-| `Dependency` | `id`, `name`, `version` | External package |
-| `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
-
-### Edge Types
-
-| Type | From | To | Description |
-|------|------|----|-------------|
-| `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase | Container relationship |
-| `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
-| `EXPORTS` | File | Function, Class | Module exports |
-| `CALLS` | Function | Function | Function call (with `depth` property) |
-| `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument) |
-| `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
-| `INHERITS_FROM` | Class | Class | Class inheritance |
-| `IMPORTS` | File | File | File-level import dependency |
-| `TESTS` | File | File | Test file covers production file |
-| `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper) |
-| `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |
-| `USES_DEPENDENCY` | Function | Dependency | Uses external package |
-| `DEPENDS_ON` | File | Dependency | File-level external dependency |
-| `REFERENCES` | DocumentSection | Function, Class, File | Doc references code |
-| `HAS_SECTION` | Document | DocumentSection | Doc contains section |
-| `HANDLES` | Route | Function | Route handler |
-| `DEFINED_IN` | EnvVar | File | Env var defined in config file |
-| `USES_ENV` | File | EnvVar | Source file references env var |
-
-### Indexes
-
-24 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
-
----
-
 ## Language Parsers
 
 All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are dispatched by file extension through `ParserRegistry`.
@@ -321,7 +253,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Imports:** `import x`, `from x import y`, relative imports, aliases
 - **Classes:** name, bases, methods, docstring, decorators, nested classes inside functions
 - **Functions:** name, signature, parameters, decorators, docstring, return type, calls, complexity
-- **Routes:** FastAPI/Flask/Django route decorators with path extraction (`@app.get("/users")` → `path="/users"`, `@route`, `@api_view`, `@websocket`)
+- **Routes:** FastAPI/Flask/Django route decorators with path extraction (`@app.get("/users")` -> `path="/users"`, `@route`, `@api_view`, `@websocket`)
 - **Tests:** `test_*` functions as `ParsedTestCase`, `Test*` classes as test groups
 - **Parametrize:** `@pytest.mark.parametrize` variant counts
 - **Fixtures:** `@pytest.fixture` detection
@@ -361,12 +293,12 @@ Not a language parser (doesn't extend `LanguageParser`). Dispatches by exact fil
 **Supported files:** `package.json`, `tsconfig.json`, `Dockerfile`, `docker-compose.yml`/`compose.yaml`, `.github/workflows/*.yml`, `.env.example`/`.env.template`/`.env.sample`, `requirements.txt`, `pyproject.toml`
 
 **Extracts per file type:**
-- **package.json:** scripts, engines → `config_scripts`, `config_engines`
-- **tsconfig.json:** target, module, paths → `config_target`, `config_module`, `config_paths`
-- **Dockerfile:** base image, exposed ports, ENV/ARG directives → `config_base_image`, `config_exposed_ports`, `ParsedEnvVar` list
-- **docker-compose.yml:** service names → `config_services`
-- **CI workflows:** triggers, job names → `config_triggers`, `config_jobs`
-- **.env templates:** variable names, defaults, required flags → `ParsedEnvVar` list
+- **package.json:** scripts, engines -> `config_scripts`, `config_engines`
+- **tsconfig.json:** target, module, paths -> `config_target`, `config_module`, `config_paths`
+- **Dockerfile:** base image, exposed ports, ENV/ARG directives -> `config_base_image`, `config_exposed_ports`, `ParsedEnvVar` list
+- **docker-compose.yml:** service names -> `config_services`
+- **CI workflows:** triggers, job names -> `config_triggers`, `config_jobs`
+- **.env templates:** variable names, defaults, required flags -> `ParsedEnvVar` list
 
 ### Env Var Scanner (`parsers/env_vars.py`)
 
@@ -474,7 +406,7 @@ Both Python and TypeScript/JavaScript use "barrel files" that re-export entities
 - **Python:** `__init__.py` with `from .schema import Schema` makes `Schema` available via the package namespace.
 - **TypeScript/JavaScript:** `index.ts` with `export { Button } from './Button'` or `export * from './utils'` makes those names importable from the directory.
 
-During Phase 2, `_build_init_reexport_maps()` scans all barrel files and uses fixed-point iteration (up to 5 passes) to resolve multi-level barrel chains (barrel → barrel → definition). This enables `import { Button } from './components'` to resolve through `components/index.ts` to the actual `Button.tsx` definition, even when barrel files re-export from other barrel files.
+During Phase 2, `_build_init_reexport_maps()` scans all barrel files and uses fixed-point iteration (up to 5 passes) to resolve multi-level barrel chains (barrel -> barrel -> definition). This enables `import { Button } from './components'` to resolve through `components/index.ts` to the actual `Button.tsx` definition, even when barrel files re-export from other barrel files.
 
 Supported re-export patterns (TS/JS):
 - Named: `export { Foo, Bar } from './module'`
@@ -494,7 +426,7 @@ pytest injects fixtures by matching test function parameter names to fixture nam
 
 Function-level test coverage is derived from the call graph:
 
-1. During CALLS edge resolution, an in-memory adjacency map (`caller_id → [callee_id]`) and a set of test function IDs are built.
+1. During CALLS edge resolution, an in-memory adjacency map (`caller_id -> [callee_id]`) and a set of test function IDs are built.
 2. For each test function (`is_test = true`), the pipeline walks its CALLS edges to depth 2.
 3. Any non-test `Function` reached gets a `TESTS_FUNCTION` edge with a `depth` property (1 = direct call, 2 = via helper).
 4. Direct coverage (depth 1) takes priority — if a test calls a function both directly and indirectly, only the depth-1 edge is created.
@@ -518,10 +450,10 @@ The extracted versions are stored in `_dependency_versions` and attached to `Dep
 
 ```
 BatchCollector(graph, batch_size=200)
-  ├── add_node(label, properties)           → buffers into dict[label, list[dict]]
-  ├── add_relationship(rel_type, ...)       → buffers CREATE rels by type
-  ├── add_merge_relationship(rel_type, ...) → buffers MERGE rels by type
-  └── flush() → dict[str, int]             → flushes nodes first, then rels, chunked by batch_size
+  |-- add_node(label, properties)           -> buffers into dict[label, list[dict]]
+  |-- add_relationship(rel_type, ...)       -> buffers CREATE rels by type
+  |-- add_merge_relationship(rel_type, ...) -> buffers MERGE rels by type
+  +-- flush() -> dict[str, int]             -> flushes nodes first, then rels, chunked by batch_size
 ```
 
 Flush order matters: nodes are created before relationships so that `MATCH` clauses in relationship queries find the target nodes. Each phase of the pipeline creates its own `BatchCollector` and flushes once at the end, reducing a 500-file repo from ~15,000 round-trips to ~2,500.
@@ -575,7 +507,7 @@ Errors are logged with context (file path, operation, error message) via the str
 
 ## Query Engine
 
-`query/engine.py` provides 20+ pre-built Cypher query methods:
+`query/engine.py` provides 25+ pre-built Cypher query methods:
 
 | Method | Description |
 |--------|-------------|
@@ -612,87 +544,6 @@ Errors are logged with context (file path, operation, error message) via the str
 
 ---
 
-## MCP Tools
-
-The MCP server (`mcp/server.py`) exposes these tools to AI agents:
-
-### `gristle_ingest(repo_path, repo_id?)`
-Index a local repository. Parses all files, builds the graph using batched writes.
-Returns: files_processed, nodes_created, relationships_created, test_cases_found, duration_ms, etc.
-
-### `gristle_ingest_github(repo_url, github_token?, repo_id?)`
-Clone and index a GitHub repository. Supports private repos via personal access token. Clones to `GRISTLE_REPO_STORAGE_PATH`, then runs full ingestion. Returns clone and ingestion timing.
-
-### `gristle_drop(repo_id)`
-Remove a repo's graph from FalkorDB entirely. Frees memory and storage for repos no longer needed.
-
-### `gristle_watch(action, repo_id?)`
-Control the file watcher for incremental re-indexing. Actions: `start`, `stop`, `status`.
-
-### `gristle_explore(entity, repo_id?)`
-Explore a code entity (function, class, or file). Auto-detects type. Falls back to search.
-
-### `gristle_impact(entity_name, repo_id?)`
-Analyze blast radius of changing a function or class. Returns direct callers, transitive callers, affected files, test coverage, routes.
-
-### `gristle_impact_score(entity_name, include_source?, repo_id?)`
-Enhanced impact analysis with blast radius scoring (0-100) and risk classification. Returns:
-- `blast_radius_score` (0-100): Combined impact metric
-- `risk_level`: low/medium/high/critical classification
-- `direct_impact_score`: Based on direct callers, callbacks, routes, entry points
-- `transitive_impact_score`: Based on transitive callers, affected files, test coverage
-
-Higher scores indicate more risk. Critical (85+) changes require extra care.
-
-### `gristle_trace(from_entity, to_entity, max_hops?, repo_id?)`
-Find call paths between two functions. Useful for understanding data flow and execution paths.
-
-### `gristle_search(query, search_type?, limit?, repo_id?)`
-Search for functions, classes, or files by name or docstring. Types: `name`, `docstring`, `all`.
-
-### `gristle_docs(entity?, mode?, repo_id?)`
-Query documentation. Modes: `find` (docs for entity), `staleness` (stale docs), `overview` (stats).
-
-### `gristle_routes(method?, repo_id?)`
-List all HTTP routes/API endpoints. Optional method filter.
-
-### `gristle_components(limit?, repo_id?)`
-List React/UI components with usage counts.
-
-### `gristle_deps(name?, limit?, repo_id?)`
-Query dependencies. Without name: list all ranked by usage. With name: show all users.
-
-### `gristle_tests(entity?, mode?, repo_id?)`
-Test queries. Modes: `find` (tests for entity), `coverage` (untested exported functions), `coverage_detail` (function-level coverage with depth info), `untested_critical` (exported functions with callers but no tests).
-
-### `gristle_conventions(repo_id?)`
-Infer project patterns: file structure, routes, components, test locations, entry points, most-imported files, visibility distribution, architectural layer violations. **Use this first on unfamiliar codebases.**
-
-### `gristle_config(mode?, repo_id?)`
-Config and environment variable queries. Modes: `env_vars` (all env vars with definitions and usage), `config_files` (config files with types), `setup_requirements` (full setup checklist).
-
-### `gristle_dead_exports(repo_id?)`
-Find exported functions/classes that are never imported by other files. Identifies unused public API surface — useful for finding dead code in barrel files and libraries. Excludes entry points.
-
-### `gristle_cycles(max_length?, repo_id?)`
-Detect circular import dependencies. Returns cycle paths as file path lists, grouped by cycle length. Cycles are deduplicated.
-
-### `gristle_public_api(include_internal?, repo_id?)`
-List all public API entities (exported functions and classes). Returns total count, entities list, counts by type/file, and documentation percentage. Excludes test files and internal paths by default.
-
-### `gristle_embed(repo_id?)`
-Build semantic search index. Requires `pip install gristle[search]` (sentence-transformers).
-
-### `gristle_semantic_search(query, limit?, repo_id?)`
-Natural language search over code. Requires `gristle_embed` to have been run first.
-
-### MCP Resources
-
-- `gristle://repos` — List of all ingested repositories
-- `gristle://repos/{repo_id}/overview` — Statistics for a specific repo
-
----
-
 ## Semantic Search (Optional)
 
 `search/embeddings.py` provides vector-based code search using `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions, ~22MB, CPU-friendly).
@@ -725,118 +576,6 @@ Natural language search over code. Requires `gristle_embed` to have been run fir
 `configure_logging(transport)` is called at startup and auto-detects the format from the transport mode. Override with `GRISTLE_LOG_FORMAT=json` or `GRISTLE_LOG_FORMAT=text`.
 
 A `Timer` context manager is used in the MCP server to measure ingestion duration, emitting `duration_ms` in log entries and tool responses.
-
----
-
-## Running Gristle
-
-### Prerequisites
-
-```bash
-# Start FalkorDB (Redis-compatible graph database)
-docker run -d -p 6390:6379 falkordb/falkordb
-```
-
-### Installation
-
-```bash
-cd gristle
-pip install -e ".[dev]"
-# Optional: pip install -e ".[search]" for semantic search
-```
-
-### As MCP Server (for AI agents)
-
-Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "gristle": {
-      "command": "gristle"
-    }
-  }
-}
-```
-
-Then the agent can call:
-1. `gristle_ingest(repo_path="/path/to/repo")` to index
-2. `gristle_conventions()` to understand project structure
-3. `gristle_explore("function_name")` to inspect entities
-4. `gristle_impact("function_name")` before making changes
-
-### Remote (Streamable HTTP)
-
-For remote access, run with Streamable HTTP transport:
-
-```bash
-GRISTLE_TRANSPORT=streamable-http GRISTLE_HTTP_PORT=8080 gristle
-```
-
-MCP clients connect via URL:
-
-```json
-{
-  "mcpServers": {
-    "gristle": {
-      "type": "streamable-http",
-      "url": "https://your-host/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-Set `GRISTLE_API_KEY` to enable bearer token auth. When unset, no authentication is required (suitable for private networks).
-
-### Docker
-
-Multi-stage Dockerfile included. Build and run:
-
-```bash
-docker build -t gristle .
-docker run -p 8080:8080 \
-  -e GRISTLE_FALKORDB_HOST=host.docker.internal \
-  gristle
-```
-
-Health check endpoint at `GET /health` (no auth required).
-
-### Railway
-
-Gristle includes `railway.toml` for one-click Railway deployment. Deploy as a service in the same project as your FalkorDB instance:
-
-| Env Variable | Value |
-|-------------|-------|
-| `GRISTLE_FALKORDB_HOST` | `falkordb.railway.internal` |
-| `GRISTLE_FALKORDB_PORT` | `6390` |
-| `GRISTLE_API_KEY` | *(your token)* |
-
-Railway injects `PORT` automatically. The Dockerfile sets `GRISTLE_TRANSPORT=streamable-http` by default.
-
-### Running Tests
-
-```bash
-pytest tests/
-```
-
-Tests use mock graph clients and do not require a running FalkorDB instance.
-
----
-
-## Validated Against
-
-Gristle has been tested against these real-world repositories:
-
-| Repository | Language | Files | Nodes | Relationships | Test Cases | Fixtures |
-|-----------|----------|-------|-------|--------------|------------|----------|
-| marshmallow | Python | 38 | 2,151 | 5,758 | 656 | 19 |
-| httpx | Python | 60 | — | — | 541 | 7 |
-| Flask | Python | 83 | — | — | 399 | 24 |
-| Django REST Framework | Python | 158 | — | — | 1,038 | 0 |
-| pig-knuckle | TypeScript | 365 | 28,791 | 49,814 | 0 | 0 |
 
 ---
 

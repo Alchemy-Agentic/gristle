@@ -21,6 +21,8 @@
 
 **Key design:** Ziggy makes only 2 MCP calls per audit — `gristle_ingest_github` (to trigger ingestion) and `gristle_drop` (to clean up ephemeral graphs). All subsequent reads go directly to FalkorDB via Cypher queries, avoiding IPC overhead during agent analysis.
 
+For the full MCP tool reference, graph schema, and configuration, see the [Integration Guide](integration-guide.md).
+
 ---
 
 ## Shared FalkorDB Instance

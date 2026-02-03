@@ -32,6 +32,7 @@ This prevents:
 **After reading CONTEXT.md:**
 - Check recent commits for latest changes (already in git context)
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) before touching the ingestion pipeline or parsers
+- Read [docs/integration-guide.md](docs/integration-guide.md) for the MCP tool reference and graph schema
 - Read [docs/ziggy-integration.md](docs/ziggy-integration.md) before any change that affects the graph schema or MCP tools
 
 ---
@@ -216,7 +217,7 @@ For multi-file implementations (5+ files), split work between models.
 2. New nodes/properties are additive (safe) - Ziggy agents can opt in
 3. Renaming or removing properties is **breaking** - Ziggy's Cypher queries will fail
 4. New edge types are additive (safe) - existing queries won't break
-5. Document all schema changes in ARCHITECTURE.md
+5. Document all schema changes in ARCHITECTURE.md and docs/integration-guide.md
 
 ### Pipeline Invariants
 

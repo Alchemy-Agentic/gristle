@@ -7,7 +7,7 @@
 > **For current documentation, see:**
 > - [README.md](README.md) — Quick start, tools list, configuration
 > - [ARCHITECTURE.md](ARCHITECTURE.md) — Graph schema, ingestion pipeline, query engine
-> - [MCP_USAGE_GUIDE.md](MCP_USAGE_GUIDE.md) — Tool reference for AI agents
+> - [Integration Guide](docs/integration-guide.md) — Tool reference, graph schema, configuration, deployment
 
 ---
 
