@@ -118,6 +118,10 @@ class IngestionPipeline:
         self._test_func_ids: set[str] = set()
         # EnvVar tracking: env_var_name -> node_id (for USES_ENV resolution)
         self._env_var_ids: dict[str, str] = {}
+        # Type flow: func_id -> typed_parameters list (for ACCEPTS resolution)
+        self._func_typed_params: dict[str, list[tuple[str, str | None]]] = {}
+        # Type flow: func_id -> return_type string (for RETURNS resolution)
+        self._func_return_types: dict[str, str] = {}
 
     def _register_name(self, name: str, node_id: str) -> None:
         """Register a name in both exact and case-insensitive lookup maps."""
@@ -162,6 +166,8 @@ class IngestionPipeline:
         self._calls_adjacency.clear()
         self._test_func_ids.clear()
         self._env_var_ids.clear()
+        self._func_typed_params.clear()
+        self._func_return_types.clear()
 
         # Walk and collect source files
         files = walk_repo(repo_path, self.registry.supported_extensions)
@@ -626,6 +632,23 @@ class IngestionPipeline:
         if cls.is_exported:
             batch.add_relationship("EXPORTS", file_id, class_id)
 
+        # Create TypeField nodes for interface/type/class fields
+        for tf in cls.fields:
+            tf_id = f"typefield::{cls.qualified_name}.{tf.name}"
+            batch.add_node(
+                "TypeField",
+                {
+                    "id": tf_id,
+                    "name": tf.name,
+                    "type_annotation": tf.type_annotation or "",
+                    "is_optional": tf.is_optional,
+                    "default_value": tf.default_value or "",
+                    "file_path": cls.file_path,
+                    "line": tf.line,
+                },
+            )
+            batch.add_relationship("HAS_FIELD", class_id, tf_id)
+
         # Store class method map for inheritance-aware resolution
         method_map: dict[str, str] = {}
         for method in cls.methods:
@@ -692,9 +715,17 @@ class IngestionPipeline:
                 "is_entry_point": func.is_entry_point,
                 "entry_point_reason": func.entry_point_reason or "",
                 "todo_count": len(func.todos),
+                "security_finding_count": len(func.security_findings),
+                "security_findings": func.security_findings,
                 "tested_by_count": 0,
             },
         )
+
+        # Store typed parameters and return type for Phase 2 type edge resolution
+        if func.typed_parameters:
+            self._func_typed_params[func_id] = func.typed_parameters
+        if func.return_type:
+            self._func_return_types[func_id] = func.return_type
 
         batch.add_relationship("DEFINED_IN", func_id, file_id)
 
@@ -751,6 +782,9 @@ class IngestionPipeline:
 
         # Resolve TESTS_FUNCTION edges (test function -> production function, depth 1-2)
         self._resolve_test_function_edges(result, batch)
+
+        # Resolve RETURNS and ACCEPTS edges (type flow)
+        self._resolve_type_edges(parsed_files, batch)
 
         # Flush all Phase 2 relationships
         counts = batch.flush()
@@ -857,6 +891,121 @@ class IngestionPipeline:
                     "UNWIND $items AS item MATCH (n:Function) WHERE n.id = item.id SET n.tested_by_count = item.count",
                     {"items": chunk},
                 )
+
+    # Primitives that don't need RETURNS/ACCEPTS edges
+    _PRIMITIVE_TYPES = frozenset({
+        "str", "string", "int", "float", "number", "bool", "boolean",
+        "void", "None", "null", "undefined", "any", "unknown", "never",
+        "object", "bytes", "dict", "list", "tuple", "set", "frozenset",
+        "Object", "String", "Number", "Boolean",
+    })
+
+    @staticmethod
+    def _unwrap_generic(type_str: str) -> str:
+        """Unwrap one level of generic wrapper to get the inner type.
+
+        Examples:
+            Promise<User> -> User
+            Array<User> -> User
+            User[] -> User
+            list[User] -> User
+            Optional[User] -> User
+            dict[str, User] -> User (extracts value type)
+        """
+        s = type_str.strip()
+
+        # Handle T[] syntax
+        if s.endswith("[]"):
+            return s[:-2].strip()
+
+        # Handle Generic<T> or Generic[T] syntax
+        for open_ch, close_ch in [("<", ">"), ("[", "]")]:
+            idx = s.find(open_ch)
+            if idx > 0 and s.endswith(close_ch):
+                inner = s[idx + 1 : -1].strip()
+                wrapper = s[:idx].strip()
+                # For dict/Map types, extract the value type (second arg)
+                if wrapper.lower() in ("dict", "map", "record", "mapping"):
+                    parts = inner.split(",", 1)
+                    if len(parts) == 2:
+                        return parts[1].strip()
+                return inner
+
+        return s
+
+    def _resolve_type_to_class(self, type_name: str, pf: ParsedFile) -> str | None:
+        """Resolve a type name string to a Class node ID."""
+        # 1. Exact qualified match
+        if type_name in self._qualified_map:
+            target = self._qualified_map[type_name]
+            if target.startswith("class::"):
+                return target
+
+        # 2. File-scoped qualified match
+        scoped = f"{pf.path}::{type_name}"
+        if scoped in self._qualified_map:
+            target = self._qualified_map[scoped]
+            if target.startswith("class::"):
+                return target
+
+        # 3. Import-aware resolution
+        imported = self._get_imported_entities(pf)
+        if type_name in imported:
+            target = imported[type_name]
+            if target.startswith("class::"):
+                return target
+
+        # 4. Same-file entities
+        file_ents = self._file_entities.get(pf.path, {})
+        if type_name in file_ents:
+            target = file_ents[type_name]
+            if target.startswith("class::"):
+                return target
+
+        # 5. Single candidate globally
+        candidates = self._short_to_candidates.get(type_name, [])
+        class_candidates = [c for c in candidates if c.startswith("class::")]
+        if len(class_candidates) == 1:
+            return class_candidates[0]
+
+        return None
+
+    def _resolve_type_edges(self, parsed_files: list[ParsedFile], batch: BatchCollector) -> None:
+        """Create RETURNS and ACCEPTS edges from function type annotations to Class nodes."""
+        pf_by_path = self._parsed_files_by_path
+
+        for func_id, return_type in self._func_return_types.items():
+            # Extract file path from func_id to find ParsedFile context
+            # func_id format: "func::file/path.ts::FuncName" or "func::file/path.ts::Class.method"
+            qn = func_id[len("func::"):]
+            file_path = qn.rsplit("::", 1)[0] if "::" in qn else ""
+            pf = pf_by_path.get(file_path)
+            if not pf:
+                continue
+
+            type_name = self._unwrap_generic(return_type)
+            if type_name in self._PRIMITIVE_TYPES:
+                continue
+            class_id = self._resolve_type_to_class(type_name, pf)
+            if class_id:
+                batch.add_merge_relationship("RETURNS", func_id, class_id)
+
+        for func_id, typed_params in self._func_typed_params.items():
+            qn = func_id[len("func::"):]
+            file_path = qn.rsplit("::", 1)[0] if "::" in qn else ""
+            pf = pf_by_path.get(file_path)
+            if not pf:
+                continue
+
+            for param_name, type_str in typed_params:
+                if not type_str:
+                    continue
+                type_name = self._unwrap_generic(type_str)
+                if type_name in self._PRIMITIVE_TYPES:
+                    continue
+                class_id = self._resolve_type_to_class(type_name, pf)
+                if class_id:
+                    batch.add_merge_relationship("ACCEPTS", func_id, class_id, {"param_name": param_name})
 
     def _resolve_function_calls(self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector) -> None:
         caller_id = f"func::{func.qualified_name}"

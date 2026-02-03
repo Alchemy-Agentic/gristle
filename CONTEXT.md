@@ -18,19 +18,19 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - **Markdown** (`.md`, `.mdx`) — headings, sections, code references, doc type classification
 
 ### Graph Schema
-**10 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar
+**11 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField
 
-**17 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES
+**20 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS
 
-**22 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
+**26 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
 
 ### Ingestion Pipeline (3 phases)
 1. **Parse & Build Nodes** — walk repo, parse files, create nodes + in-memory maps
-2. **Resolve Cross-File Edges** — CALLS (6-step resolution), INHERITS_FROM (MRO walking), IMPORTS, TESTS, USES_FIXTURE, USES_DEPENDENCY
+2. **Resolve Cross-File Edges** — CALLS (6-step resolution), INHERITS_FROM (MRO walking), IMPORTS, TESTS, USES_FIXTURE, USES_DEPENDENCY, RETURNS, ACCEPTS (type flow)
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
-- 23 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components, deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api
+- 27 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components, deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes
 - 2 resources: `gristle://repos`, `gristle://repos/{repo_id}/overview`
 - Transports: stdio (local) + streamable-http (remote/Railway)
 - Optional bearer token auth (`GRISTLE_API_KEY`)

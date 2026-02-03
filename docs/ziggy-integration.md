@@ -194,6 +194,8 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `tested_by_count` | Pathfinder, Sentinel (enrichment) | **Phase A** — number of test functions exercising this function (via `TESTS_FUNCTION` edges) |
 | `visibility` | Cartographer | Public API surface filtering (`IS NULL OR 'public'`) |
 | `docstring` | Cartographer | Function documentation for abstraction descriptions and public API doc coverage |
+| `security_findings` | Sentinel | List of security finding tags (e.g. `"unsafe_call:eval"`, `"llm_output_risk:exec"`) |
+| `security_finding_count` | Sentinel | Number of security findings for prioritization |
 
 ### Dependency Node
 | Property | Used By | How |
@@ -224,6 +226,14 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `path` | Cartographer, Sentinel | Route listing, security analysis |
 | `handler_name` | Cartographer | Handler → function linking |
 
+### TypeField Node
+| Property | Used By | How |
+|----------|---------|-----|
+| `name` | Architect | Field name in interface/type/class |
+| `type_annotation` | Architect | Type string (e.g., "string", "User") |
+| `is_optional` | Architect | Whether field is optional |
+| `default_value` | Architect | Default value if any |
+
 ### Edge Types
 | Edge | Used By | How |
 |------|---------|-----|
@@ -239,6 +249,9 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `DEFINED_IN` | Architect, Pathfinder | Entity → file reverse lookup |
 | `USES_DEPENDENCY` | Cartographer | Function → dependency tracking |
 | `DEPENDS_ON` | Cartographer | File → dependency tracking |
+| `HAS_FIELD` | Architect | Class/Interface → TypeField (type structure) |
+| `RETURNS` | Architect | Function → Class (return type resolution) |
+| `ACCEPTS` | Architect | Function → Class (parameter type, has `param_name` property) |
 
 ---
 

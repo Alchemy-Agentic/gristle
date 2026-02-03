@@ -41,7 +41,9 @@ class ParsedFunction:
     calls: list[str] = field(default_factory=list)
     callback_refs: list[tuple[str, str]] = field(default_factory=list)  # (callee_name, context)
     parameters: list[str] = field(default_factory=list)  # Parameter names
+    typed_parameters: list[tuple[str, str | None]] = field(default_factory=list)  # (name, type) pairs
     todos: list[str] = field(default_factory=list)  # TODO/FIXME/HACK comments
+    security_findings: list[str] = field(default_factory=list)  # e.g. ["unsafe_call:eval", "llm_output_risk:exec"]
 
 
 @dataclass(slots=True)
@@ -60,6 +62,19 @@ class ParsedClass:
     bases: list[str] = field(default_factory=list)
     methods: list[ParsedFunction] = field(default_factory=list)
     kind: str = "class"  # class / interface / type / enum
+    fields: list[ParsedTypeField] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ParsedTypeField:
+    """A field/property of a type (interface field, class property, dataclass field)."""
+
+    name: str
+    type_annotation: str | None = None
+    is_optional: bool = False
+    default_value: str | None = None
+    file_path: str = ""
+    line: int = 0
 
 
 @dataclass(slots=True)
@@ -110,6 +125,16 @@ class ParsedConfigFile:
 
 
 @dataclass(slots=True)
+class SecurityFinding:
+    """A security issue detected during parsing."""
+
+    category: str  # "hardcoded_secret", "sql_injection", "unsafe_call", "llm_output_risk"
+    detail: str  # e.g. "eval", "cursor.execute", "AWS_ACCESS_KEY"
+    line: int  # line number in source file
+    severity: str = "high"  # "high", "medium", "low"
+
+
+@dataclass(slots=True)
 class ParsedFile:
     path: str
     language: str
@@ -123,6 +148,7 @@ class ParsedFile:
     is_test_file: bool = False
     todos: list[str] = field(default_factory=list)  # File-level TODOs
     env_var_refs: list[str] = field(default_factory=list)  # Env var names referenced in source
+    security_findings: list[SecurityFinding] = field(default_factory=list)  # File-level findings
 
 
 # ------------------------------------------------------------------

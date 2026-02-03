@@ -854,6 +854,58 @@ async def gristle_config(
 
 
 @mcp.tool()
+async def gristle_data_contract(
+    entity_name: str,
+    repo_id: str | None = None,
+) -> dict:
+    """Get the input/output data contract for a function.
+
+    Shows what types a function accepts as parameters and returns,
+    including the fields of those types. Useful for understanding
+    API boundaries and data flow between modules.
+
+    Args:
+        entity_name: Function name or qualified name.
+        repo_id: Repository identifier.
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    result = engine.get_data_contract(entity_name)
+    if result is None:
+        return {"error": f"Entity '{entity_name}' not found."}
+
+    return result
+
+
+@mcp.tool()
+async def gristle_type_usage(
+    type_name: str,
+    repo_id: str | None = None,
+) -> dict:
+    """Find all usage of a type across the codebase.
+
+    Shows functions that accept or return this type, and other types
+    that reference it in their fields. Useful for understanding type
+    dependencies and impact of type changes.
+
+    Args:
+        type_name: Type, interface, or class name.
+        repo_id: Repository identifier.
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    result = engine.get_type_usage(type_name)
+    if result is None:
+        return {"error": f"Type '{type_name}' not found."}
+
+    return result
+
+
+@mcp.tool()
 async def gristle_dead_exports(
     repo_id: str | None = None,
 ) -> dict:
@@ -918,6 +970,51 @@ async def gristle_public_api(
         return {"error": "No repository loaded. Run gristle_ingest first."}
 
     return engine.get_public_api(include_internal=include_internal)
+
+
+@mcp.tool()
+async def gristle_security(
+    repo_id: str | None = None,
+) -> dict:
+    """Combined security overview: code findings + unauthenticated routes.
+
+    Detects hardcoded secrets, SQL injection risks, unsafe calls (eval, exec,
+    pickle), LLM insecure output handling (OWASP LLM05), and routes lacking
+    authentication decorators or middleware.
+
+    Returns total issue count, code findings grouped by category, and a list
+    of unauthenticated routes.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.get_security_overview()
+
+
+@mcp.tool()
+async def gristle_unauthenticated_routes(
+    repo_id: str | None = None,
+) -> dict:
+    """Find HTTP routes whose handlers lack authentication decorators or middleware.
+
+    Checks route handlers for common auth patterns (login_required, jwt,
+    protect, verify, etc.) and middleware presence. Routes without any auth
+    indicator are flagged for review.
+
+    Useful for focused auth audits — call gristle_security for the full picture.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.detect_unauthenticated_routes()
 
 
 # ======================================================================

@@ -259,7 +259,7 @@ src/gristle/
   models.py                # Parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo isolation
-    schema.py              # Index creation (22 property + 2 full-text)
+    schema.py              # Index creation (26 property + 2 full-text)
   parsers/
     base.py                # Abstract LanguageParser
     registry.py            # Extension-based dispatch

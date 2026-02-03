@@ -8,7 +8,15 @@ import tree_sitter_javascript as ts_js
 import tree_sitter_typescript as ts_ts
 from tree_sitter import Language, Node, Parser
 
-from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedRoute, ParsedTestCase
+from gristle.models import (
+    ParsedClass,
+    ParsedFile,
+    ParsedFunction,
+    ParsedImport,
+    ParsedRoute,
+    ParsedTestCase,
+    ParsedTypeField,
+)
 from gristle.parsers.base import LanguageParser
 
 # Patterns for TODO/FIXME/HACK comments
@@ -113,6 +121,34 @@ class TypeScriptParser(LanguageParser):
 
         env_var_refs = extract_env_var_refs(content, "typescript")
 
+        # Security pattern detection
+        from gristle.parsers.security import (
+            detect_hardcoded_secrets,
+            detect_llm_output_risks,
+            detect_sql_injection,
+            detect_unsafe_calls,
+        )
+
+        file_security = (
+            detect_hardcoded_secrets(content, "typescript")
+            + detect_sql_injection(content, "typescript")
+            if not is_test_file
+            else []
+        )
+
+        if not is_test_file:
+            all_funcs = list(functions)
+            for cls in classes:
+                all_funcs.extend(cls.methods)
+            for func in all_funcs:
+                func.security_findings = detect_unsafe_calls(func.calls) + detect_llm_output_risks(func.calls)
+            for finding in file_security:
+                tag = f"{finding.category}:{finding.detail}"
+                for func in all_funcs:
+                    if func.start_line <= finding.line <= func.end_line and tag not in func.security_findings:
+                        func.security_findings.append(tag)
+                        break
+
         return ParsedFile(
             path=file_path,
             language="typescript",
@@ -128,6 +164,7 @@ class TypeScriptParser(LanguageParser):
             is_test_file=is_test_file,
             todos=file_todos,
             env_var_refs=env_var_refs,
+            security_findings=file_security,
         )
 
     # ------------------------------------------------------------------
@@ -318,6 +355,8 @@ class TypeScriptParser(LanguageParser):
         bases_str = f" extends {', '.join(bases)}" if bases else ""
         sig = f"class {name}{bases_str}"
 
+        class_fields = self._extract_type_fields(node, src, file_path)
+
         return ParsedClass(
             name=name,
             qualified_name=f"{file_path}::{name}",
@@ -330,6 +369,7 @@ class TypeScriptParser(LanguageParser):
             visibility="public",
             bases=bases,
             methods=methods,
+            fields=class_fields,
         )
 
     def _parse_interface(self, node: Node, src: bytes, file_path: str) -> ParsedClass:
@@ -341,6 +381,7 @@ class TypeScriptParser(LanguageParser):
         }
         kind = kind_map.get(node.type, "class")
         bases = self._extract_heritage(node, src)
+        type_fields = self._extract_type_fields(node, src, file_path)
 
         sig_text = self._get_first_line(node, src)
 
@@ -357,6 +398,7 @@ class TypeScriptParser(LanguageParser):
             bases=bases,
             methods=[],
             kind=kind,
+            fields=type_fields,
         )
 
     def _extract_heritage(self, node: Node, src: bytes) -> list[str]:
@@ -398,6 +440,83 @@ class TypeScriptParser(LanguageParser):
                 methods.append(self._parse_method(child, src, file_path, class_name))
         return methods
 
+    def _extract_type_fields(self, node: Node, src: bytes, file_path: str) -> list[ParsedTypeField]:
+        """Extract fields from interface/type/class body."""
+        fields: list[ParsedTypeField] = []
+        body = node.child_by_field_name("body")
+        if body is None:
+            # type_alias_declaration uses 'value' field for the type body
+            body = node.child_by_field_name("value")
+        if body is None:
+            return fields
+
+        for child in body.named_children:
+            if child.type in ("property_signature", "public_field_definition"):
+                name_node = child.child_by_field_name("name")
+                if not name_node:
+                    continue
+                name = self._text(name_node, src)
+                # Extract type annotation
+                type_node = child.child_by_field_name("type")
+                type_text = self._text(type_node, src).lstrip(": ") if type_node else None
+                # Check for optional marker (?)
+                is_optional = any(c.type == "?" for c in child.children)
+                # Check for default value
+                default_node = child.child_by_field_name("value")
+                default_value = self._text(default_node, src) if default_node else None
+
+                fields.append(ParsedTypeField(
+                    name=name,
+                    type_annotation=type_text,
+                    is_optional=is_optional,
+                    default_value=default_value,
+                    file_path=file_path,
+                    line=child.start_point[0] + 1,
+                ))
+            elif child.type == "enum_assignment":
+                # Enum member: enum Status { Active = 0, Inactive = 1 }
+                name_node = child.child_by_field_name("name")
+                if not name_node:
+                    continue
+                name = self._text(name_node, src)
+                value_node = child.child_by_field_name("value")
+                default_value = self._text(value_node, src) if value_node else None
+                fields.append(ParsedTypeField(
+                    name=name,
+                    type_annotation=None,
+                    default_value=default_value,
+                    file_path=file_path,
+                    line=child.start_point[0] + 1,
+                ))
+        return fields
+
+    def _extract_typed_params(self, params_node: Node | None, src: bytes) -> list[tuple[str, str | None]]:
+        """Extract (name, type) pairs from a function's parameters node."""
+        if params_node is None:
+            return []
+        result: list[tuple[str, str | None]] = []
+        for child in params_node.named_children:
+            if child.type in ("required_parameter", "optional_parameter"):
+                # Get name: could be identifier, or pattern (destructuring)
+                name_node = child.child_by_field_name("pattern") or child.child_by_field_name("name")
+                if not name_node:
+                    continue
+                name = self._text(name_node, src)
+                # Get type annotation
+                type_node = child.child_by_field_name("type")
+                type_text = self._text(type_node, src).lstrip(": ") if type_node else None
+                result.append((name, type_text))
+            elif child.type == "rest_pattern":
+                # ...args: string[]
+                for sub in child.named_children:
+                    if sub.type == "identifier":
+                        name = f"...{self._text(sub, src)}"
+                        type_node = child.child_by_field_name("type")
+                        type_text = self._text(type_node, src).lstrip(": ") if type_node else None
+                        result.append((name, type_text))
+                        break
+        return result
+
     def _parse_method(self, node: Node, src: bytes, file_path: str, class_name: str) -> ParsedFunction:
         name = self._text(node.child_by_field_name("name"), src)
         params_node = node.child_by_field_name("parameters")
@@ -407,6 +526,7 @@ class TypeScriptParser(LanguageParser):
         params_text = self._text(params_node, src) if params_node else "()"
         return_text = self._text(return_node, src).lstrip(": ") if return_node else None
         is_async = self._has_modifier(node, "async")
+        typed_params = self._extract_typed_params(params_node, src)
 
         sig = f"{'async ' if is_async else ''}{name}{params_text}{f': {return_text}' if return_text else ''}"
         qualified = f"{file_path}::{class_name}.{name}"
@@ -429,6 +549,8 @@ class TypeScriptParser(LanguageParser):
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
             callback_refs=callback_refs,
+            parameters=[p[0] for p in typed_params],
+            typed_parameters=typed_params,
         )
 
     # ------------------------------------------------------------------
@@ -475,6 +597,7 @@ class TypeScriptParser(LanguageParser):
         params_text = self._text(params_node, src) if params_node else "()"
         return_text = self._text(return_node, src).lstrip(": ") if return_node else None
         is_async = "async" in self._text(node, src).split("function")[0]
+        typed_params = self._extract_typed_params(params_node, src)
 
         sig = f"{'async ' if is_async else ''}function {name}{params_text}{f': {return_text}' if return_text else ''}"
 
@@ -495,6 +618,8 @@ class TypeScriptParser(LanguageParser):
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
             callback_refs=callback_refs,
+            parameters=[p[0] for p in typed_params],
+            typed_parameters=typed_params,
         )
 
     def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
@@ -516,6 +641,7 @@ class TypeScriptParser(LanguageParser):
                 params_text = self._text(params_node, src) if params_node else "()"
                 return_text = self._text(return_node, src).lstrip(": ") if return_node else None
                 is_async = "async" in self._text(value_node, src).split("=>")[0].split("function")[0]
+                typed_params = self._extract_typed_params(params_node, src)
 
                 sig = (
                     f"const {name} = {'async ' if is_async else ''}{params_text} => ..."
@@ -540,6 +666,8 @@ class TypeScriptParser(LanguageParser):
                     complexity=self._cyclomatic_complexity(body) if body else 1,
                     calls=calls,
                     callback_refs=callback_refs,
+                    parameters=[p[0] for p in typed_params],
+                    typed_parameters=typed_params,
                 )
         return None
 
@@ -1393,11 +1521,42 @@ class JavaScriptParser(LanguageParser):
 
         env_var_refs = extract_env_var_refs(content, "javascript")
 
+        # Security pattern detection
+        from gristle.parsers.security import (
+            detect_hardcoded_secrets,
+            detect_llm_output_risks,
+            detect_sql_injection,
+            detect_unsafe_calls,
+        )
+
+        classes = self._ts_parser._extract_classes(root, src, file_path)
+        functions = self._ts_parser._extract_module_functions(root, src, file_path)
+
+        file_security = (
+            detect_hardcoded_secrets(content, "javascript")
+            + detect_sql_injection(content, "javascript")
+            if not is_test_file
+            else []
+        )
+
+        if not is_test_file:
+            all_funcs = list(functions)
+            for cls in classes:
+                all_funcs.extend(cls.methods)
+            for func in all_funcs:
+                func.security_findings = detect_unsafe_calls(func.calls) + detect_llm_output_risks(func.calls)
+            for finding in file_security:
+                tag = f"{finding.category}:{finding.detail}"
+                for func in all_funcs:
+                    if func.start_line <= finding.line <= func.end_line and tag not in func.security_findings:
+                        func.security_findings.append(tag)
+                        break
+
         ts_result = ParsedFile(
             path=file_path,
             language="javascript",
-            classes=self._ts_parser._extract_classes(root, src, file_path),
-            functions=self._ts_parser._extract_module_functions(root, src, file_path),
+            classes=classes,
+            functions=functions,
             imports=self._ts_parser._extract_imports(root, src)
             + self._ts_parser._extract_reexports(root, src)
             + self._ts_parser._extract_dynamic_imports(root, src),
@@ -1408,6 +1567,7 @@ class JavaScriptParser(LanguageParser):
             is_test_file=is_test_file,
             todos=self._ts_parser._extract_todos(root, src),
             env_var_refs=env_var_refs,
+            security_findings=file_security,
         )
 
         # Detect serve() / Deno.serve() entry points

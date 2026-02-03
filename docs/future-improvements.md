@@ -284,7 +284,7 @@ def score_change_impact(self, entity_id: str) -> dict:
 
 ---
 
-### 5. Type Flow Analysis 📋 **TODO**
+### 5. Type Flow Analysis ✅ **COMPLETED**
 **Effort:** ~5-7 days
 **Impact:** Very High (Architect)
 
@@ -341,7 +341,7 @@ def get_data_contract(self, func_qualified_name: str) -> dict:
 
 ## Medium-Term (3-4 weeks, Specialized Value)
 
-### 6. Security Pattern Detection 📋 **TODO**
+### 6. Security Pattern Detection ✅ **COMPLETED**
 **Effort:** ~6-8 days
 **Impact:** High (New Use Case for Pathfinder)
 
@@ -542,8 +542,8 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 | Circular Dependency Detection | 2 days | High | Immediate | ✅ **DONE** |
 | Public API Surface Mapping | 2-3 days | High | Immediate | ✅ **DONE** |
 | Change Impact Scoring | 3-4 days | High | Short-term | ✅ **DONE** |
-| Type Flow Analysis | 5-7 days | Very High | Short-term | 📋 TODO |
-| Security Pattern Detection | 6-8 days | High (new use case) | Medium-term | 📋 TODO |
+| Type Flow Analysis | 5-7 days | Very High | Short-term | ✅ **DONE** |
+| Security Pattern Detection | 6-8 days | High (new use case) | Medium-term | ✅ COMPLETED |
 | Framework Convention Detection | 4-6 days/framework | Medium | Medium-term | 📋 TODO |
 | Dependency Staleness | 3-4 days | Medium | Medium-term | 📋 TODO |
 | Mocking Recommendations | 2-3 days | Low-Medium | Nice-to-have | 📋 TODO |

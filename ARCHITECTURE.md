@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (23 tools + 2 resources) |
+                                          | (27 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -65,7 +65,7 @@ src/gristle/
   models.py                # All parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo graph isolation
-    schema.py              # Index creation (24 property indexes, 2 full-text)
+    schema.py              # Index creation (26 property indexes, 2 full-text)
   parsers/
     base.py                # Abstract LanguageParser base class
     registry.py            # Extension-based parser dispatch
@@ -74,18 +74,19 @@ src/gristle/
     markdown.py            # Markdown document parser (regex-based)
     config.py              # Config file parser (package.json, Dockerfile, CI, .env)
     env_vars.py            # Regex-based env var reference detection
+    security.py            # Security pattern detection (secrets, SQL injection, unsafe calls, LLM risks)
   ingestion/
     walker.py              # .gitignore-aware file discovery (source + config walkers)
     pipeline.py            # Three-phase + config graph builder (~2000 lines, core logic)
     batch.py               # BatchCollector for UNWIND-based bulk writes
     watcher.py             # Async file watcher for incremental updates
   query/
-    engine.py              # 25+ Cypher query templates for code analysis
+    engine.py              # 30+ Cypher query templates for code analysis
   search/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 23 tools + 2 resources
+    server.py              # MCP server, 27 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -108,6 +109,8 @@ tests/
   test_embeddings.py       # CodeEmbedder and SemanticIndex (mocked model)
   test_callback_detection.py # Callback/handler detection (PASSED_TO edges) for TS/JS and Python
   test_code_quality.py     # Dead export detection, import cycle detection, public API mapping
+  test_type_flow.py        # Type field extraction, typed params, generic unwrapping, data contracts
+  test_security.py         # Security detection: secrets, SQL injection, unsafe calls, LLM risks, MCP tools
 ```
 
 ---
@@ -507,7 +510,7 @@ Errors are logged with context (file path, operation, error message) via the str
 
 ## Query Engine
 
-`query/engine.py` provides 25+ pre-built Cypher query methods:
+`query/engine.py` provides 30+ pre-built Cypher query methods:
 
 | Method | Description |
 |--------|-------------|
@@ -540,6 +543,11 @@ Errors are logged with context (file path, operation, error message) via the str
 | `detect_dead_exports()` | Exported entities never imported (dead public API surface) |
 | `detect_import_cycles(max_length?)` | Circular import dependencies, grouped by cycle length |
 | `get_public_api(include_internal?)` | All public API entities with documentation stats |
+| `get_data_contract(name)` | Input/output data contract for a function (ACCEPTS/RETURNS edges + fields) |
+| `get_type_usage(name)` | All usage of a type: accepted_by, returned_by, referenced_in_fields |
+| `detect_security_issues()` | Functions with security findings (secrets, SQL injection, unsafe calls, LLM risks) |
+| `detect_unauthenticated_routes()` | Routes lacking auth decorators or middleware |
+| `get_security_overview()` | Combined security overview: code findings + unauthenticated routes |
 | `find_path(from, to, hops)` | Call paths between two entities |
 
 ---

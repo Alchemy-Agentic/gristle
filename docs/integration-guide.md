@@ -244,6 +244,34 @@ Higher scores indicate more risk. Critical (85+) changes require extra care.
 
 ---
 
+### `gristle_data_contract(entity_name, repo_id?)`
+
+Returns the input/output data contract for a function — what types it accepts and returns, with field details.
+
+- `entity`: qualified name of the function
+- `signature`: full function signature
+- `inputs`: list of `{param_name, type, kind, fields}` — each accepted type with its fields
+- `output`: `{type, kind, fields}` — the return type with its fields, or `null`
+
+Useful for: understanding API boundaries, validating data flow between functions, architecture reviews.
+
+---
+
+### `gristle_type_usage(type_name, repo_id?)`
+
+Returns all usage of a type across the codebase — where it's accepted, returned, and referenced as a field.
+
+- `type`: name of the type/interface/class
+- `kind`: interface, class, type, dataclass, etc.
+- `fields`: list of fields on the type
+- `accepted_by`: functions that accept this type as a parameter
+- `returned_by`: functions that return this type
+- `referenced_in_fields`: other types that reference this type in their fields
+
+Useful for: understanding type dependencies, finding all consumers/producers of a data type.
+
+---
+
 ### `gristle_search(query, search_type?, limit?)`
 
 **When to use:** You don't know the exact name. You're looking for something related to a concept.
@@ -415,6 +443,20 @@ Detect circular import dependencies. Returns cycle paths as file path lists, gro
 ### `gristle_public_api(include_internal?)`
 
 List all public API entities (exported functions and classes). Returns total count, entities list, counts by type/file, and documentation percentage. Excludes test files and internal paths by default.
+
+---
+
+### `gristle_security(repo_id?)`
+
+Combined security overview: code findings + unauthenticated routes. Detects hardcoded secrets, SQL injection risks, unsafe calls (eval, exec, pickle), and LLM insecure output handling (OWASP LLM05). Also identifies routes lacking authentication decorators or middleware.
+
+Returns `total_issues`, `code_findings` (grouped by category), and `unauthenticated_routes`.
+
+---
+
+### `gristle_unauthenticated_routes(repo_id?)`
+
+Find HTTP routes whose handlers lack authentication decorators or middleware. Checks for common auth patterns (`login_required`, `jwt`, `protect`, `verify`, etc.) and middleware presence. Useful for focused auth audits — call `gristle_security` for the full picture.
 
 ---
 

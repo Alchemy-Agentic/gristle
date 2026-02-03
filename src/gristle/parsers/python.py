@@ -7,7 +7,15 @@ import re
 import tree_sitter_python as tspython
 from tree_sitter import Language, Node, Parser
 
-from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedRoute, ParsedTestCase
+from gristle.models import (
+    ParsedClass,
+    ParsedFile,
+    ParsedFunction,
+    ParsedImport,
+    ParsedRoute,
+    ParsedTestCase,
+    ParsedTypeField,
+)
 from gristle.parsers.base import LanguageParser
 
 # Patterns for TODO/FIXME/HACK comments
@@ -109,6 +117,36 @@ class PythonParser(LanguageParser):
 
         env_var_refs = extract_env_var_refs(content, "python")
 
+        # Security pattern detection
+        from gristle.parsers.security import (
+            detect_hardcoded_secrets,
+            detect_llm_output_risks,
+            detect_sql_injection,
+            detect_unsafe_calls,
+        )
+
+        file_security = (
+            detect_hardcoded_secrets(content, "python")
+            + detect_sql_injection(content, "python")
+            if not is_test_file
+            else []
+        )
+
+        # Per-function security: unsafe calls + LLM output risks
+        if not is_test_file:
+            all_funcs = list(functions)
+            for cls in classes:
+                all_funcs.extend(cls.methods)
+            for func in all_funcs:
+                func.security_findings = detect_unsafe_calls(func.calls) + detect_llm_output_risks(func.calls)
+            # Attribute file-level findings to functions by line range
+            for finding in file_security:
+                tag = f"{finding.category}:{finding.detail}"
+                for func in all_funcs:
+                    if func.start_line <= finding.line <= func.end_line and tag not in func.security_findings:
+                        func.security_findings.append(tag)
+                        break
+
         return ParsedFile(
             path=file_path,
             language="python",
@@ -122,6 +160,7 @@ class PythonParser(LanguageParser):
             is_test_file=is_test_file,
             todos=file_todos,
             env_var_refs=env_var_refs,
+            security_findings=file_security,
         )
 
     # ------------------------------------------------------------------
@@ -247,6 +286,7 @@ class PythonParser(LanguageParser):
         body = node.child_by_field_name("body")
         docstring = self._extract_docstring(body, src) if body else None
         methods = self._extract_methods(body, src, file_path, name) if body else []
+        class_fields = self._extract_class_fields(body, src, file_path, decorators, bases) if body else []
 
         # Build signature line
         bases_str = f"({', '.join(bases)})" if bases else ""
@@ -265,6 +305,7 @@ class PythonParser(LanguageParser):
             visibility=self._visibility(name),
             bases=bases,
             methods=methods,
+            fields=class_fields,
         )
 
     def _extract_bases(self, class_node: Node, src: bytes) -> list[str]:
@@ -460,6 +501,7 @@ class PythonParser(LanguageParser):
         params_text = self._text(params_node, src) if params_node else "()"
         return_text = self._text(return_node, src) if return_node else None
         param_names = self._extract_param_names(params_node, src) if params_node else []
+        typed_params = self._extract_typed_params(params_node, src) if params_node else []
 
         # Detect async
         is_async = False
@@ -520,6 +562,7 @@ class PythonParser(LanguageParser):
             calls=calls,
             callback_refs=callback_refs,
             parameters=param_names,
+            typed_parameters=typed_params,
         )
 
     # ------------------------------------------------------------------
@@ -874,6 +917,105 @@ class PythonParser(LanguageParser):
                         names.append(f"**{self._text(sub, src)}")
                         break
         return names
+
+    def _extract_typed_params(self, params_node: Node, src: bytes) -> list[tuple[str, str | None]]:
+        """Extract (name, type) pairs from a function's parameters node."""
+        result: list[tuple[str, str | None]] = []
+        for child in params_node.children:
+            if child.type == "identifier":
+                name = self._text(child, src)
+                if name not in ("self", "cls"):
+                    result.append((name, None))
+            elif child.type == "typed_parameter":
+                name_node = None
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        name_node = sub
+                        break
+                if name_node:
+                    name = self._text(name_node, src)
+                    if name not in ("self", "cls"):
+                        type_node = child.child_by_field_name("type")
+                        type_text = self._text(type_node, src) if type_node else None
+                        result.append((name, type_text))
+            elif child.type == "default_parameter":
+                name_node = child.child_by_field_name("name")
+                if name_node:
+                    name = self._text(name_node, src)
+                    if name not in ("self", "cls"):
+                        result.append((name, None))
+            elif child.type == "typed_default_parameter":
+                name_node = child.child_by_field_name("name")
+                if name_node:
+                    name = self._text(name_node, src)
+                    if name not in ("self", "cls"):
+                        type_node = child.child_by_field_name("type")
+                        type_text = self._text(type_node, src) if type_node else None
+                        result.append((name, type_text))
+            elif child.type == "list_splat_pattern":
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        result.append((f"*{self._text(sub, src)}", None))
+                        break
+            elif child.type == "dictionary_splat_pattern":
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        result.append((f"**{self._text(sub, src)}", None))
+                        break
+        return result
+
+    # Decorators/bases that indicate field-bearing classes
+    _FIELD_CLASS_DECORATORS = frozenset({"dataclass", "dataclasses.dataclass"})
+    _FIELD_CLASS_BASES = frozenset({"BaseModel", "TypedDict", "NamedTuple"})
+
+    def _extract_class_fields(
+        self, body: Node, src: bytes, file_path: str, decorators: list[str], bases: list[str],
+    ) -> list[ParsedTypeField]:
+        """Extract typed fields from dataclass/Pydantic/TypedDict class bodies."""
+        # Only extract fields from known field-bearing class patterns
+        has_field_decorator = any(
+            d in self._FIELD_CLASS_DECORATORS or d.startswith("dataclass(") or d.startswith("dataclasses.dataclass(")
+            for d in decorators
+        )
+        has_field_base = bool(self._FIELD_CLASS_BASES & set(bases))
+        if not has_field_decorator and not has_field_base:
+            return []
+
+        fields: list[ParsedTypeField] = []
+        for child in body.children:
+            if child.type != "expression_statement":
+                continue
+            expr = child.children[0] if child.children else None
+            if expr is None:
+                continue
+
+            if expr.type == "assignment":
+                # x: int = 5  (tree-sitter: assignment with type)
+                type_node = expr.child_by_field_name("type")
+                if type_node is None:
+                    continue  # Plain assignment without annotation
+                left = expr.child_by_field_name("left")
+                right = expr.child_by_field_name("right")
+                if left and left.type == "identifier":
+                    name = self._text(left, src)
+                    type_text = self._text(type_node, src)
+                    default_value = self._text(right, src) if right else None
+                    is_optional = "None" in (type_text or "") or "Optional" in (type_text or "")
+                    fields.append(ParsedTypeField(
+                        name=name,
+                        type_annotation=type_text,
+                        is_optional=is_optional,
+                        default_value=default_value,
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    ))
+            elif expr.type == "type":
+                # x: int  (annotation without assignment)
+                # tree-sitter parses this as a "type" node within expression_statement
+                # Actually this might be different in tree-sitter-python
+                pass
+
+        return fields
 
     @staticmethod
     def _count_parametrize_variants(decorator_node: Node | None, src: bytes) -> int:

@@ -1174,6 +1174,227 @@ class QueryEngine:
         }
 
     # ------------------------------------------------------------------
+    # Type flow analysis
+    # ------------------------------------------------------------------
+
+    def get_data_contract(self, name: str) -> dict[str, Any] | None:
+        """Get the input/output data contract for a function.
+
+        Returns the types a function accepts as parameters and returns,
+        including the fields of those types.
+        """
+        # Get function info
+        func_result = self.graph.execute(
+            """
+            MATCH (f:Function)
+            WHERE f.name = $name OR f.qualified_name = $name
+            RETURN f.qualified_name AS qualified_name,
+                   f.signature AS signature
+            """,
+            {"name": name},
+        )
+        if not func_result.records:
+            return None
+
+        func_rec = func_result.records[0]
+
+        # Get return types (RETURNS edges)
+        returns_result = self.graph.execute(
+            """
+            MATCH (f:Function)-[:RETURNS]->(t:Class)
+            WHERE f.name = $name OR f.qualified_name = $name
+            RETURN t.name AS type_name,
+                   t.qualified_name AS type_qname,
+                   t.kind AS kind
+            """,
+            {"name": name},
+        )
+
+        # Get accepted types (ACCEPTS edges)
+        accepts_result = self.graph.execute(
+            """
+            MATCH (f:Function)-[a:ACCEPTS]->(t:Class)
+            WHERE f.name = $name OR f.qualified_name = $name
+            RETURN a.param_name AS param_name,
+                   t.name AS type_name,
+                   t.qualified_name AS type_qname,
+                   t.kind AS kind
+            """,
+            {"name": name},
+        )
+
+        # Fetch fields for each type referenced
+        type_qnames = set()
+        for r in returns_result.records:
+            type_qnames.add(r["type_qname"])
+        for r in accepts_result.records:
+            type_qnames.add(r["type_qname"])
+
+        type_fields: dict[str, list[dict[str, Any]]] = {}
+        for tqn in type_qnames:
+            fields_result = self.graph.execute(
+                """
+                MATCH (t:Class {qualified_name: $qn})-[:HAS_FIELD]->(tf:TypeField)
+                RETURN tf.name AS name,
+                       tf.type_annotation AS type_annotation,
+                       tf.is_optional AS is_optional
+                ORDER BY tf.name
+                """,
+                {"qn": tqn},
+            )
+            type_fields[tqn] = [
+                {
+                    "name": r["name"],
+                    "type": r["type_annotation"],
+                    "optional": r["is_optional"],
+                }
+                for r in fields_result.records
+            ]
+
+        # Build inputs
+        inputs = []
+        for r in accepts_result.records:
+            inputs.append({
+                "param_name": r["param_name"],
+                "type": r["type_name"],
+                "qualified_name": r["type_qname"],
+                "kind": r["kind"],
+                "fields": type_fields.get(r["type_qname"], []),
+            })
+
+        # Build output
+        output = None
+        if returns_result.records:
+            r = returns_result.records[0]
+            output = {
+                "type": r["type_name"],
+                "qualified_name": r["type_qname"],
+                "kind": r["kind"],
+                "fields": type_fields.get(r["type_qname"], []),
+            }
+
+        return {
+            "entity": func_rec["qualified_name"],
+            "signature": func_rec["signature"],
+            "inputs": inputs,
+            "output": output,
+        }
+
+    def get_type_usage(self, name: str) -> dict[str, Any] | None:
+        """Find all usage of a type across the codebase.
+
+        Shows functions that accept or return this type, and other types
+        that reference it in their fields.
+        """
+        # Get the type itself
+        type_result = self.graph.execute(
+            """
+            MATCH (t:Class)
+            WHERE t.name = $name OR t.qualified_name = $name
+            RETURN t.name AS name,
+                   t.qualified_name AS qualified_name,
+                   t.kind AS kind,
+                   t.file_path AS file_path
+            """,
+            {"name": name},
+        )
+        if not type_result.records:
+            return None
+
+        type_rec = type_result.records[0]
+
+        # Get the type's own fields
+        fields_result = self.graph.execute(
+            """
+            MATCH (t:Class)-[:HAS_FIELD]->(tf:TypeField)
+            WHERE t.name = $name OR t.qualified_name = $name
+            RETURN tf.name AS name,
+                   tf.type_annotation AS type_annotation,
+                   tf.is_optional AS is_optional
+            ORDER BY tf.name
+            """,
+            {"name": name},
+        )
+
+        # Functions that accept this type
+        accepted_by = self.graph.execute(
+            """
+            MATCH (f:Function)-[a:ACCEPTS]->(t:Class)
+            WHERE t.name = $name OR t.qualified_name = $name
+            RETURN f.qualified_name AS function,
+                   f.file_path AS file_path,
+                   a.param_name AS param_name
+            ORDER BY f.file_path, f.qualified_name
+            """,
+            {"name": name},
+        )
+
+        # Functions that return this type
+        returned_by = self.graph.execute(
+            """
+            MATCH (f:Function)-[:RETURNS]->(t:Class)
+            WHERE t.name = $name OR t.qualified_name = $name
+            RETURN f.qualified_name AS function,
+                   f.file_path AS file_path
+            ORDER BY f.file_path, f.qualified_name
+            """,
+            {"name": name},
+        )
+
+        # Types that reference this type in their fields
+        referenced_in = self.graph.execute(
+            """
+            MATCH (parent:Class)-[:HAS_FIELD]->(tf:TypeField)
+            WHERE tf.type_annotation CONTAINS $name
+              AND parent.name <> $name
+              AND parent.qualified_name <> $name
+            RETURN parent.qualified_name AS parent_type,
+                   tf.name AS field_name,
+                   tf.type_annotation AS field_type
+            ORDER BY parent_type
+            """,
+            {"name": name},
+        )
+
+        return {
+            "type": type_rec["name"],
+            "qualified_name": type_rec["qualified_name"],
+            "kind": type_rec["kind"],
+            "file_path": type_rec["file_path"],
+            "fields": [
+                {
+                    "name": r["name"],
+                    "type": r["type_annotation"],
+                    "optional": r["is_optional"],
+                }
+                for r in fields_result.records
+            ],
+            "accepted_by": [
+                {
+                    "function": r["function"],
+                    "file_path": r["file_path"],
+                    "param_name": r["param_name"],
+                }
+                for r in accepted_by.records
+            ],
+            "returned_by": [
+                {
+                    "function": r["function"],
+                    "file_path": r["file_path"],
+                }
+                for r in returned_by.records
+            ],
+            "referenced_in_fields": [
+                {
+                    "parent_type": r["parent_type"],
+                    "field_name": r["field_name"],
+                    "field_type": r["field_type"],
+                }
+                for r in referenced_in.records
+            ],
+        }
+
+    # ------------------------------------------------------------------
     # Code quality analysis
     # ------------------------------------------------------------------
 
@@ -1313,6 +1534,103 @@ class QueryEngine:
             "by_file": by_file,
             "documented_count": documented_count,
             "doc_percentage": doc_percentage,
+        }
+
+    # ------------------------------------------------------------------
+    # Security analysis
+    # ------------------------------------------------------------------
+
+    def detect_security_issues(self) -> dict[str, Any]:
+        """Find functions with security findings (unsafe calls, secrets, SQL injection, LLM risks).
+
+        Returns findings grouped by category with file/line details.
+        """
+        result = self.graph.execute(
+            """
+            MATCH (fn:Function)-[:DEFINED_IN]->(file:File)
+            WHERE fn.security_finding_count > 0
+            RETURN fn.qualified_name AS qualified_name,
+                   fn.name AS name,
+                   file.path AS file,
+                   fn.start_line AS line,
+                   fn.security_findings AS findings,
+                   fn.security_finding_count AS count
+            ORDER BY fn.security_finding_count DESC
+            """
+        )
+
+        all_findings = []
+        by_category: dict[str, int] = {}
+
+        for r in result.records:
+            all_findings.append({
+                "function": r["qualified_name"],
+                "name": r["name"],
+                "file": r["file"],
+                "line": r["line"],
+                "findings": r["findings"],
+                "count": r["count"],
+            })
+            for tag in r["findings"]:
+                cat = tag.split(":")[0] if ":" in tag else tag
+                by_category[cat] = by_category.get(cat, 0) + 1
+
+        return {
+            "total": len(all_findings),
+            "by_category": by_category,
+            "findings": all_findings,
+        }
+
+    def detect_unauthenticated_routes(self) -> dict[str, Any]:
+        """Find routes whose handlers lack auth decorators or middleware.
+
+        Uses heuristics: checks for common auth-related decorator names
+        and middleware presence. Routes without any auth indicator are flagged.
+        """
+        result = self.graph.execute(
+            """
+            MATCH (r:Route)-[:HANDLES]->(fn:Function)
+            MATCH (fn)-[:DEFINED_IN]->(file:File)
+            WHERE NOT ANY(d IN fn.decorators WHERE
+                d CONTAINS 'auth' OR d CONTAINS 'login_required' OR
+                d CONTAINS 'permission' OR d CONTAINS 'protect' OR
+                d CONTAINS 'jwt' OR d CONTAINS 'token' OR
+                d CONTAINS 'requires_auth' OR d CONTAINS 'authenticated' OR
+                d CONTAINS 'verify')
+            AND size(r.middleware) = 0
+            RETURN r.method AS method,
+                   r.path AS path,
+                   fn.name AS handler,
+                   fn.qualified_name AS qualified_name,
+                   fn.decorators AS decorators,
+                   file.path AS file
+            ORDER BY file.path, r.path
+            """
+        )
+
+        routes = [
+            {
+                "method": r["method"],
+                "path": r["path"],
+                "handler": r["handler"],
+                "qualified_name": r["qualified_name"],
+                "decorators": r["decorators"],
+                "file": r["file"],
+            }
+            for r in result.records
+        ]
+
+        return {"total": len(routes), "unauthenticated_routes": routes}
+
+    def get_security_overview(self) -> dict[str, Any]:
+        """Combined security overview: code findings + unauthenticated routes."""
+        code_findings = self.detect_security_issues()
+        unauth_routes = self.detect_unauthenticated_routes()
+
+        return {
+            "total_issues": code_findings["total"] + unauth_routes["total"],
+            "code_findings": code_findings,
+            "unauthenticated_routes": unauth_routes,
         }
 
     # ------------------------------------------------------------------
