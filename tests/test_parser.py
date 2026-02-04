@@ -512,3 +512,38 @@ class TestEntryPointDetection:
         code = "def index():\n    pass\n"
         result = parser.parse_file("myapp/utils.py", code)
         assert result.functions[0].entry_point_reason != "django_view"
+
+
+class TestPythonDunderAll:
+    """Python __all__ declaration should mark functions/classes as exported."""
+
+    def test_function_in_all_is_exported(self):
+        parser = PythonParser()
+        code = '__all__ = ["foo", "bar"]\n\ndef foo():\n    pass\n\ndef bar():\n    pass\n\ndef _internal():\n    pass\n'
+        result = parser.parse_file("module.py", code)
+        by_name = {f.name: f for f in result.functions}
+        assert by_name["foo"].is_exported is True
+        assert by_name["bar"].is_exported is True
+        assert by_name["_internal"].is_exported is False
+
+    def test_class_in_all_is_exported(self):
+        parser = PythonParser()
+        code = '__all__ = ["MyClass"]\n\nclass MyClass:\n    pass\n\nclass _Private:\n    pass\n'
+        result = parser.parse_file("module.py", code)
+        by_name = {c.name: c for c in result.classes}
+        assert by_name["MyClass"].is_exported is True
+        assert by_name["_Private"].is_exported is False
+
+    def test_no_all_means_no_exports(self):
+        parser = PythonParser()
+        code = "def foo():\n    pass\n\nclass Bar:\n    pass\n"
+        result = parser.parse_file("module.py", code)
+        assert result.functions[0].is_exported is False
+        assert result.classes[0].is_exported is False
+
+    def test_tuple_style_all(self):
+        parser = PythonParser()
+        code = '__all__ = ("alpha", "beta")\n\ndef alpha():\n    pass\n\ndef beta():\n    pass\n'
+        result = parser.parse_file("module.py", code)
+        assert result.functions[0].is_exported is True
+        assert result.functions[1].is_exported is True

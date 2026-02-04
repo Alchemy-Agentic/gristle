@@ -1135,3 +1135,60 @@ class TestDynamicImportExtraction:
         dynamic = [i for i in result.imports if i.is_wildcard]
         assert len(dynamic) == 1
         assert dynamic[0].module_path == "./lazy"
+
+
+class TestAuthMiddlewarePaths:
+    """Parser should extract auth middleware path patterns from .use() calls."""
+
+    def test_hono_app_use_with_auth(self):
+        parser = TypeScriptParser()
+        code = """
+const app = new Hono();
+app.use('/api/admin/*', clerkAuth);
+app.get('/api/admin/users', listUsers);
+"""
+        result = parser.parse_file("src/app.ts", code)
+        assert "/api/admin/*" in result.auth_middleware_paths
+
+    def test_express_router_use_with_auth(self):
+        parser = TypeScriptParser()
+        code = """
+const router = express.Router();
+router.use('/protected/*', verifyToken);
+router.get('/protected/data', getData);
+"""
+        result = parser.parse_file("src/routes.ts", code)
+        assert "/protected/*" in result.auth_middleware_paths
+
+    def test_wildcard_auth_middleware(self):
+        parser = TypeScriptParser()
+        code = """
+const admin = new Hono();
+admin.use('*', adminAuth);
+admin.get('/users', listUsers);
+"""
+        result = parser.parse_file("src/admin.ts", code)
+        assert "*" in result.auth_middleware_paths
+
+    def test_use_without_auth_not_included(self):
+        parser = TypeScriptParser()
+        code = """
+const app = new Hono();
+app.use('*', logger);
+app.use('/api/*', cors);
+"""
+        result = parser.parse_file("src/app.ts", code)
+        assert result.auth_middleware_paths == []
+
+    def test_multiple_auth_middleware_paths(self):
+        parser = TypeScriptParser()
+        code = """
+const app = new Hono();
+app.use('/api/admin/*', clerkAuth);
+app.use('/api/billing/*', sessionGuard);
+app.use('*', logger);
+"""
+        result = parser.parse_file("src/app.ts", code)
+        assert "/api/admin/*" in result.auth_middleware_paths
+        assert "/api/billing/*" in result.auth_middleware_paths
+        assert len(result.auth_middleware_paths) == 2

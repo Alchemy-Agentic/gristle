@@ -132,6 +132,8 @@ class IngestionPipeline:
         self._import_resolved: dict[str, bool] = {}
         # Test file import targets: test_file_path -> set of production file_ids (JS/TS only)
         self._test_file_import_targets: dict[str, set[str]] = {}
+        # App-level auth middleware paths: (path_pattern, source_file_path)
+        self._auth_middleware_paths: list[tuple[str, str]] = []
 
     def _register_name(self, name: str, node_id: str) -> None:
         """Register a name in both exact and case-insensitive lookup maps."""
@@ -182,6 +184,7 @@ class IngestionPipeline:
         self._func_decorators.clear()
         self._import_resolved.clear()
         self._test_file_import_targets.clear()
+        self._auth_middleware_paths.clear()
 
         # Walk and collect source files
         files = walk_repo(repo_path, self.registry.supported_extensions)
@@ -551,6 +554,10 @@ class IngestionPipeline:
         for func in parsed.functions:
             self._build_function(file_id, None, func, batch)
 
+        # Collect app-level auth middleware paths (e.g. app.use('/api/admin/*', auth))
+        for path_pattern in parsed.auth_middleware_paths:
+            self._auth_middleware_paths.append((path_pattern, parsed.path))
+
         # Routes
         for route in parsed.routes:
             self._build_route(file_id, route, batch)
@@ -571,8 +578,24 @@ class IngestionPipeline:
         "bearer", "oauth", "apikey", "api_key", "credentials",
     })
 
+    @staticmethod
+    def _path_matches_pattern(route_path: str, pattern: str) -> bool:
+        """Check if a route path matches an auth middleware path pattern.
+
+        Supports:
+        - Exact match: '/api/admin' matches '/api/admin'
+        - Wildcard suffix: '/api/admin/*' matches '/api/admin/users'
+        - Global wildcard: '*' matches everything
+        """
+        if pattern == "*":
+            return True
+        if pattern.endswith("/*"):
+            prefix = pattern[:-2]
+            return route_path == prefix or route_path.startswith(prefix + "/")
+        return route_path == pattern
+
     def _detect_route_auth(self, route: ParsedRoute, handler_id: str | None) -> bool:
-        """Detect whether a route has authentication based on middleware and handler decorators."""
+        """Detect whether a route has authentication based on middleware, decorators, and app-level middleware."""
         # Check route middleware for auth keywords
         for mw in route.middleware:
             mw_lower = mw.lower()
@@ -586,6 +609,16 @@ class IngestionPipeline:
                 dec_lower = dec.lower()
                 if any(kw in dec_lower for kw in self._AUTH_KEYWORDS):
                     return True
+
+        # Check app-level auth middleware paths
+        for pattern, mw_file in self._auth_middleware_paths:
+            if self._path_matches_pattern(route.path, pattern):
+                # Same-file middleware is always relevant
+                # Cross-file middleware with '*' only applies if same directory
+                # (sub-router wildcard belongs to its own routes)
+                if pattern == "*" and mw_file != route.file_path:
+                    continue
+                return True
 
         return False
 

@@ -74,6 +74,16 @@ class PythonParser(LanguageParser):
         classes = self._extract_classes(root, src, file_path)
         routes: list[ParsedRoute] = []
 
+        # Mark exports from __all__
+        dunder_all = self._extract_dunder_all(root, src)
+        if dunder_all:
+            for func in functions:
+                if func.name in dunder_all:
+                    func.is_exported = True
+            for cls in classes:
+                if cls.name in dunder_all:
+                    cls.is_exported = True
+
         # Post-process functions
         for func in functions:
             if is_test_file or _TEST_FUNC_RE.match(func.name):
@@ -732,6 +742,31 @@ class PythonParser(LanguageParser):
     # ------------------------------------------------------------------
     # Docstrings
     # ------------------------------------------------------------------
+
+    def _extract_dunder_all(self, root: Node, src: bytes) -> set[str]:
+        """Extract names from module-level ``__all__ = [...]`` assignment."""
+        names: set[str] = set()
+        for child in root.children:
+            if child.type != "expression_statement":
+                continue
+            expr = child.children[0] if child.children else None
+            if not expr or expr.type != "assignment":
+                continue
+            left = expr.child_by_field_name("left")
+            right = expr.child_by_field_name("right")
+            if not left or not right:
+                continue
+            if self._text(left, src) != "__all__":
+                continue
+            # right should be a list: ["name1", "name2"]
+            if right.type not in ("list", "tuple"):
+                continue
+            for item in right.children:
+                if item.type == "string":
+                    name = self._text(item, src).strip("\"'")
+                    if name:
+                        names.add(name)
+        return names
 
     def _extract_module_docstring(self, root: Node, src: bytes) -> str | None:
         for child in root.children:

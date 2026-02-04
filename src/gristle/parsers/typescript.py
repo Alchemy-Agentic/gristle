@@ -111,8 +111,9 @@ class TypeScriptParser(LanguageParser):
 
         # Extract TODOs from comments
         file_todos = self._extract_todos(root, src)
-        # Extract routes
+        # Extract routes and auth middleware paths
         routes = self._extract_routes(root, src, file_path)
+        auth_mw_paths = self._extract_auth_middleware_paths(root, src)
         # Extract test cases (describe/it/test blocks) from test files
         test_cases = self._extract_test_cases(root, src, file_path) if is_test_file else []
 
@@ -165,6 +166,7 @@ class TypeScriptParser(LanguageParser):
             todos=file_todos,
             env_var_refs=env_var_refs,
             security_findings=file_security,
+            auth_middleware_paths=auth_mw_paths,
         )
 
     # ------------------------------------------------------------------
@@ -1183,6 +1185,78 @@ class TypeScriptParser(LanguageParser):
         routes.extend(self._extract_supabase_routes(root, src, file_path))
 
         return routes
+
+    # Auth keywords for detecting auth middleware in .use() calls
+    _AUTH_MW_KEYWORDS = frozenset({
+        "auth", "login", "permission", "protect", "jwt", "token",
+        "verify", "guard", "session", "bearer", "oauth", "apikey",
+        "api_key", "credentials", "clerk", "passport", "unkey",
+    })
+
+    def _extract_auth_middleware_paths(self, root: Node, src: bytes) -> list[str]:
+        """Extract path patterns guarded by auth middleware via .use() calls.
+
+        Detects patterns like:
+        - ``app.use('/api/admin/*', clerkAuth)``
+        - ``v1.use('*', unkeyVerify, appConfigLoader)``
+        - ``admin.use('*', adminAuth)``
+
+        Returns list of path patterns (e.g. ``['/api/admin/*', '*']``).
+        """
+        router_objects = {"app", "router", "server", "route", "api", "blueprint"}
+        dynamic = getattr(self, "_dynamic_router_names", set())
+        paths: list[str] = []
+
+        for node in self._iter_descendants(root):
+            if node.type != "call_expression":
+                continue
+            func_node = node.child_by_field_name("function")
+            if not func_node or func_node.type != "member_expression":
+                continue
+
+            # Must be .use() method
+            prop = func_node.child_by_field_name("property")
+            if not prop or self._text(prop, src) != "use":
+                continue
+
+            # Object must be a router-like variable
+            obj = func_node.child_by_field_name("object")
+            if not obj:
+                continue
+            obj_text = self._text(obj, src).lower()
+            obj_base = obj_text.split(".")[-1] if "." in obj_text else obj_text
+            if obj_base not in router_objects and obj_base not in dynamic:
+                continue
+
+            args = node.child_by_field_name("arguments")
+            if not args:
+                continue
+
+            # Parse arguments: first string is path, rest are middleware names
+            path_pattern: str | None = None
+            mw_names: list[str] = []
+
+            for child in args.children:
+                if child.type in (",", "(", ")"):
+                    continue
+                if path_pattern is None and child.type in ("string", "template_string"):
+                    path_pattern = self._text(child, src).strip("'\"`")
+                else:
+                    name = self._resolve_call_name(child, src)
+                    if name:
+                        mw_names.append(name)
+
+            if not path_pattern or not mw_names:
+                continue
+
+            # Check if any middleware name contains auth keywords
+            for mw in mw_names:
+                mw_lower = mw.lower()
+                if any(kw in mw_lower for kw in self._AUTH_MW_KEYWORDS):
+                    paths.append(path_pattern)
+                    break
+
+        return paths
 
     def _detect_router_variables(self, root: Node, src: bytes) -> set[str]:
         """Detect variable names assigned from router/app framework constructors.

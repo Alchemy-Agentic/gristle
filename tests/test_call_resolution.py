@@ -1667,3 +1667,367 @@ class TestDependencyVersionExtraction:
         pipeline._extract_dependency_versions(str(tmp_path))
 
         assert pipeline._dependency_versions["lodash"] == "^4.17.21"
+
+
+class TestRouteHasAuth:
+    """Route nodes should have has_auth computed from middleware and handler decorators."""
+
+    def test_route_no_auth(self):
+        """Route with no auth middleware or decorators has has_auth=False."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/users", handler_name="getUsers",
+            file_path="src/routes.ts", line=5,
+        )
+        prod_file = _make_file("src/routes.ts", functions=[handler])
+        prod_file.routes = [route]
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is False
+
+    def test_route_with_auth_middleware(self):
+        """Route with auth middleware has has_auth=True."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/users", handler_name="getUsers",
+            file_path="src/routes.ts", line=5,
+            middleware=["authMiddleware"],
+        )
+        prod_file = _make_file("src/routes.ts", functions=[handler])
+        prod_file.routes = [route]
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
+
+    def test_route_with_auth_decorator_on_handler(self):
+        """Route whose handler has auth decorator has has_auth=True."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
+        handler.decorators = ["login_required"]
+        route = ParsedRoute(
+            method="GET", path="/users", handler_name="getUsers",
+            file_path="src/routes.ts", line=5,
+        )
+        prod_file = _make_file("src/routes.ts", functions=[handler])
+        prod_file.routes = [route]
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
+
+    def test_route_with_jwt_decorator(self):
+        """Route whose handler has jwt_required decorator has has_auth=True."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
+        handler.decorators = ["jwt_required"]
+        route = ParsedRoute(
+            method="GET", path="/users", handler_name="getUsers",
+            file_path="src/routes.ts", line=5,
+        )
+        prod_file = _make_file("src/routes.ts", functions=[handler])
+        prod_file.routes = [route]
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
+
+    def test_route_with_protect_middleware(self):
+        """Route with 'protect' middleware has has_auth=True."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/users", handler_name="getUsers",
+            file_path="src/routes.ts", line=5,
+            middleware=["protectRoute"],
+        )
+        prod_file = _make_file("src/routes.ts", functions=[handler])
+        prod_file.routes = [route]
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
+
+    def test_route_unresolved_handler(self):
+        """Route with unresolved handler name has has_auth=False (no decorator info)."""
+        from gristle.models import ParsedRoute
+
+        route = ParsedRoute(
+            method="GET", path="/health", handler_name="unknownHandler",
+            file_path="src/routes.ts", line=5,
+        )
+        prod_file = _make_file("src/routes.ts")
+        prod_file.routes = [route]
+
+        pipeline = _setup_pipeline([prod_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is False
+
+
+class TestImportResolvedProperty:
+    """Import nodes should have a resolved property set during Phase 2."""
+
+    def _run_import_resolve(self, parsed_files: list[ParsedFile]) -> IngestionPipeline:
+        """Set up pipeline, run Phase 2 import resolution."""
+        pipeline = _setup_pipeline(parsed_files)
+        result = IngestionResult(repo_id="test", repo_path="/tmp")
+        pipeline._resolve_calls(parsed_files, result)
+        return pipeline
+
+    def test_resolved_import_tracked(self):
+        """Internal import that resolves to a file sets resolved=True."""
+        prod_func = _make_func("query", "src/client.ts", is_exported=True)
+        prod_file = _make_file("src/client.ts", functions=[prod_func])
+
+        imp = _make_import("./client", imported_names=["query"])
+        caller = _make_func("handler", "src/api.ts", calls=["query"])
+        api_file = _make_file("src/api.ts", functions=[caller], imports=[imp])
+
+        pipeline = self._run_import_resolve([prod_file, api_file])
+        # The import at line 1 in src/api.ts should be tracked as resolved
+        imp_id = "import::src/api.ts::1"
+        assert imp_id in pipeline._import_resolved
+        assert pipeline._import_resolved[imp_id] is True
+
+    def test_unresolved_external_import_tracked(self):
+        """External import that doesn't resolve sets resolved=False."""
+        imp = _make_import("lodash", imported_names=["debounce"], is_relative=False)
+        caller = _make_func("handler", "src/api.ts", calls=["debounce"])
+        api_file = _make_file("src/api.ts", functions=[caller], imports=[imp])
+
+        pipeline = self._run_import_resolve([api_file])
+        imp_id = "import::src/api.ts::1"
+        assert imp_id in pipeline._import_resolved
+        assert pipeline._import_resolved[imp_id] is False
+
+
+class TestImportBasedTestFunctionEdges:
+    """Import-based TESTS_FUNCTION edges for JS/TS test files without call graph coverage."""
+
+    def _run_full_resolve(self, parsed_files: list[ParsedFile]) -> tuple[IngestionPipeline, IngestionResult]:
+        pipeline = _setup_pipeline(parsed_files)
+        result = IngestionResult(repo_id="test", repo_path="/tmp")
+        pipeline._resolve_calls(parsed_files, result)
+        return pipeline, result
+
+    def test_ts_test_helper_gets_depth_3_edges(self):
+        """TS test helper function without call coverage gets import-based depth-3 edges."""
+        prod_func = _make_func("validate", "src/validate.ts", is_exported=True)
+        prod_file = _make_file("src/validate.ts", functions=[prod_func])
+
+        # Helper function in test file — doesn't call validate directly
+        helper = _make_func("createMock", "tests/validate.test.ts", is_test=True)
+        test_file = _make_file(
+            "tests/validate.test.ts",
+            functions=[helper],
+            imports=[_make_import("../src/validate", imported_names=["validate"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        tf_rels = [(f, t, r) for f, t, r in rels if r == "TESTS_FUNCTION"]
+        assert len(tf_rels) == 1
+        assert tf_rels[0][0] == "func::tests/validate.test.ts::createMock"
+        assert tf_rels[0][1] == "func::src/validate.ts::validate"
+
+        # Verify depth=3
+        merge_calls = pipeline.graph.batch_merge_relationships.call_args_list
+        for call in merge_calls:
+            if call[0][0] == "TESTS_FUNCTION":
+                for item in call[0][1]:
+                    if item["to_id"] == "func::src/validate.ts::validate":
+                        assert item["depth"] == 3
+
+    def test_python_test_file_no_depth_3(self):
+        """Python test files should NOT get import-based depth-3 edges."""
+        prod_func = _make_func("validate", "src/validate.py", is_exported=True)
+        prod_file = _make_file("src/validate.py", language="python", functions=[prod_func])
+
+        # Helper in python test file without direct calls
+        helper = _make_func("make_data", "tests/test_validate.py", is_test=True)
+        test_file = _make_file(
+            "tests/test_validate.py",
+            language="python",
+            functions=[helper],
+            imports=[_make_import("src.validate", imported_names=["validate"], is_relative=False)],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        tf_rels = [(f, t, r) for f, t, r in rels if r == "TESTS_FUNCTION"]
+        assert len(tf_rels) == 0
+
+    def test_ts_test_with_call_coverage_no_depth_3(self):
+        """TS test function with existing call coverage should NOT get depth-3 fallback."""
+        prod_func = _make_func("validate", "src/validate.ts", is_exported=True)
+        prod_file = _make_file("src/validate.ts", functions=[prod_func])
+
+        # Test function that DOES call validate directly
+        test_func = _make_func(
+            "test_validate", "tests/validate.test.ts",
+            calls=["validate"], is_test=True,
+        )
+        test_file = _make_file(
+            "tests/validate.test.ts",
+            functions=[test_func],
+            imports=[_make_import("../src/validate", imported_names=["validate"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([prod_file, test_file])
+
+        # Should have depth=1 only, no depth=3
+        depths = set()
+        merge_calls = pipeline.graph.batch_merge_relationships.call_args_list
+        for call in merge_calls:
+            if call[0][0] == "TESTS_FUNCTION":
+                for item in call[0][1]:
+                    depths.add(item["depth"])
+        assert 1 in depths
+        assert 3 not in depths
+
+    def test_ts_test_imports_test_file_no_depth_3(self):
+        """TS test helper importing another test file should NOT create depth-3 edges."""
+        helper_func = _make_func("createMock", "tests/helpers.ts", is_test=True)
+        helper_file = _make_file(
+            "tests/helpers.ts",
+            functions=[helper_func],
+            is_test_file=True,
+        )
+
+        test_func = _make_func("testSetup", "tests/api.test.ts", is_test=True)
+        test_file = _make_file(
+            "tests/api.test.ts",
+            functions=[test_func],
+            imports=[_make_import("./helpers", imported_names=["createMock"])],
+            is_test_file=True,
+        )
+
+        pipeline, result = self._run_full_resolve([helper_file, test_file])
+
+        # No depth-3 edges since helper_file is also a test file
+        merge_calls = pipeline.graph.batch_merge_relationships.call_args_list
+        for call in merge_calls:
+            if call[0][0] == "TESTS_FUNCTION":
+                for item in call[0][1]:
+                    assert item["depth"] != 3
+
+
+class TestAppLevelAuthMiddleware:
+    """Route has_auth should detect app-level middleware from .use() calls."""
+
+    def test_route_under_auth_middleware_path(self):
+        """Route under a path guarded by app.use('/api/admin/*', auth) gets has_auth=True."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("listUsers", "src/admin.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/api/admin/users", handler_name="listUsers",
+            file_path="src/admin.ts", line=10,
+        )
+        admin_file = _make_file("src/admin.ts", functions=[handler])
+        admin_file.routes = [route]
+        admin_file.auth_middleware_paths = ["/api/admin/*"]
+
+        pipeline = _setup_pipeline([admin_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
+
+    def test_route_outside_auth_middleware_path(self):
+        """Route NOT under the guarded path gets has_auth=False."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("healthCheck", "src/routes.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/health", handler_name="healthCheck",
+            file_path="src/routes.ts", line=5,
+        )
+        routes_file = _make_file("src/routes.ts", functions=[handler])
+        routes_file.routes = [route]
+        routes_file.auth_middleware_paths = ["/api/admin/*"]
+
+        pipeline = _setup_pipeline([routes_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is False
+
+    def test_same_file_wildcard_applies(self):
+        """Same-file '*' wildcard applies to all routes in that file."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("getUser", "src/admin.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/users", handler_name="getUser",
+            file_path="src/admin.ts", line=10,
+        )
+        admin_file = _make_file("src/admin.ts", functions=[handler])
+        admin_file.routes = [route]
+        admin_file.auth_middleware_paths = ["*"]
+
+        pipeline = _setup_pipeline([admin_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
+
+    def test_cross_file_wildcard_does_not_apply(self):
+        """Cross-file '*' wildcard does NOT apply (sub-router scoping)."""
+        from gristle.models import ParsedRoute
+
+        # File A has admin.use('*', auth) — wildcard scoped to sub-router
+        admin_file = _make_file("src/admin.ts")
+        admin_file.auth_middleware_paths = ["*"]
+
+        # File B has a route — should NOT inherit admin's wildcard auth
+        handler = _make_func("getPublic", "src/public.ts", is_exported=True)
+        route = ParsedRoute(
+            method="GET", path="/public", handler_name="getPublic",
+            file_path="src/public.ts", line=5,
+        )
+        public_file = _make_file("src/public.ts", functions=[handler])
+        public_file.routes = [route]
+
+        pipeline = _setup_pipeline([admin_file, public_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is False
+
+    def test_cross_file_explicit_path_applies(self):
+        """Cross-file explicit path pattern DOES apply."""
+        from gristle.models import ParsedRoute
+
+        # File A has app.use('/api/admin/*', auth)
+        app_file = _make_file("src/app.ts")
+        app_file.auth_middleware_paths = ["/api/admin/*"]
+
+        # File B has a route under /api/admin/
+        handler = _make_func("deleteUser", "src/admin-routes.ts", is_exported=True)
+        route = ParsedRoute(
+            method="DELETE", path="/api/admin/users", handler_name="deleteUser",
+            file_path="src/admin-routes.ts", line=5,
+        )
+        routes_file = _make_file("src/admin-routes.ts", functions=[handler])
+        routes_file.routes = [route]
+
+        pipeline = _setup_pipeline([app_file, routes_file])
+        nodes = _extract_batch_nodes(pipeline.graph, "Route")
+        assert len(nodes) == 1
+        assert nodes[0]["has_auth"] is True
