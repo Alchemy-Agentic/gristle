@@ -140,7 +140,7 @@ Represents a function or method.
 | `is_static` | `bool` | @staticmethod |
 | `is_classmethod` | `bool` | @classmethod |
 | `is_property` | `bool` | @property |
-| `is_exported` | `bool` | Exported from module (Python: `__all__`; JS: `export`) |
+| `is_exported` | `bool` | Exported from module (Python: in `__all__`; JS/TS: `export` keyword) |
 | `is_component` | `bool` | Returns JSX (React component) |
 | `is_test` | `bool` | test_ prefix or test framework function |
 | `is_entry_point` | `bool` | Route handler, main(), page default export |
@@ -214,6 +214,7 @@ Container for all entities parsed from a single source file.
 | `is_test_file` | `bool` |
 | `todos` | `list[str]` |
 | `env_var_refs` | `list[str]` |
+| `auth_middleware_paths` | `list[str]` |
 
 ### ParsedEnvVar
 
@@ -266,6 +267,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **TODOs:** `TODO`, `FIXME`, `HACK`, `XXX`, `BUG`, `WARN` comments
 - **Visibility:** `public` (normal), `protected` (`_prefix`), `private` (`__prefix`), dunders are public
 - **Complexity:** Cyclomatic complexity via branch counting (`if`, `elif`, `for`, `while`, `except`, `and`, `or`)
+- **Exports:** `__all__` declaration parsing — functions/classes listed in `__all__` are marked `is_exported=True`
 
 **Call extraction:** Walks the function body AST for `call` nodes. Resolves `self.method` to `ClassName.method` within the parser itself.
 
@@ -289,6 +291,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Supabase/Deno:** `serve()` / `Deno.serve()` entry point detection and route extraction
 - **Entry points:** Next.js pages, Storybook stories, React components, serverless handlers (`handler` export), barrel-only hooks (`use*` in `index.ts`), `main()` exports, route handlers — each sets `entry_point_reason`
 - **Module docstrings:** Leading JSDoc blocks, `@module`/`@fileoverview` tags, or `//` comments extracted as `module_docstring`
+- **Auth middleware paths:** Detects `app.use('/path', authMiddleware)` patterns where middleware names contain auth keywords (auth, jwt, clerk, guard, verify, etc.). Extracted as `ParsedFile.auth_middleware_paths` for route auth detection in the pipeline.
 - **Callback detection:** Identifies function references passed as arguments to known patterns: `.use(fn)` (middleware), `.get/.post(path, fn)` (route_handler), `.on/.addEventListener(event, fn)` (callback), `.then/.catch(fn)` (callback), `.map/.filter/.forEach/.reduce/.sort(fn)` (array_method). Each produces a `(callee_name, context)` tuple on `callback_refs`.
 
 ### Config Parser (`parsers/config.py`)
@@ -357,10 +360,10 @@ This phase creates all relationship edges that require cross-file knowledge:
 3. **Resolve CALLS edges** for every function's `calls` list using a 6-step strategy (see below).
 4. **Resolve PASSED_TO edges** for every function's `callback_refs` list using the same 6-step resolution. Each edge carries a `context` property (middleware, route_handler, callback, array_method, argument).
 5. **Resolve INHERITS_FROM edges** between classes, populating `_class_bases` for MRO walking.
-6. **Resolve IMPORTS edges** (File -> File) based on import statements.
+6. **Resolve IMPORTS edges** (File -> File) based on import statements. Each import is tracked as `resolved=True` (internal) or `resolved=False` (external/unresolved).
 7. **Resolve TESTS edges** (test File -> production File) by matching import paths.
 8. **Resolve USES_FIXTURE edges** (test Function -> fixture Function) by parameter name matching.
-9. **Resolve TESTS_FUNCTION edges** (test Function -> production Function) by walking test functions' CALLS edges to depth 2, then updating `tested_by_count` on production functions.
+9. **Resolve TESTS_FUNCTION edges** (test Function -> production Function) by walking test functions' CALLS edges to depth 2, with import-based depth-3 fallback for JS/TS, then updating `tested_by_count` on production functions.
 10. **Resolve USES_DEPENDENCY edges** for external packages.
 
 ### Config Phase: Config Files & Environment Variables
@@ -435,7 +438,20 @@ Function-level test coverage is derived from the call graph:
 2. For each test function (`is_test = true`), the pipeline walks its CALLS edges to depth 2.
 3. Any non-test `Function` reached gets a `TESTS_FUNCTION` edge with a `depth` property (1 = direct call, 2 = via helper).
 4. Direct coverage (depth 1) takes priority — if a test calls a function both directly and indirectly, only the depth-1 edge is created.
-5. `tested_by_count` is computed for each production function and written to the graph via a batched `UNWIND` update.
+5. **Import-based fallback (depth 3, JS/TS only):** For test functions in non-Python test files that have no depth 1-2 coverage, the pipeline checks what production files the test file imports and creates depth-3 edges to exported functions in those files. This handles TS/JS test helpers that use `import { validate } from '../validate'` without explicit calls visible in the AST.
+6. `tested_by_count` is computed for each production function and written to the graph via a batched `UNWIND` update.
+
+### Route Auth Detection
+
+Route nodes include a `has_auth` boolean property computed from three sources:
+
+1. **Per-route middleware:** Middleware names on the `ParsedRoute` are checked for auth keywords (`auth`, `jwt`, `protect`, `guard`, `verify`, `session`, etc.).
+2. **Handler decorators:** If the route's handler function has decorators containing auth keywords (e.g., `@login_required`, `@jwt_required`).
+3. **App-level auth middleware:** The TS parser extracts `app.use('/path', authMiddleware)` patterns. During route building, route paths are matched against these patterns. Same-file `*` wildcards apply to all routes in that file; cross-file `*` wildcards are ignored (sub-router scoping). Explicit path patterns like `/api/admin/*` apply across files.
+
+### Import Resolution Tracking
+
+Each import is tracked as resolved or unresolved during Phase 2. When an import's module path resolves to an internal file via the path/stem/module lookup maps, it's marked `resolved=True`. External/unresolved imports get `resolved=False`. This property is written to Import nodes via a batched UNWIND update.
 
 ### Dependency Version Extraction
 

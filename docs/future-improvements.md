@@ -563,9 +563,27 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 
 **Results:**
 - Added 3 new query methods: `detect_dead_exports()`, `detect_import_cycles()`, `get_public_api()`
-- Added 2 new MCP tools: `gristle_dead_exports`, `gristle_cycles`, `gristle_public_api`, `gristle_impact_score`
+- Added 4 new MCP tools: `gristle_dead_exports`, `gristle_cycles`, `gristle_public_api`, `gristle_impact_score`
 - Enhanced impact analysis with scoring algorithm
-- 642 tests passing (added 25 new tests)
+- 791 tests passing
+
+---
+
+### ✅ Phase 3: Graph Depth Improvements (Completed)
+
+Improvements to graph accuracy and depth, verified against live FalkorDB with both Gristle (Python) and Ziggy (TypeScript) repos:
+
+- **Route `has_auth` detection** — checks per-route middleware, handler decorators, and app-level auth middleware (`app.use('/path', authMiddleware)`)
+- **Import `resolved` property** — tracks whether each import resolves to an internal file
+- **Import-based test edges (JS/TS)** — depth-3 `TESTS_FUNCTION` fallback for test functions that import production files but lack direct call coverage (Ziggy: 104→368 TESTS_FUNCTION edges)
+- **Python `__all__` export detection** — functions/classes in `__all__` get `is_exported=True`, creating EXPORTS edges
+- **App-level auth middleware** — TS parser detects `app.use('/path', authMiddleware)` patterns, pipeline matches route paths against auth middleware path patterns
+
+**Results:**
+- 791 tests passing
+- Ziggy test coverage: 3.1% → 6.7% (via import-based test linking)
+- Route `has_auth` populated for all routes (was `None`)
+- Import resolved: 67.9% for Ziggy, 39.2% for Gristle
 
 ---
 
@@ -573,22 +591,15 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 
 **Recommended next priorities:**
 
-1. **Type Flow Analysis** (~5-7 days, Very High Impact)
-   - Track TypeScript interfaces/types and Python type hints as nodes
-   - Add RETURNS and ACCEPTS edges for data contract visibility
-   - Enables breaking change detection and DTO suggestions
-   - **HIGHEST VALUE** for Architect agent
+1. **Framework Convention Detection** (~4-6 days/framework, Medium Impact)
+   - Next.js: server/client components, route types, dynamic routes
+   - FastAPI: dependencies, response models, auth patterns
+   - Django: model fields, admin registration
 
-2. **Security Pattern Detection** (~6-8 days, High Impact - New Use Case)
-   - SQL injection risk detection
-   - Hardcoded secrets scanning
-   - Missing auth check detection
-   - Unsafe deserialization patterns
-   - **NEW CAPABILITY** for Pathfinder agent
+2. **Mocking Recommendations** (~2-3 days, Low-Medium Impact)
+   - Detect functions calling external APIs/databases
+   - Suggest what to mock in tests
 
-3. **Dependency Staleness Tracking** (~3-4 days, Medium Impact)
-   - Check dependencies against npm/PyPI for latest versions
-   - Flag outdated packages
-   - Quick win for security posture
-
-**Recommendation:** Start with **Type Flow Analysis** as it unlocks the most value for Ziggy's Architect agent and enables data contract validation.
+3. **Changelog Generation** (~5-7 days, Medium Impact)
+   - Diff graph snapshots between commits
+   - Generate structured changelogs

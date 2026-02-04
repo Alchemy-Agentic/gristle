@@ -13,8 +13,8 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 ## What's Built
 
 ### Parsers (tree-sitter based)
-- **Python** (`.py`, `.pyi`) — imports, classes, functions, FastAPI/Flask/Django routes, pytest fixtures, parametrize, complexity, visibility, TODOs
-- **TypeScript/JavaScript** (`.ts`, `.tsx`, `.js`, `.jsx`) — imports, exports, classes, functions, React components, Express/Hono/Fastify/Next.js routes, Supabase/Deno edge functions, Jest/Vitest tests, barrel file re-exports
+- **Python** (`.py`, `.pyi`) — imports, classes, functions, FastAPI/Flask/Django routes, pytest fixtures, parametrize, complexity, visibility, TODOs, `__all__` export detection
+- **TypeScript/JavaScript** (`.ts`, `.tsx`, `.js`, `.jsx`) — imports, exports, classes, functions, React components, Express/Hono/Fastify/Next.js routes, Supabase/Deno edge functions, Jest/Vitest tests, barrel file re-exports, app-level auth middleware detection
 - **Markdown** (`.md`, `.mdx`) — headings, sections, code references, doc type classification
 
 ### Graph Schema
@@ -26,7 +26,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 
 ### Ingestion Pipeline (3 phases)
 1. **Parse & Build Nodes** — walk repo, parse files, create nodes + in-memory maps
-2. **Resolve Cross-File Edges** — CALLS (6-step resolution), INHERITS_FROM (MRO walking), IMPORTS, TESTS, USES_FIXTURE, USES_DEPENDENCY, RETURNS, ACCEPTS (type flow)
+2. **Resolve Cross-File Edges** — CALLS (6-step resolution), INHERITS_FROM (MRO walking), IMPORTS (with `resolved` tracking), TESTS, TESTS_FUNCTION (depth 1-3, import-based fallback for JS/TS), USES_FIXTURE, USES_DEPENDENCY, RETURNS, ACCEPTS (type flow); route `has_auth` detection (middleware, decorators, app-level auth)
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
@@ -48,7 +48,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - Incremental file watcher
 - Optional semantic search (sentence-transformers)
 - Structured logging (JSON for prod, text for dev)
-- 642 tests (mock graph clients, no FalkorDB needed for CI)
+- 791 tests (mock graph clients, no FalkorDB needed for CI)
 
 ---
 
@@ -128,6 +128,14 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 - Import cycle detection (`gristle_cycles` tool) — detects circular import chains with configurable max length, deduplicated by normalized cycle start
 - Public API surface mapping (`gristle_public_api` tool) — maps all public exported entities excluding test/internal files, includes documentation percentage
 
+**Graph Depth Improvements** ✅:
+- Route `has_auth` detection — checks per-route middleware, handler decorators, and app-level auth middleware (`app.use('/path', authMiddleware)`) for auth keywords
+- Import `resolved` property — tracks whether each import resolves to an internal file or is external/unresolved
+- Import-based test edges (JS/TS) — depth-3 `TESTS_FUNCTION` fallback for test functions that import production files but lack direct call coverage
+- Python `__all__` export detection — functions/classes listed in `__all__` get `is_exported=True`, creating EXPORTS edges
+- App-level auth middleware detection — TS parser extracts `app.use('/path', authMiddleware)` patterns, pipeline matches route paths against auth middleware path patterns
+- Dependency staleness & vulnerability checking — enriches Dependency nodes with latest versions from npm/PyPI and CVEs from OSV.dev (`gristle_dependency_health` tool)
+
 ---
 
 ## Key Files
@@ -136,7 +144,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 |------|---------|
 | `src/gristle/config.py` | All settings (GRISTLE_ prefix, Pydantic) |
 | `src/gristle/models.py` | 8 dataclasses for parsed entities |
-| `src/gristle/mcp/server.py` | MCP server (21 tools + 2 resources) |
+| `src/gristle/mcp/server.py` | MCP server (28 tools + 2 resources) |
 | `src/gristle/mcp/auth.py` | Bearer token auth |
 | `src/gristle/ingestion/pipeline.py` | Three-phase graph builder (~1700 lines, core logic) |
 | `src/gristle/ingestion/batch.py` | BatchCollector for UNWIND writes |
@@ -156,7 +164,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 
 ```bash
 pip install -e ".[dev]"       # install with dev deps
-pytest                        # run 642 tests
+pytest                        # run 791 tests
 ruff check src/ tests/        # lint
 ruff format src/ tests/       # format
 mypy src/                     # type check

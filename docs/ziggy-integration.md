@@ -224,12 +224,21 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `qualified_name` | Architect | Unique identification |
 | `bases` | Cartographer | Inheritance chain display |
 
+### Import Node
+| Property | Used By | How |
+|----------|---------|-----|
+| `module_path` | Architect | Import source identification |
+| `imported_names` | Architect | Named imports |
+| `is_relative` | Architect | Relative vs absolute import |
+| `resolved` | Architect | Whether the import resolves to an internal file (true) or is external/unresolved (false) |
+
 ### Route Node
 | Property | Used By | How |
 |----------|---------|-----|
 | `method` | Cartographer | API surface mapping |
 | `path` | Cartographer, Sentinel | Route listing, security analysis |
 | `handler_name` | Cartographer | Handler → function linking |
+| `has_auth` | Sentinel | Whether route has auth middleware/decorators/app-level auth. Checks per-route middleware, handler decorators, and app-level `app.use('/path', authMiddleware)` patterns |
 
 ### TypeField Node
 | Property | Used By | How |
@@ -247,7 +256,7 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `IMPORTS` | Architect | Cycle detection (configurable depth), coupling analysis |
 | `EXPORTS` | Architect, Cartographer | Dead export detection, public API surface mapping |
 | `TESTS` | Pathfinder, Sentinel | Test coverage (file-level, fallback) |
-| `TESTS_FUNCTION` | Pathfinder | **Phase A** — function-level test coverage (test Function → prod Function) |
+| `TESTS_FUNCTION` | Pathfinder | **Phase A** — function-level test coverage (test Function → prod Function, depth 1=direct, 2=via helper, 3=import-based JS/TS fallback) |
 | `INHERITS_FROM` | Cartographer | Abstraction hierarchy |
 | `CONTAINS` | All agents | File → entity traversal |
 | `HANDLES` | Cartographer | Route → handler linking |

@@ -37,12 +37,12 @@ This clones the repo and runs full ingestion in one step.
 | `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
 | `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count` | Function or method |
 | `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
-| `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative` | Import statement |
-| `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware` | HTTP endpoint |
+| `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative`, `resolved` | Import statement |
+| `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware`, `has_auth` | HTTP endpoint |
 | `TestCase` | `id`, `name`, `block_type`, `file_path`, `start_line`, `parent_describe`, `parametrize_count` | Test block |
 | `Document` | `id`, `path`, `title`, `doc_type`, `line_count`, `reference_count` | Markdown file |
 | `DocumentSection` | `id`, `file_path`, `heading`, `level`, `start_line`, `end_line` | Doc section |
-| `Dependency` | `id`, `name`, `version` | External package |
+| `Dependency` | `id`, `name`, `version`, `latest_version`, `is_outdated`, `vulnerability_count`, `vulnerabilities`, `checked_at` | External package |
 | `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
 
 ### Edge Types
@@ -58,7 +58,7 @@ This clones the repo and runs full ingestion in one step.
 | `INHERITS_FROM` | Class | Class | Class inheritance |
 | `IMPORTS` | File | File | File-level import dependency |
 | `TESTS` | File | File | Test file covers production file |
-| `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper) |
+| `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper, 3=import-based JS/TS fallback) |
 | `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |
 | `USES_DEPENDENCY` | Function | Dependency | Uses external package |
 | `DEPENDS_ON` | File | Dependency | File-level external dependency |
