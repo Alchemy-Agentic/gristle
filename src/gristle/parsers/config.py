@@ -157,11 +157,13 @@ def _parse_dockerfile(content: str, file_path: str) -> tuple[dict[str, str], lis
     for m in _DOCKER_ENV_RE.finditer(content):
         name = m.group(1)
         default = (m.group(2) or m.group(3) or "").strip().strip('"').strip("'")
-        env_vars.append(ParsedEnvVar(
-            name=name,
-            source_file=file_path,
-            default_value=default if default else None,
-        ))
+        env_vars.append(
+            ParsedEnvVar(
+                name=name,
+                source_file=file_path,
+                default_value=default if default else None,
+            )
+        )
 
     return props, env_vars
 
@@ -228,18 +230,22 @@ def _parse_env_template(content: str, file_path: str) -> list[ParsedEnvVar]:
             value = value.strip().strip('"').strip("'")
             if not key or not re.match(r"^[A-Z_][A-Z0-9_]*$", key):
                 continue
-            env_vars.append(ParsedEnvVar(
-                name=key,
-                source_file=file_path,
-                default_value=value if value else None,
-                required=not bool(value),
-            ))
+            env_vars.append(
+                ParsedEnvVar(
+                    name=key,
+                    source_file=file_path,
+                    default_value=value if value else None,
+                    required=not bool(value),
+                )
+            )
         else:
             # Bare key without value
             if re.match(r"^[A-Z_][A-Z0-9_]*$", line):
-                env_vars.append(ParsedEnvVar(
-                    name=line,
-                    source_file=file_path,
-                    required=True,
-                ))
+                env_vars.append(
+                    ParsedEnvVar(
+                        name=line,
+                        source_file=file_path,
+                        required=True,
+                    )
+                )
     return env_vars

@@ -72,7 +72,7 @@ class TestHardcodedSecrets:
         assert findings[0].detail == "STRIPE_SECRET_KEY"
 
     def test_private_key_header(self):
-        code = '-----BEGIN RSA PRIVATE KEY-----'
+        code = "-----BEGIN RSA PRIVATE KEY-----"
         findings = detect_hardcoded_secrets(code, "python")
         assert len(findings) == 1
         assert findings[0].detail == "PRIVATE_KEY"
@@ -90,7 +90,7 @@ class TestHardcodedSecrets:
         assert len(findings) == 0
 
     def test_ignores_process_env(self):
-        code = 'const key = process.env.API_KEY;'
+        code = "const key = process.env.API_KEY;"
         findings = detect_hardcoded_secrets(code, "typescript")
         assert len(findings) == 0
 
@@ -110,10 +110,7 @@ class TestHardcodedSecrets:
         assert len(findings) == 0
 
     def test_multiple_findings_different_lines(self):
-        code = (
-            'key1 = "AKIAIOSFODNN7ABCDEFG"\n'
-            'key2 = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"\n'
-        )
+        code = 'key1 = "AKIAIOSFODNN7ABCDEFG"\nkey2 = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"\n'
         findings = detect_hardcoded_secrets(code, "python")
         assert len(findings) == 2
         assert findings[0].line == 1
@@ -127,10 +124,7 @@ class TestHardcodedSecrets:
 
 class TestSQLInjection:
     def test_python_fstring_with_execute(self):
-        code = (
-            'def query(user_id):\n'
-            '    cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")\n'
-        )
+        code = 'def query(user_id):\n    cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")\n'
         findings = detect_sql_injection(code, "python")
         assert len(findings) == 1
         assert findings[0].category == "sql_injection"
@@ -138,35 +132,22 @@ class TestSQLInjection:
         assert findings[0].severity == "high"
 
     def test_python_percent_format(self):
-        code = (
-            'def query(name):\n'
-            '    cursor.execute("SELECT * FROM users WHERE name = %s" % name)\n'
-        )
+        code = 'def query(name):\n    cursor.execute("SELECT * FROM users WHERE name = %s" % name)\n'
         findings = detect_sql_injection(code, "python")
         assert len(findings) == 1
 
     def test_python_dot_format(self):
-        code = (
-            'def query(name):\n'
-            '    db.execute("SELECT * FROM users WHERE name = {}".format(name))\n'
-        )
+        code = 'def query(name):\n    db.execute("SELECT * FROM users WHERE name = {}".format(name))\n'
         findings = detect_sql_injection(code, "python")
         assert len(findings) == 1
 
     def test_ts_template_literal(self):
-        code = (
-            'function query(id: string) {\n'
-            '    db.query(`SELECT * FROM users WHERE id = ${id}`);\n'
-            '}\n'
-        )
+        code = "function query(id: string) {\n    db.query(`SELECT * FROM users WHERE id = ${id}`);\n}\n"
         findings = detect_sql_injection(code, "typescript")
         assert len(findings) == 1
 
     def test_string_concat(self):
-        code = (
-            'def query(name):\n'
-            '    cursor.execute("SELECT * FROM users WHERE name = " + name)\n'
-        )
+        code = 'def query(name):\n    cursor.execute("SELECT * FROM users WHERE name = " + name)\n'
         findings = detect_sql_injection(code, "python")
         assert len(findings) == 1
 
@@ -178,7 +159,7 @@ class TestSQLInjection:
 
     def test_ignores_comments(self):
         code = (
-            'def query():\n'
+            "def query():\n"
             '    # cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")\n'
             '    cursor.execute("SELECT 1")\n'
         )
@@ -416,24 +397,26 @@ class TestPipelineSecurity:
 class TestQuerySecurity:
     def test_detect_security_issues(self):
         engine, mock_graph = _make_engine()
-        mock_graph.execute.return_value = _qr([
-            {
-                "qualified_name": "db.query_user",
-                "name": "query_user",
-                "file": "db.py",
-                "line": 42,
-                "findings": ["sql_injection:dynamic_query"],
-                "count": 1,
-            },
-            {
-                "qualified_name": "agent.run_code",
-                "name": "run_code",
-                "file": "agent.py",
-                "line": 15,
-                "findings": ["llm_output_risk:eval", "unsafe_call:eval"],
-                "count": 2,
-            },
-        ])
+        mock_graph.execute.return_value = _qr(
+            [
+                {
+                    "qualified_name": "db.query_user",
+                    "name": "query_user",
+                    "file": "db.py",
+                    "line": 42,
+                    "findings": ["sql_injection:dynamic_query"],
+                    "count": 1,
+                },
+                {
+                    "qualified_name": "agent.run_code",
+                    "name": "run_code",
+                    "file": "agent.py",
+                    "line": 15,
+                    "findings": ["llm_output_risk:eval", "unsafe_call:eval"],
+                    "count": 2,
+                },
+            ]
+        )
 
         result = engine.detect_security_issues()
         assert result["total"] == 2
@@ -452,16 +435,18 @@ class TestQuerySecurity:
 
     def test_detect_unauthenticated_routes(self):
         engine, mock_graph = _make_engine()
-        mock_graph.execute.return_value = _qr([
-            {
-                "method": "GET",
-                "path": "/api/public",
-                "handler": "get_public",
-                "qualified_name": "routes.get_public",
-                "decorators": [],
-                "file": "routes.py",
-            },
-        ])
+        mock_graph.execute.return_value = _qr(
+            [
+                {
+                    "method": "GET",
+                    "path": "/api/public",
+                    "handler": "get_public",
+                    "qualified_name": "routes.get_public",
+                    "decorators": [],
+                    "file": "routes.py",
+                },
+            ]
+        )
 
         result = engine.detect_unauthenticated_routes()
         assert result["total"] == 1
@@ -478,22 +463,30 @@ class TestQuerySecurity:
         engine, mock_graph = _make_engine()
         # First call for code findings, second for unauthenticated routes, third for vulnerable deps
         mock_graph.execute.side_effect = [
-            _qr([{
-                "qualified_name": "mod.run",
-                "name": "run",
-                "file": "mod.py",
-                "line": 5,
-                "findings": ["unsafe_call:eval"],
-                "count": 1,
-            }]),
-            _qr([{
-                "method": "GET",
-                "path": "/health",
-                "handler": "health",
-                "qualified_name": "routes.health",
-                "decorators": [],
-                "file": "routes.py",
-            }]),
+            _qr(
+                [
+                    {
+                        "qualified_name": "mod.run",
+                        "name": "run",
+                        "file": "mod.py",
+                        "line": 5,
+                        "findings": ["unsafe_call:eval"],
+                        "count": 1,
+                    }
+                ]
+            ),
+            _qr(
+                [
+                    {
+                        "method": "GET",
+                        "path": "/health",
+                        "handler": "health",
+                        "qualified_name": "routes.health",
+                        "decorators": [],
+                        "file": "routes.py",
+                    }
+                ]
+            ),
             _empty(),  # get_outdated_dependencies (no vulnerable deps)
         ]
 
@@ -513,6 +506,7 @@ class TestQuerySecurity:
 def _clean_mcp_state():
     """Ensure clean MCP engine state for each test."""
     import gristle.mcp.server as srv
+
     saved = dict(srv._engines)
     srv._engines.clear()
     yield
@@ -564,8 +558,14 @@ class TestMCPUnauthRoutes:
         engine.detect_unauthenticated_routes.return_value = {
             "total": 1,
             "unauthenticated_routes": [
-                {"method": "GET", "path": "/open", "handler": "handle_open",
-                 "qualified_name": "r.handle_open", "decorators": [], "file": "r.py"},
+                {
+                    "method": "GET",
+                    "path": "/open",
+                    "handler": "handle_open",
+                    "qualified_name": "r.handle_open",
+                    "decorators": [],
+                    "file": "r.py",
+                },
             ],
         }
         srv._engines["r1"] = engine

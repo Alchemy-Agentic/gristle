@@ -329,9 +329,7 @@ class TestPipelineDependencyEnrichment:
 
         with tempfile.TemporaryDirectory() as tmp:
             pkg_json = Path(tmp) / "package.json"
-            pkg_json.write_text(
-                json.dumps({"dependencies": {"react": "^18.2.0", "express": "^4.18.0"}})
-            )
+            pkg_json.write_text(json.dumps({"dependencies": {"react": "^18.2.0", "express": "^4.18.0"}}))
             pipeline._extract_dependency_versions(tmp)
 
         assert pipeline._dependency_ecosystems.get("react") == "npm"
@@ -372,26 +370,28 @@ class TestQueryDependencyHealth:
 
     def test_get_outdated_dependencies_all(self):
         engine, mock_graph = self._make_engine()
-        mock_graph.execute.return_value = _qr([
-            {
-                "name": "react",
-                "declared_version": "^17.0.0",
-                "latest_version": "18.2.0",
-                "vulnerability_count": 0,
-                "vulnerabilities": [],
-                "checked_at": "2026-01-01T00:00:00",
-                "file_count": 5,
-            },
-            {
-                "name": "lodash",
-                "declared_version": "^4.17.20",
-                "latest_version": "4.17.21",
-                "vulnerability_count": 2,
-                "vulnerabilities": ["CVE-2021-23337", "CVE-2020-28500"],
-                "checked_at": "2026-01-01T00:00:00",
-                "file_count": 3,
-            },
-        ])
+        mock_graph.execute.return_value = _qr(
+            [
+                {
+                    "name": "react",
+                    "declared_version": "^17.0.0",
+                    "latest_version": "18.2.0",
+                    "vulnerability_count": 0,
+                    "vulnerabilities": [],
+                    "checked_at": "2026-01-01T00:00:00",
+                    "file_count": 5,
+                },
+                {
+                    "name": "lodash",
+                    "declared_version": "^4.17.20",
+                    "latest_version": "4.17.21",
+                    "vulnerability_count": 2,
+                    "vulnerabilities": ["CVE-2021-23337", "CVE-2020-28500"],
+                    "checked_at": "2026-01-01T00:00:00",
+                    "file_count": 3,
+                },
+            ]
+        )
 
         result = engine.get_outdated_dependencies(severity="all")
         assert result["total"] == 2
@@ -400,10 +400,12 @@ class TestQueryDependencyHealth:
 
     def test_get_outdated_dependencies_vulnerable_only(self):
         engine, mock_graph = self._make_engine()
-        mock_graph.execute.return_value = _qr([
-            {"name": "react", "vulnerability_count": 0, "file_count": 5},
-            {"name": "lodash", "vulnerability_count": 2, "file_count": 3},
-        ])
+        mock_graph.execute.return_value = _qr(
+            [
+                {"name": "react", "vulnerability_count": 0, "file_count": 5},
+                {"name": "lodash", "vulnerability_count": 2, "file_count": 3},
+            ]
+        )
 
         result = engine.get_outdated_dependencies(severity="vulnerable")
         assert result["total"] == 1
@@ -415,15 +417,29 @@ class TestQueryDependencyHealth:
             # Files query
             _qr([{"file_path": "src/app.ts"}]),
             # Functions query
-            _qr([{"name": "handler", "qualified_name": "app.handler", "file_path": "src/app.ts", "start_line": 10, "is_test": False}]),
+            _qr(
+                [
+                    {
+                        "name": "handler",
+                        "qualified_name": "app.handler",
+                        "file_path": "src/app.ts",
+                        "start_line": 10,
+                        "is_test": False,
+                    }
+                ]
+            ),
             # Health info query
-            _qr([{
-                "version": "^17.0.0",
-                "latest_version": "18.2.0",
-                "is_outdated": True,
-                "vulnerability_count": 0,
-                "vulnerabilities": [],
-            }]),
+            _qr(
+                [
+                    {
+                        "version": "^17.0.0",
+                        "latest_version": "18.2.0",
+                        "is_outdated": True,
+                        "vulnerability_count": 0,
+                        "vulnerabilities": [],
+                    }
+                ]
+            ),
         ]
 
         result = engine.get_dependency_users("react")

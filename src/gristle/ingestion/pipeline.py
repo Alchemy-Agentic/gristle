@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from gristle.config import settings
 from gristle.graph.schema import ensure_schema
@@ -163,6 +165,15 @@ class IngestionPipeline:
             repo_path=repo_path,
         )
 
+        # Capture snapshot of previous state before clearing
+        previous_snapshot: dict[str, Any] | None = None
+        try:
+            check = self.graph.execute("MATCH (n) RETURN count(n) AS c")
+            if check.records and check.records[0]["c"] > 0:
+                previous_snapshot = self._capture_snapshot()
+        except Exception:
+            pass  # No previous graph — first ingestion
+
         # Clear any existing graph data for this repo
         self.graph.clear()
         ensure_schema(self.graph)
@@ -286,6 +297,15 @@ class IngestionPipeline:
             result.doc_references_total,
             extra={"event": "phase3_done", "duration_ms": phase3.ms, "repo_id": self.graph.repo_id},
         )
+
+        # Write snapshots for changelog generation
+        try:
+            if previous_snapshot:
+                self._write_snapshot(previous_snapshot)
+            current_snapshot = self._capture_snapshot()
+            self._write_snapshot(current_snapshot)
+        except Exception:
+            logger.debug("Failed to write snapshots", exc_info=True)
 
         total_timer.__exit__(None, None, None)
         logger.info(
@@ -2491,4 +2511,60 @@ class IngestionPipeline:
         self.graph.execute(
             "MATCH (n:File) WHERE n.path = $fp DETACH DELETE n",
             {"fp": file_path},
+        )
+
+    # ------------------------------------------------------------------
+    # Snapshot capture (for changelog generation)
+    # ------------------------------------------------------------------
+
+    def _capture_snapshot(self) -> dict[str, Any]:
+        """Capture current graph state as a snapshot dict."""
+        counts: dict[str, int] = {}
+        for label in ("File", "Function", "Class", "Route", "TestCase", "Dependency"):
+            result = self.graph.execute(f"MATCH (n:{label}) RETURN count(n) AS c")
+            key = label.lower() + "_count"
+            if label == "TestCase":
+                key = "test_count"
+            counts[key] = result.records[0]["c"] if result.records else 0
+
+        # Component count (Function nodes with is_component=true)
+        comp_result = self.graph.execute("MATCH (f:Function) WHERE f.is_component = true RETURN count(f) AS c")
+        counts["component_count"] = comp_result.records[0]["c"] if comp_result.records else 0
+
+        # Edge count
+        edge_result = self.graph.execute("MATCH ()-[r]->() RETURN count(r) AS c")
+        counts["edge_count"] = edge_result.records[0]["c"] if edge_result.records else 0
+
+        return {
+            "snapshot_id": str(uuid.uuid4()),
+            "captured_at": datetime.now(UTC).isoformat(),
+            **counts,
+        }
+
+    def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """Write a Snapshot node to the graph and prune old ones."""
+        self.graph.execute(
+            """
+            CREATE (s:Snapshot {
+                snapshot_id: $snapshot_id,
+                captured_at: $captured_at,
+                file_count: $file_count,
+                function_count: $function_count,
+                class_count: $class_count,
+                route_count: $route_count,
+                test_count: $test_count,
+                component_count: $component_count,
+                dependency_count: $dependency_count,
+                edge_count: $edge_count
+            })
+            """,
+            snapshot,
+        )
+        # Prune: keep only the 20 most recent snapshots
+        self.graph.execute(
+            """
+            MATCH (s:Snapshot)
+            WITH s ORDER BY s.captured_at DESC SKIP 20
+            DELETE s
+            """
         )

@@ -2229,3 +2229,109 @@ class TestDocumentationFiltering:
         file_nodes = _extract_batch_nodes(pipeline.graph, "File")
         file_node = next(n for n in file_nodes if n["path"] == "src/utils.ts")
         assert file_node["react_directive"] == ""
+
+
+# ==================================================================
+# Snapshot capture
+# ==================================================================
+
+
+class TestSnapshotCapture:
+    """Test _capture_snapshot and _write_snapshot methods."""
+
+    def test_capture_snapshot_returns_counts(self):
+        """_capture_snapshot should query all node types and return counts."""
+        from unittest.mock import MagicMock
+
+        from gristle.graph.client import QueryResult
+        from gristle.ingestion.pipeline import IngestionPipeline
+        from gristle.parsers.registry import ParserRegistry
+
+        graph = MagicMock()
+        registry = ParserRegistry().build_default()
+        pipeline = IngestionPipeline(graph, registry)
+
+        # Mock the count queries: File, Function, Class, Route, TestCase, Dependency,
+        # component count, edge count
+        graph.execute.side_effect = [
+            QueryResult(records=[{"c": 10}], summary={}),  # File
+            QueryResult(records=[{"c": 30}], summary={}),  # Function
+            QueryResult(records=[{"c": 5}], summary={}),  # Class
+            QueryResult(records=[{"c": 3}], summary={}),  # Route
+            QueryResult(records=[{"c": 8}], summary={}),  # TestCase
+            QueryResult(records=[{"c": 15}], summary={}),  # Dependency
+            QueryResult(records=[{"c": 6}], summary={}),  # components
+            QueryResult(records=[{"c": 100}], summary={}),  # edges
+        ]
+
+        snapshot = pipeline._capture_snapshot()
+        assert snapshot["file_count"] == 10
+        assert snapshot["function_count"] == 30
+        assert snapshot["class_count"] == 5
+        assert snapshot["route_count"] == 3
+        assert snapshot["test_count"] == 8
+        assert snapshot["dependency_count"] == 15
+        assert snapshot["component_count"] == 6
+        assert snapshot["edge_count"] == 100
+        assert "snapshot_id" in snapshot
+        assert "captured_at" in snapshot
+
+    def test_write_snapshot_creates_node(self):
+        """_write_snapshot should execute CREATE and prune queries."""
+        from unittest.mock import MagicMock
+
+        from gristle.ingestion.pipeline import IngestionPipeline
+        from gristle.parsers.registry import ParserRegistry
+
+        graph = MagicMock()
+        registry = ParserRegistry().build_default()
+        pipeline = IngestionPipeline(graph, registry)
+
+        snapshot = {
+            "snapshot_id": "test-id",
+            "captured_at": "2024-01-01T00:00:00Z",
+            "file_count": 10,
+            "function_count": 30,
+            "class_count": 5,
+            "route_count": 3,
+            "test_count": 8,
+            "component_count": 6,
+            "dependency_count": 15,
+            "edge_count": 100,
+        }
+
+        pipeline._write_snapshot(snapshot)
+
+        # Should have 2 calls: CREATE and prune
+        assert graph.execute.call_count == 2
+        # First call is CREATE
+        create_query = graph.execute.call_args_list[0][0][0]
+        assert "CREATE" in create_query
+        assert "Snapshot" in create_query
+        # Second call is prune
+        prune_query = graph.execute.call_args_list[1][0][0]
+        assert "SKIP 20" in prune_query
+
+    def test_capture_snapshot_has_uuid_and_timestamp(self):
+        """Snapshot should have valid UUID and ISO timestamp."""
+        import uuid
+        from unittest.mock import MagicMock
+
+        from gristle.graph.client import QueryResult
+        from gristle.ingestion.pipeline import IngestionPipeline
+        from gristle.parsers.registry import ParserRegistry
+
+        graph = MagicMock()
+        registry = ParserRegistry().build_default()
+        pipeline = IngestionPipeline(graph, registry)
+
+        # All count queries return 0
+        graph.execute.return_value = QueryResult(records=[{"c": 0}], summary={})
+
+        snapshot = pipeline._capture_snapshot()
+
+        # Should be a valid UUID
+        uuid.UUID(snapshot["snapshot_id"])
+        # Should be a valid ISO timestamp
+        assert "T" in snapshot["captured_at"]
+        assert snapshot["captured_at"].endswith("+00:00") or snapshot["captured_at"].endswith("Z")

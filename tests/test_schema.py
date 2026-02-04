@@ -18,17 +18,13 @@ class TestEnsureSchema:
         client = _make_mock_client()
         ensure_schema(client)
         # Count CREATE INDEX calls
-        index_calls = [
-            c for c in client.execute.call_args_list if "CREATE INDEX" in str(c)
-        ]
+        index_calls = [c for c in client.execute.call_args_list if "CREATE INDEX" in str(c)]
         assert len(index_calls) == len(_INDEXES)
 
     def test_creates_fulltext_indexes(self):
         client = _make_mock_client()
         ensure_schema(client)
-        ft_calls = [
-            c for c in client.execute.call_args_list if "fulltext.createNodeIndex" in str(c)
-        ]
+        ft_calls = [c for c in client.execute.call_args_list if "fulltext.createNodeIndex" in str(c)]
         assert len(ft_calls) == len(_FULLTEXT_INDEXES)
 
     def test_total_execute_calls(self):

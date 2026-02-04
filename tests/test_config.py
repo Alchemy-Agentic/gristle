@@ -261,12 +261,15 @@ class TestPipelineConfigIntegration:
 
         for env_var in parsed.env_vars:
             env_id = f"envvar::{env_var.name}"
-            batch.add_node("EnvVar", {
-                "id": env_id,
-                "name": env_var.name,
-                "default_value": env_var.default_value or "",
-                "required": env_var.required,
-            })
+            batch.add_node(
+                "EnvVar",
+                {
+                    "id": env_id,
+                    "name": env_var.name,
+                    "default_value": env_var.default_value or "",
+                    "required": env_var.required,
+                },
+            )
             batch.add_merge_relationship("DEFINED_IN", env_id, file_id)
 
         batch.flush()
@@ -309,12 +312,15 @@ class TestPipelineConfigIntegration:
         for var_name in pf.env_var_refs:
             env_id = f"envvar::{var_name}"
             if var_name not in env_var_ids:
-                batch.add_node("EnvVar", {
-                    "id": env_id,
-                    "name": var_name,
-                    "default_value": "",
-                    "required": False,
-                })
+                batch.add_node(
+                    "EnvVar",
+                    {
+                        "id": env_id,
+                        "name": var_name,
+                        "default_value": "",
+                        "required": False,
+                    },
+                )
                 env_var_ids[var_name] = env_id
             batch.add_merge_relationship("USES_ENV", file_id, env_id)
 
@@ -395,49 +401,55 @@ class TestQueryEngineConfig:
         return QueryEngine(mock_graph)
 
     def test_get_env_vars(self):
-        engine = self._make_engine({
-            "EnvVar": [
-                {
-                    "name": "DATABASE_URL",
-                    "default_value": "postgres://localhost/db",
-                    "required": False,
-                    "defined_in": [".env.example"],
-                    "used_by": ["src/db.py"],
-                },
-                {
-                    "name": "API_KEY",
-                    "default_value": "",
-                    "required": True,
-                    "defined_in": [".env.example"],
-                    "used_by": ["src/auth.py", "src/api.py"],
-                },
-            ],
-        })
+        engine = self._make_engine(
+            {
+                "EnvVar": [
+                    {
+                        "name": "DATABASE_URL",
+                        "default_value": "postgres://localhost/db",
+                        "required": False,
+                        "defined_in": [".env.example"],
+                        "used_by": ["src/db.py"],
+                    },
+                    {
+                        "name": "API_KEY",
+                        "default_value": "",
+                        "required": True,
+                        "defined_in": [".env.example"],
+                        "used_by": ["src/auth.py", "src/api.py"],
+                    },
+                ],
+            }
+        )
         result = engine.get_env_vars()
         assert result["total"] == 2
         assert len(result["env_vars"]) == 2
 
     def test_get_config_files(self):
-        engine = self._make_engine({
-            "config_type": [
-                {"path": "Dockerfile", "config_type": "dockerfile", "line_count": 15},
-                {"path": "docker-compose.yml", "config_type": "compose", "line_count": 30},
-            ],
-        })
+        engine = self._make_engine(
+            {
+                "config_type": [
+                    {"path": "Dockerfile", "config_type": "dockerfile", "line_count": 15},
+                    {"path": "docker-compose.yml", "config_type": "compose", "line_count": 30},
+                ],
+            }
+        )
         result = engine.get_config_files()
         assert result["total"] == 2
 
     def test_get_setup_requirements(self):
-        engine = self._make_engine({
-            "EnvVar": [
-                {"name": "DB_URL", "required": True, "defined_in": [], "used_by": [], "default_value": ""},
-                {"name": "DEBUG", "required": False, "defined_in": [], "used_by": [], "default_value": "false"},
-            ],
-            "config_type": [
-                {"path": "Dockerfile", "config_type": "dockerfile", "line_count": 10},
-            ],
-            "Dependency": [{"total": 15}],
-        })
+        engine = self._make_engine(
+            {
+                "EnvVar": [
+                    {"name": "DB_URL", "required": True, "defined_in": [], "used_by": [], "default_value": ""},
+                    {"name": "DEBUG", "required": False, "defined_in": [], "used_by": [], "default_value": "false"},
+                ],
+                "config_type": [
+                    {"path": "Dockerfile", "config_type": "dockerfile", "line_count": 10},
+                ],
+                "Dependency": [{"total": 15}],
+            }
+        )
         result = engine.get_setup_requirements()
         assert len(result["required_env_vars"]) == 1
         assert len(result["optional_env_vars"]) == 1
@@ -509,9 +521,11 @@ class TestLayerViolations:
 
     def test_presentation_to_data_is_violation(self):
         """Routes importing directly from db/ should be a violation."""
-        engine = self._make_engine([
-            ("src/routes/users.py", "src/db/models.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/routes/users.py", "src/db/models.py"),
+            ]
+        )
         result = engine.detect_layer_violations()
         assert result["total"] == 1
         assert result["violations"][0]["source_layer"] == "presentation"
@@ -519,43 +533,53 @@ class TestLayerViolations:
 
     def test_presentation_to_business_is_allowed(self):
         """Routes importing from services/ is adjacent — no violation."""
-        engine = self._make_engine([
-            ("src/routes/users.py", "src/services/user_service.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/routes/users.py", "src/services/user_service.py"),
+            ]
+        )
         result = engine.detect_layer_violations()
         assert result["total"] == 0
 
     def test_business_to_data_is_allowed(self):
         """Services importing from adapters/ is adjacent — no violation."""
-        engine = self._make_engine([
-            ("src/services/user_service.py", "src/adapters/db.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/services/user_service.py", "src/adapters/db.py"),
+            ]
+        )
         result = engine.detect_layer_violations()
         assert result["total"] == 0
 
     def test_cross_cutting_is_exempt(self):
         """Imports to/from utils/ should never be violations."""
-        engine = self._make_engine([
-            ("src/routes/users.py", "src/utils/helpers.py"),
-            ("src/utils/helpers.py", "src/db/models.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/routes/users.py", "src/utils/helpers.py"),
+                ("src/utils/helpers.py", "src/db/models.py"),
+            ]
+        )
         result = engine.detect_layer_violations()
         assert result["total"] == 0
 
     def test_unclassified_files_ignored(self):
         """Files not matching any layer pattern should be ignored."""
-        engine = self._make_engine([
-            ("src/config.py", "src/db/models.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/config.py", "src/db/models.py"),
+            ]
+        )
         result = engine.detect_layer_violations()
         assert result["total"] == 0
 
     def test_multiple_violations_grouped_by_type(self):
         """Multiple violations should be grouped in by_type."""
-        engine = self._make_engine([
-            ("src/routes/users.py", "src/db/models.py"),
-            ("src/handlers/api.py", "src/repositories/user_repo.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/routes/users.py", "src/db/models.py"),
+                ("src/handlers/api.py", "src/repositories/user_repo.py"),
+            ]
+        )
         result = engine.detect_layer_violations()
         assert result["total"] == 2
         assert "presentation→data" in result["by_type"]
@@ -567,9 +591,11 @@ class TestLayerViolations:
             "api": (3, "api"),
             "core": (1, "core"),
         }
-        engine = self._make_engine([
-            ("src/api/handler.py", "src/core/db.py"),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/api/handler.py", "src/core/db.py"),
+            ]
+        )
         result = engine.detect_layer_violations(layer_config=custom)
         assert result["total"] == 1
         assert result["violations"][0]["violation_type"] == "api→core"

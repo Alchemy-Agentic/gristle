@@ -18,13 +18,13 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - **Markdown** (`.md`, `.mdx`) — headings, sections, code references, doc type classification
 
 ### Graph Schema
-**11 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField
+**12 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField, Snapshot
 - File: includes `is_documentation`, `react_directive` properties
 - Function: includes `is_documentation` property
 
 **20 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS
 
-**26 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
+**27 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
 
 ### Ingestion Pipeline (3 phases)
 1. **Parse & Build Nodes** — walk repo, parse files, create nodes + in-memory maps
@@ -32,7 +32,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
-- 28 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components (with `include_docs` parameter), deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health
+- 30 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components (with `include_docs` parameter), deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health, services, changelog
   - `gristle_components`: `include_docs` parameter filters documentation components
   - `gristle_conventions`: returns `frameworks` and `production_components`/`documentation_components` in output
 - 2 resources: `gristle://repos`, `gristle://repos/{repo_id}/overview`
@@ -52,7 +52,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - Incremental file watcher
 - Optional semantic search (sentence-transformers)
 - Structured logging (JSON for prod, text for dev)
-- 821 tests (mock graph clients, no FalkorDB needed for CI)
+- 845 tests (mock graph clients, no FalkorDB needed for CI)
 
 ---
 
@@ -132,12 +132,15 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 - Import cycle detection (`gristle_cycles` tool) — detects circular import chains with configurable max length, deduplicated by normalized cycle start
 - Public API surface mapping (`gristle_public_api` tool) — maps all public exported entities excluding test/internal files, includes documentation percentage
 
+- External service mapping (`gristle_services` tool) — classifies dependencies into categories (database, auth, payments, email, AI, storage, analytics, UI, forms, state management) for understanding service architecture
+- Changelog generation (`gristle_changelog` tool) — captures graph snapshots during ingestion, diffs between runs to show what changed (files, functions, routes, etc.)
 **Graph Depth Improvements** ✅:
 - Route `has_auth` detection — checks per-route middleware, handler decorators, and app-level auth middleware (`app.use('/path', authMiddleware)`) for auth keywords
 - Import `resolved` property — tracks whether each import resolves to an internal file or is external/unresolved
 - Import-based test edges (JS/TS) — depth-3 `TESTS_FUNCTION` fallback for test functions that import production files but lack direct call coverage
 - Python `__all__` export detection — functions/classes listed in `__all__` get `is_exported=True`, creating EXPORTS edges
 - App-level auth middleware detection — TS parser extracts `app.use('/path', authMiddleware)` patterns, pipeline matches route paths against auth middleware path patterns
+- Vibe coder stack detection — expanded framework detection for Next.js+Supabase+Clerk+Stripe+Prisma+Drizzle+shadcn stacks with convention-specific analysis (auth provider, ORM, UI library, payments)
 - Dependency staleness & vulnerability checking — enriches Dependency nodes with latest versions from npm/PyPI and CVEs from OSV.dev (`gristle_dependency_health` tool)
 - JSX prop callback detection — React `on*` attributes like `onClick={handler}` create PASSED_TO edges with context `jsx_callback`
 - Deno.serve handler resolution — Phase 2 import-aware resolution links route handlers imported from shared modules (e.g. Supabase edge functions importing from `_shared/`)
@@ -154,7 +157,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 |------|---------|
 | `src/gristle/config.py` | All settings (GRISTLE_ prefix, Pydantic) |
 | `src/gristle/models.py` | 8 dataclasses for parsed entities |
-| `src/gristle/mcp/server.py` | MCP server (28 tools + 2 resources) |
+| `src/gristle/mcp/server.py` | MCP server (30 tools + 2 resources) |
 | `src/gristle/mcp/auth.py` | Bearer token auth |
 | `src/gristle/ingestion/pipeline.py` | Three-phase graph builder (~1700 lines, core logic) |
 | `src/gristle/ingestion/batch.py` | BatchCollector for UNWIND writes |
@@ -174,7 +177,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 
 ```bash
 pip install -e ".[dev]"       # install with dev deps
-pytest                        # run 821 tests
+pytest                        # run 845 tests
 ruff check src/ tests/        # lint
 ruff format src/ tests/       # format
 mypy src/                     # type check

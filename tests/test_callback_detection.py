@@ -54,12 +54,7 @@ class TestTSRouteHandlerCallbacks:
 
     def test_router_put_delete(self):
         parser = TypeScriptParser()
-        code = (
-            "function setup() {\n"
-            "  router.put('/u/:id', updateUser);\n"
-            "  router.delete('/u/:id', deleteUser);\n"
-            "}\n"
-        )
+        code = "function setup() {\n  router.put('/u/:id', updateUser);\n  router.delete('/u/:id', deleteUser);\n}\n"
         result = parser.parse_file("test.ts", code)
         func = result.functions[0]
         assert ("updateUser", "route_handler") in func.callback_refs
@@ -191,14 +186,7 @@ class TestTSNoFalsePositives:
 class TestTSMethodCallbacks:
     def test_class_method_callbacks(self):
         parser = TypeScriptParser()
-        code = (
-            "class App {\n"
-            "  setup() {\n"
-            "    this.router.get('/api', this.handler);\n"
-            "  }\n"
-            "  handler() {}\n"
-            "}\n"
-        )
+        code = "class App {\n  setup() {\n    this.router.get('/api', this.handler);\n  }\n  handler() {}\n}\n"
         result = parser.parse_file("test.ts", code)
         setup = next(m for m in result.classes[0].methods if m.name == "setup")
         # this.handler is resolved to just "handler" by the TS member expression resolver
@@ -208,12 +196,7 @@ class TestTSMethodCallbacks:
 class TestTSDeduplication:
     def test_duplicate_refs_deduplicated(self):
         parser = TypeScriptParser()
-        code = (
-            "function run() {\n"
-            "  items.map(process);\n"
-            "  items.map(process);\n"
-            "}\n"
-        )
+        code = "function run() {\n  items.map(process);\n  items.map(process);\n}\n"
         result = parser.parse_file("test.ts", code)
         func = result.functions[0]
         process_refs = [r for r in func.callback_refs if r[0] == "process"]

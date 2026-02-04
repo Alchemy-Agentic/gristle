@@ -389,7 +389,9 @@ class TestPipelineTypeFields:
             kind="interface",
             fields=[
                 ParsedTypeField(name="name", type_annotation="string", file_path="models.ts", line=2),
-                ParsedTypeField(name="email", type_annotation="string", is_optional=True, file_path="models.ts", line=3),
+                ParsedTypeField(
+                    name="email", type_annotation="string", is_optional=True, file_path="models.ts", line=3
+                ),
             ],
         )
 
@@ -463,19 +465,39 @@ class TestGetDataContract:
     def test_returns_contract(self):
         engine, graph = _make_engine()
         graph.execute.side_effect = [
-            _qr([{"qualified_name": "api.ts::createUser", "signature": "createUser(data: CreateUserDTO): Promise<User>"}]),
+            _qr(
+                [
+                    {
+                        "qualified_name": "api.ts::createUser",
+                        "signature": "createUser(data: CreateUserDTO): Promise<User>",
+                    }
+                ]
+            ),
             _qr([{"type_name": "User", "type_qname": "models.ts::User", "kind": "interface"}]),
-            _qr([{"param_name": "data", "type_name": "CreateUserDTO", "type_qname": "dto.ts::CreateUserDTO", "kind": "interface"}]),
+            _qr(
+                [
+                    {
+                        "param_name": "data",
+                        "type_name": "CreateUserDTO",
+                        "type_qname": "dto.ts::CreateUserDTO",
+                        "kind": "interface",
+                    }
+                ]
+            ),
             # Fields for User
-            _qr([
-                {"name": "id", "type_annotation": "string", "is_optional": False},
-                {"name": "email", "type_annotation": "string", "is_optional": False},
-            ]),
+            _qr(
+                [
+                    {"name": "id", "type_annotation": "string", "is_optional": False},
+                    {"name": "email", "type_annotation": "string", "is_optional": False},
+                ]
+            ),
             # Fields for CreateUserDTO
-            _qr([
-                {"name": "email", "type_annotation": "string", "is_optional": False},
-                {"name": "password", "type_annotation": "string", "is_optional": False},
-            ]),
+            _qr(
+                [
+                    {"name": "email", "type_annotation": "string", "is_optional": False},
+                    {"name": "password", "type_annotation": "string", "is_optional": False},
+                ]
+            ),
         ]
         result = engine.get_data_contract("createUser")
         assert result is not None
@@ -516,10 +538,12 @@ class TestGetTypeUsage:
         engine, graph = _make_engine()
         graph.execute.side_effect = [
             _qr([{"name": "User", "qualified_name": "models.ts::User", "kind": "interface", "file_path": "models.ts"}]),
-            _qr([
-                {"name": "id", "type_annotation": "string", "is_optional": False},
-                {"name": "email", "type_annotation": "string", "is_optional": False},
-            ]),
+            _qr(
+                [
+                    {"name": "id", "type_annotation": "string", "is_optional": False},
+                    {"name": "email", "type_annotation": "string", "is_optional": False},
+                ]
+            ),
             _qr([{"function": "api.ts::createUser", "file_path": "api.ts", "param_name": "data"}]),
             _qr([{"function": "api.ts::getUser", "file_path": "api.ts"}]),
             _qr([{"parent_type": "dto.ts::Response", "field_name": "user", "field_type": "User"}]),

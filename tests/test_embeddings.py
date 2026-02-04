@@ -164,10 +164,7 @@ class TestSemanticIndexIndexAll:
     def test_batches_by_batch_size(self):
         idx, graph, embedder = _make_semantic_index()
         # 3 function nodes, batch_size=2 → 2 embed_batch calls
-        records = [
-            {"id": f"f{i}", "name": f"fn{i}", "signature": f"def fn{i}()", "docstring": None}
-            for i in range(3)
-        ]
+        records = [{"id": f"f{i}", "name": f"fn{i}", "signature": f"def fn{i}()", "docstring": None} for i in range(3)]
         graph.execute.side_effect = [
             QueryResult(records=records, summary={}),
             # 3 individual SET calls for functions
@@ -213,16 +210,28 @@ class TestSemanticIndexSearch:
             # Function results
             QueryResult(
                 records=[
-                    {"id": "f1", "name": "validate", "signature": "def validate()", "docstring": None,
-                     "file_path": "a.py", "score": 0.3},
+                    {
+                        "id": "f1",
+                        "name": "validate",
+                        "signature": "def validate()",
+                        "docstring": None,
+                        "file_path": "a.py",
+                        "score": 0.3,
+                    },
                 ],
                 summary={},
             ),
             # Class results
             QueryResult(
                 records=[
-                    {"id": "c1", "name": "Validator", "signature": "class Validator", "docstring": None,
-                     "file_path": "b.py", "score": 0.1},
+                    {
+                        "id": "c1",
+                        "name": "Validator",
+                        "signature": "class Validator",
+                        "docstring": None,
+                        "file_path": "b.py",
+                        "score": 0.1,
+                    },
                 ],
                 summary={},
             ),
@@ -242,8 +251,14 @@ class TestSemanticIndexSearch:
         graph.execute.side_effect = [
             QueryResult(
                 records=[
-                    {"id": f"f{i}", "name": f"fn{i}", "signature": "", "docstring": None,
-                     "file_path": "a.py", "score": float(i)}
+                    {
+                        "id": f"f{i}",
+                        "name": f"fn{i}",
+                        "signature": "",
+                        "docstring": None,
+                        "file_path": "a.py",
+                        "score": float(i),
+                    }
                     for i in range(5)
                 ],
                 summary={},

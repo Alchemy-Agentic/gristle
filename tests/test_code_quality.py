@@ -28,20 +28,19 @@ class TestDeadExportDetection:
 
         for file_path, qn, name, entity_type in exports:
             # Check if this export is imported
-            is_imported = any(
-                imported == file_path and importer != file_path
-                for importer, imported in imports
-            )
+            is_imported = any(imported == file_path and importer != file_path for importer, imported in imports)
             is_entry = qn in entry_points
 
             # Only include if not imported and not entry point
             if not is_imported and not is_entry:
-                result_records.append({
-                    "qualified_name": qn,
-                    "name": name,
-                    "file": file_path,
-                    "type": entity_type,
-                })
+                result_records.append(
+                    {
+                        "qualified_name": qn,
+                        "name": name,
+                        "file": file_path,
+                        "type": entity_type,
+                    }
+                )
 
         result = MagicMock()
         result.records = result_records
@@ -136,19 +135,21 @@ class TestImportCycleDetection:
 
         # Simple 2-file cycle: a->b->a
         if ("a.ts", "b.ts") in import_pairs and ("b.ts", "a.ts") in import_pairs:
-            result_records.append({
-                "cycle_files": ["a.ts", "b.ts", "a.ts"],
-                "cycle_length": 2,
-            })
+            result_records.append(
+                {
+                    "cycle_files": ["a.ts", "b.ts", "a.ts"],
+                    "cycle_length": 2,
+                }
+            )
 
         # 3-file cycle: a->b->c->a
-        if (("a.ts", "b.ts") in import_pairs and
-            ("b.ts", "c.ts") in import_pairs and
-            ("c.ts", "a.ts") in import_pairs):
-            result_records.append({
-                "cycle_files": ["a.ts", "b.ts", "c.ts", "a.ts"],
-                "cycle_length": 3,
-            })
+        if ("a.ts", "b.ts") in import_pairs and ("b.ts", "c.ts") in import_pairs and ("c.ts", "a.ts") in import_pairs:
+            result_records.append(
+                {
+                    "cycle_files": ["a.ts", "b.ts", "c.ts", "a.ts"],
+                    "cycle_length": 3,
+                }
+            )
 
         result = MagicMock()
         result.records = result_records
@@ -157,10 +158,12 @@ class TestImportCycleDetection:
 
     def test_simple_two_file_cycle(self):
         """a->b->a should be detected."""
-        engine = self._make_engine([
-            ("a.ts", "b.ts"),
-            ("b.ts", "a.ts"),
-        ])
+        engine = self._make_engine(
+            [
+                ("a.ts", "b.ts"),
+                ("b.ts", "a.ts"),
+            ]
+        )
         result = engine.detect_import_cycles()
         assert result["total"] == 1
         assert result["cycles"][0]["length"] == 2
@@ -169,11 +172,13 @@ class TestImportCycleDetection:
 
     def test_three_file_cycle(self):
         """a->b->c->a should be detected."""
-        engine = self._make_engine([
-            ("a.ts", "b.ts"),
-            ("b.ts", "c.ts"),
-            ("c.ts", "a.ts"),
-        ])
+        engine = self._make_engine(
+            [
+                ("a.ts", "b.ts"),
+                ("b.ts", "c.ts"),
+                ("c.ts", "a.ts"),
+            ]
+        )
         result = engine.detect_import_cycles()
         assert result["total"] >= 1
         # Find the length-3 cycle
@@ -189,10 +194,12 @@ class TestImportCycleDetection:
 
     def test_by_length_grouping(self):
         """Cycles should be grouped by length."""
-        engine = self._make_engine([
-            ("a.ts", "b.ts"),
-            ("b.ts", "a.ts"),
-        ])
+        engine = self._make_engine(
+            [
+                ("a.ts", "b.ts"),
+                ("b.ts", "a.ts"),
+            ]
+        )
         result = engine.detect_import_cycles()
         assert 2 in result["by_length"]
         assert result["by_length"][2] == 1
@@ -221,13 +228,15 @@ class TestPublicApiMapping:
             if "__" in file_path or "/internal/" in file_path or "/_" in file_path:
                 continue  # Excluded by default
 
-            result_records.append({
-                "qualified_name": qn,
-                "name": name,
-                "file": file_path,
-                "type": entity_type,
-                "docstring": "docs here" if has_docs else None,
-            })
+            result_records.append(
+                {
+                    "qualified_name": qn,
+                    "name": name,
+                    "file": file_path,
+                    "type": entity_type,
+                    "docstring": "docs here" if has_docs else None,
+                }
+            )
 
         result = MagicMock()
         result.records = result_records
@@ -236,10 +245,12 @@ class TestPublicApiMapping:
 
     def test_basic_public_api(self):
         """Public exports from regular files should be returned."""
-        engine = self._make_engine([
-            ("src/api.ts", "src/api.ts::getUser", "getUser", "Function", True, False),
-            ("src/models.ts", "src/models.ts::User", "User", "Class", True, False),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/api.ts", "src/api.ts::getUser", "getUser", "Function", True, False),
+                ("src/models.ts", "src/models.ts::User", "User", "Class", True, False),
+            ]
+        )
         result = engine.get_public_api()
         assert result["total"] == 2
         assert result["by_type"]["Function"] == 1
@@ -247,21 +258,32 @@ class TestPublicApiMapping:
 
     def test_excludes_test_files(self):
         """Entities in test files should be excluded."""
-        engine = self._make_engine([
-            ("src/api.ts", "src/api.ts::getUser", "getUser", "Function", True, False),
-            ("src/api.test.ts", "src/api.test.ts::testHelper", "testHelper", "Function", False, True),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/api.ts", "src/api.ts::getUser", "getUser", "Function", True, False),
+                ("src/api.test.ts", "src/api.test.ts::testHelper", "testHelper", "Function", False, True),
+            ]
+        )
         result = engine.get_public_api()
         assert result["total"] == 1
         assert result["entities"][0]["name"] == "getUser"
 
     def test_excludes_internal_paths(self):
         """Entities in internal paths should be excluded."""
-        engine = self._make_engine([
-            ("src/api.ts", "src/api.ts::getUser", "getUser", "Function", True, False),
-            ("src/internal/helper.ts", "src/internal/helper.ts::internalFn", "internalFn", "Function", False, False),
-            ("src/__private/util.ts", "src/__private/util.ts::privateFn", "privateFn", "Function", False, False),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/api.ts", "src/api.ts::getUser", "getUser", "Function", True, False),
+                (
+                    "src/internal/helper.ts",
+                    "src/internal/helper.ts::internalFn",
+                    "internalFn",
+                    "Function",
+                    False,
+                    False,
+                ),
+                ("src/__private/util.ts", "src/__private/util.ts::privateFn", "privateFn", "Function", False, False),
+            ]
+        )
         result = engine.get_public_api()
         # internal/helper.ts and __private/util.ts should be filtered
         assert result["total"] == 1
@@ -269,10 +291,12 @@ class TestPublicApiMapping:
 
     def test_documentation_percentage(self):
         """Should calculate documentation percentage correctly."""
-        engine = self._make_engine([
-            ("src/api.ts", "src/api.ts::documented", "documented", "Function", True, False),
-            ("src/api.ts", "src/api.ts::undocumented", "undocumented", "Function", False, False),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/api.ts", "src/api.ts::documented", "documented", "Function", True, False),
+                ("src/api.ts", "src/api.ts::undocumented", "undocumented", "Function", False, False),
+            ]
+        )
         result = engine.get_public_api()
         assert result["total"] == 2
         assert result["documented_count"] == 1
@@ -280,11 +304,13 @@ class TestPublicApiMapping:
 
     def test_by_file_grouping(self):
         """Should group counts by file."""
-        engine = self._make_engine([
-            ("src/api.ts", "src/api.ts::fn1", "fn1", "Function", True, False),
-            ("src/api.ts", "src/api.ts::fn2", "fn2", "Function", True, False),
-            ("src/models.ts", "src/models.ts::User", "User", "Class", True, False),
-        ])
+        engine = self._make_engine(
+            [
+                ("src/api.ts", "src/api.ts::fn1", "fn1", "Function", True, False),
+                ("src/api.ts", "src/api.ts::fn2", "fn2", "Function", True, False),
+                ("src/models.ts", "src/models.ts::User", "User", "Class", True, False),
+            ]
+        )
         result = engine.get_public_api()
         assert result["by_file"]["src/api.ts"] == 2
         assert result["by_file"]["src/models.ts"] == 1

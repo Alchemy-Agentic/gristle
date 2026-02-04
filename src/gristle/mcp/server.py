@@ -1041,6 +1041,50 @@ async def gristle_dependency_health(
     return engine.get_outdated_dependencies(severity=severity)
 
 
+@mcp.tool()
+async def gristle_services(
+    repo_id: str | None = None,
+) -> dict:
+    """Map external services and integrations used by the codebase.
+
+    Classifies dependencies into categories: database, auth, payments, email,
+    AI, storage, analytics, UI, forms, and state management. Returns matched
+    packages per category plus an uncategorized list.
+
+    Useful for understanding a project's service architecture at a glance.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.get_external_services()
+
+
+@mcp.tool()
+async def gristle_changelog(
+    repo_id: str | None = None,
+) -> dict:
+    """Show what changed since last ingestion.
+
+    Compares the current graph state against the previous ingestion snapshot.
+    Returns counts and deltas for files, functions, classes, routes, tests,
+    components, dependencies, and edges.
+
+    Useful for understanding the impact of recent code changes.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.get_changelog()
+
+
 # ======================================================================
 # Resources
 # ======================================================================

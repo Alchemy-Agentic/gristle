@@ -73,12 +73,14 @@ def detect_hardcoded_secrets(content: str, language: str) -> list[SecurityFindin
                 # Skip OpenAI pattern if it's actually a Stripe key.
                 if detail == "OPENAI_KEY" and ("sk_live_" in line or "sk_test_" in line):
                     continue
-                findings.append(SecurityFinding(
-                    category="hardcoded_secret",
-                    detail=detail,
-                    line=line_num_0 + 1,
-                    severity=severity,
-                ))
+                findings.append(
+                    SecurityFinding(
+                        category="hardcoded_secret",
+                        detail=detail,
+                        line=line_num_0 + 1,
+                        severity=severity,
+                    )
+                )
                 break  # One finding per line is enough.
 
         # Generic assignment pattern (only if no provider match above).
@@ -88,12 +90,14 @@ def detect_hardcoded_secrets(content: str, language: str) -> list[SecurityFindin
                 value = m.group(1)
                 # Skip placeholders and short values.
                 if not _SECRET_SKIP_RE.search(value):
-                    findings.append(SecurityFinding(
-                        category="hardcoded_secret",
-                        detail="GENERIC_SECRET",
-                        line=line_num_0 + 1,
-                        severity="medium",
-                    ))
+                    findings.append(
+                        SecurityFinding(
+                            category="hardcoded_secret",
+                            detail="GENERIC_SECRET",
+                            line=line_num_0 + 1,
+                            severity="medium",
+                        )
+                    )
 
     return findings
 
@@ -138,12 +142,26 @@ _CONCAT_SQL_RE = re.compile(
 )
 
 # Query executor functions (context check).
-_SQL_EXECUTORS = frozenset({
-    "execute", "executemany", "query", "raw", "rawQuery",
-    "$queryRaw", "$executeRaw", "$queryRawUnsafe", "$executeRawUnsafe",
-    "runQuery", "prepare", "cursor.execute", "connection.execute",
-    "db.execute", "session.execute", "text",
-})
+_SQL_EXECUTORS = frozenset(
+    {
+        "execute",
+        "executemany",
+        "query",
+        "raw",
+        "rawQuery",
+        "$queryRaw",
+        "$executeRaw",
+        "$queryRawUnsafe",
+        "$executeRawUnsafe",
+        "runQuery",
+        "prepare",
+        "cursor.execute",
+        "connection.execute",
+        "db.execute",
+        "session.execute",
+        "text",
+    }
+)
 
 
 def _has_sql_executor(content: str) -> bool:
@@ -174,12 +192,14 @@ def detect_sql_injection(content: str, language: str) -> list[SecurityFinding]:
 
         for pat in patterns:
             if pat.search(line):
-                findings.append(SecurityFinding(
-                    category="sql_injection",
-                    detail="dynamic_query",
-                    line=line_num_0 + 1,
-                    severity="high",
-                ))
+                findings.append(
+                    SecurityFinding(
+                        category="sql_injection",
+                        detail="dynamic_query",
+                        line=line_num_0 + 1,
+                        severity="high",
+                    )
+                )
                 break  # One finding per line.
 
     return findings
@@ -189,17 +209,31 @@ def detect_sql_injection(content: str, language: str) -> list[SecurityFinding]:
 # Unsafe call detection
 # ======================================================================
 
-_UNSAFE_CALLS: frozenset[str] = frozenset({
-    # Code execution
-    "eval", "exec", "compile", "Function",
-    # Deserialization
-    "pickle.loads", "pickle.load", "yaml.unsafe_load", "yaml.load",
-    "marshal.loads", "shelve.open",
-    # Shell execution
-    "os.system", "os.popen",
-    "subprocess.call", "subprocess.run", "subprocess.Popen",
-    "child_process.exec", "child_process.execSync", "child_process.spawn",
-})
+_UNSAFE_CALLS: frozenset[str] = frozenset(
+    {
+        # Code execution
+        "eval",
+        "exec",
+        "compile",
+        "Function",
+        # Deserialization
+        "pickle.loads",
+        "pickle.load",
+        "yaml.unsafe_load",
+        "yaml.load",
+        "marshal.loads",
+        "shelve.open",
+        # Shell execution
+        "os.system",
+        "os.popen",
+        "subprocess.call",
+        "subprocess.run",
+        "subprocess.Popen",
+        "child_process.exec",
+        "child_process.execSync",
+        "child_process.spawn",
+    }
+)
 
 
 def detect_unsafe_calls(calls: list[str]) -> list[str]:
@@ -217,30 +251,48 @@ def detect_unsafe_calls(calls: list[str]) -> list[str]:
 # LLM API calls (sources) — substring matching for flexibility.
 _LLM_SOURCE_PATTERNS: list[str] = [
     "completions.create",  # OpenAI / Anthropic
-    "messages.create",     # Anthropic
-    "chat.completions",    # OpenAI
-    "cohere.generate", "cohere.chat",
-    "chain.invoke", "chain.run", "agent.invoke",  # LangChain
-    "llm.invoke", "llm.predict", "llm.generate",
+    "messages.create",  # Anthropic
+    "chat.completions",  # OpenAI
+    "cohere.generate",
+    "cohere.chat",
+    "chain.invoke",
+    "chain.run",
+    "agent.invoke",  # LangChain
+    "llm.invoke",
+    "llm.predict",
+    "llm.generate",
     "model.generate_content",  # Google Gemini
     "generate_content",
 ]
 
 # Dangerous sinks that should not consume raw LLM output.
-_LLM_DANGEROUS_SINKS: frozenset[str] = frozenset({
-    # Code execution
-    "eval", "exec", "compile", "Function",
-    # SQL
-    "cursor.execute", "db.execute", "connection.execute", "session.execute",
-    "execute", "executemany",
-    # Shell
-    "os.system", "os.popen", "subprocess.call", "subprocess.run",
-    "child_process.exec", "child_process.execSync",
-    # XSS (TS/JS)
-    "document.write",
-    # SSTI
-    "render_template_string",
-})
+_LLM_DANGEROUS_SINKS: frozenset[str] = frozenset(
+    {
+        # Code execution
+        "eval",
+        "exec",
+        "compile",
+        "Function",
+        # SQL
+        "cursor.execute",
+        "db.execute",
+        "connection.execute",
+        "session.execute",
+        "execute",
+        "executemany",
+        # Shell
+        "os.system",
+        "os.popen",
+        "subprocess.call",
+        "subprocess.run",
+        "child_process.exec",
+        "child_process.execSync",
+        # XSS (TS/JS)
+        "document.write",
+        # SSTI
+        "render_template_string",
+    }
+)
 
 
 def _has_llm_source(calls: list[str]) -> bool:

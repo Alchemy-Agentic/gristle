@@ -10,6 +10,133 @@ if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
 
 
+# External service categories for dependency classification.
+_SERVICE_CATEGORIES: dict[str, dict[str, Any]] = {
+    "database": {
+        "packages": [
+            "@supabase/supabase-js",
+            "supabase",
+            "prisma",
+            "@prisma/client",
+            "drizzle-orm",
+            "mongoose",
+            "typeorm",
+            "sequelize",
+            "knex",
+            "pg",
+            "mysql2",
+            "better-sqlite3",
+            "redis",
+            "ioredis",
+        ],
+        "label": "Database & ORM",
+    },
+    "auth": {
+        "packages": [
+            "@clerk/nextjs",
+            "@clerk/clerk-js",
+            "next-auth",
+            "@auth/core",
+            "passport",
+            "lucia",
+            "arctic",
+            "@supabase/auth-helpers-nextjs",
+        ],
+        "label": "Authentication",
+    },
+    "payments": {
+        "packages": [
+            "stripe",
+            "@stripe/stripe-js",
+            "@stripe/react-stripe-js",
+            "@lemonsqueezy/lemonsqueezy.js",
+        ],
+        "label": "Payments",
+    },
+    "email": {
+        "packages": [
+            "resend",
+            "@sendgrid/mail",
+            "nodemailer",
+            "postmark",
+            "@react-email/components",
+            "react-email",
+        ],
+        "label": "Email",
+    },
+    "ai": {
+        "packages": [
+            "openai",
+            "@anthropic-ai/sdk",
+            "ai",
+            "@ai-sdk/openai",
+            "@ai-sdk/anthropic",
+            "langchain",
+            "@langchain/core",
+            "replicate",
+        ],
+        "label": "AI & LLM",
+    },
+    "storage": {
+        "packages": [
+            "@aws-sdk/client-s3",
+            "@supabase/storage-js",
+            "cloudinary",
+            "uploadthing",
+            "@uploadthing/react",
+        ],
+        "label": "File Storage",
+    },
+    "analytics": {
+        "packages": [
+            "posthog-js",
+            "@vercel/analytics",
+            "@sentry/nextjs",
+            "@sentry/node",
+            "mixpanel",
+            "amplitude-js",
+        ],
+        "label": "Analytics & Monitoring",
+    },
+    "ui": {
+        "packages": [
+            "tailwindcss",
+            "class-variance-authority",
+            "clsx",
+            "tailwind-merge",
+            "lucide-react",
+            "@heroicons/react",
+            "framer-motion",
+            "@headlessui/react",
+            "cmdk",
+        ],
+        "label": "UI & Styling",
+    },
+    "forms": {
+        "packages": [
+            "react-hook-form",
+            "@hookform/resolvers",
+            "zod",
+            "yup",
+            "formik",
+        ],
+        "label": "Forms & Validation",
+    },
+    "state": {
+        "packages": [
+            "zustand",
+            "jotai",
+            "@tanstack/react-query",
+            "swr",
+            "@reduxjs/toolkit",
+            "react-redux",
+            "recoil",
+        ],
+        "label": "State Management",
+    },
+}
+
+
 class QueryEngine:
     """Executes graph queries and enriches results with source code on demand."""
 
@@ -983,6 +1110,13 @@ class QueryEngine:
         "hono": ["hono"],
         "fastify": ["fastify"],
         "supabase": ["@supabase/supabase-js", "supabase"],
+        "clerk": ["@clerk/nextjs", "@clerk/clerk-js"],
+        "nextauth": ["next-auth"],
+        "stripe": ["stripe", "@stripe/stripe-js"],
+        "prisma": ["prisma", "@prisma/client"],
+        "drizzle": ["drizzle-orm"],
+        "trpc": ["@trpc/server", "@trpc/client"],
+        "tailwind": ["tailwindcss"],
         "fastapi": ["fastapi"],
         "django": ["django"],
         "flask": ["flask"],
@@ -1017,6 +1151,22 @@ class QueryEngine:
             react_info = self._detect_react_conventions(dep_names)
             if isinstance(detected.get("nextjs"), dict):
                 detected["nextjs"]["react"] = react_info
+
+        # Vibe coder stack enrichment
+        if "supabase" in detected:
+            detected["supabase"] = self._detect_supabase_conventions(dep_names)
+
+        if "clerk" in detected or "nextauth" in detected:
+            detected["auth"] = self._detect_auth_conventions(dep_names)
+
+        if "prisma" in detected or "drizzle" in detected:
+            detected["orm"] = self._detect_orm_conventions(dep_names)
+
+        if "react" in detected or "nextjs" in detected:
+            detected["ui"] = self._detect_ui_conventions(dep_names)
+
+        if "stripe" in detected:
+            detected["payments"] = self._detect_payment_conventions(dep_names)
 
         return detected
 
@@ -1130,6 +1280,136 @@ class QueryEngine:
             info["class_components"] = class_count
 
         return info
+
+    # ------------------------------------------------------------------
+    # Vibe coder stack detection
+    # ------------------------------------------------------------------
+
+    def _detect_supabase_conventions(self, dep_names: set[str]) -> dict[str, Any]:
+        """Detect Supabase-specific conventions."""
+        info: dict[str, Any] = {"detected": True}
+
+        # Count files that import Supabase client
+        client_usage = self.graph.execute(
+            "MATCH (i:Import) WHERE i.module_path = '@supabase/supabase-js' RETURN count(DISTINCT i.file_path) AS c"
+        )
+        info["client_files"] = client_usage.records[0]["c"] if client_usage.records else 0
+
+        info["uses_auth_helpers"] = "@supabase/auth-helpers-nextjs" in dep_names
+        info["uses_storage"] = "@supabase/storage-js" in dep_names
+
+        # Edge functions
+        edge_funcs = self.graph.execute(
+            "MATCH (f:File) WHERE f.path =~ '.*/supabase/functions/.*/index\\.[tj]sx?$' RETURN count(f) AS c"
+        )
+        info["edge_function_count"] = edge_funcs.records[0]["c"] if edge_funcs.records else 0
+
+        return info
+
+    def _detect_auth_conventions(self, dep_names: set[str]) -> dict[str, Any]:
+        """Detect authentication provider from dependencies."""
+        auth_providers = [
+            ("clerk", ["@clerk/nextjs", "@clerk/clerk-js"]),
+            ("nextauth", ["next-auth"]),
+            ("supabase-auth", ["@supabase/auth-helpers-nextjs"]),
+            ("lucia", ["lucia"]),
+        ]
+        for provider, packages in auth_providers:
+            for pkg in packages:
+                if pkg in dep_names:
+                    return {"provider": provider, "package": pkg}
+        return {"provider": "unknown", "package": None}
+
+    def _detect_orm_conventions(self, dep_names: set[str]) -> dict[str, Any]:
+        """Detect ORM/database client from dependencies."""
+        if any(pkg in dep_names for pkg in ("prisma", "@prisma/client")):
+            # Check for schema file
+            schema = self.graph.execute(
+                "MATCH (f:File) WHERE f.path CONTAINS 'prisma/schema.prisma' RETURN count(f) AS c"
+            )
+            has_schema = (schema.records[0]["c"] if schema.records else 0) > 0
+            return {"orm": "prisma", "has_schema": has_schema}
+
+        if "drizzle-orm" in dep_names:
+            return {"orm": "drizzle", "has_schema": False}
+
+        return {"orm": "unknown", "has_schema": False}
+
+    def _detect_ui_conventions(self, dep_names: set[str]) -> dict[str, Any]:
+        """Detect UI library conventions (shadcn, icons, animations)."""
+        info: dict[str, Any] = {}
+
+        # shadcn: detected via import patterns (copies files, no npm dep)
+        shadcn_result = self.graph.execute(
+            "MATCH (i:Import) WHERE i.module_path STARTS WITH '@/components/ui/' "
+            "RETURN count(DISTINCT i.module_path) AS c"
+        )
+        shadcn_count = shadcn_result.records[0]["c"] if shadcn_result.records else 0
+        info["uses_shadcn"] = shadcn_count > 0
+        info["shadcn_component_count"] = shadcn_count
+
+        # Icon library
+        if "lucide-react" in dep_names:
+            info["icon_library"] = "lucide-react"
+        elif "@heroicons/react" in dep_names:
+            info["icon_library"] = "@heroicons/react"
+        else:
+            info["icon_library"] = None
+
+        # Animation library
+        if "framer-motion" in dep_names:
+            info["animation_library"] = "framer-motion"
+        else:
+            info["animation_library"] = None
+
+        return info
+
+    def _detect_payment_conventions(self, dep_names: set[str]) -> dict[str, Any]:
+        """Detect payment provider from dependencies."""
+        if any(pkg in dep_names for pkg in ("stripe", "@stripe/stripe-js", "@stripe/react-stripe-js")):
+            return {"provider": "stripe", "package": "stripe"}
+
+        if "@lemonsqueezy/lemonsqueezy.js" in dep_names:
+            return {"provider": "lemonsqueezy", "package": "@lemonsqueezy/lemonsqueezy.js"}
+
+        return {"provider": "unknown", "package": None}
+
+    # ------------------------------------------------------------------
+    # External service mapping
+    # ------------------------------------------------------------------
+
+    def get_external_services(self) -> dict[str, Any]:
+        """Classify dependencies into service categories.
+
+        Returns categories with matched packages, plus an uncategorized list.
+        """
+        deps_result = self.graph.execute("MATCH (d:Dependency) RETURN d.name AS name, d.version AS version")
+
+        # Build lookup: package name -> (category, version)
+        dep_list = [(r["name"], r.get("version") or "") for r in deps_result.records]
+
+        # Build prefix lookup from _SERVICE_CATEGORIES for scoped packages
+        # e.g. "@radix-ui/react-" prefix matches any @radix-ui/react-* package
+        categories: dict[str, dict[str, Any]] = {}
+        matched_names: set[str] = set()
+
+        for cat_key, cat_info in _SERVICE_CATEGORIES.items():
+            matched_packages: list[dict[str, str]] = []
+            for dep_name, dep_version in dep_list:
+                for pkg_pattern in cat_info["packages"]:
+                    if dep_name == pkg_pattern or (pkg_pattern.endswith("*") and dep_name.startswith(pkg_pattern[:-1])):
+                        matched_packages.append({"name": dep_name, "version": dep_version})
+                        matched_names.add(dep_name)
+                        break
+            if matched_packages:
+                categories[cat_key] = {
+                    "label": cat_info["label"],
+                    "packages": matched_packages,
+                }
+
+        uncategorized = [{"name": name, "version": version} for name, version in dep_list if name not in matched_names]
+
+        return {"categories": categories, "uncategorized": uncategorized}
 
     # ------------------------------------------------------------------
     # Layer violation detection
@@ -1876,6 +2156,66 @@ class QueryEngine:
             "unauthenticated_routes": unauth_routes,
             "vulnerable_dependencies": vuln_deps,
         }
+
+    # ------------------------------------------------------------------
+    # Changelog / snapshot queries
+    # ------------------------------------------------------------------
+
+    def get_changelog(self) -> dict[str, Any]:
+        """Show what changed since last ingestion by diffing Snapshot nodes."""
+        result = self.graph.execute("MATCH (s:Snapshot) RETURN s ORDER BY s.captured_at DESC LIMIT 2")
+        snapshots = result.records
+        if not snapshots:
+            return {"status": "no_snapshots", "message": "No snapshots found. Run gristle_ingest first."}
+
+        _METRICS = [
+            "file_count",
+            "function_count",
+            "class_count",
+            "route_count",
+            "test_count",
+            "component_count",
+            "dependency_count",
+            "edge_count",
+        ]
+
+        current = snapshots[0]["s"]
+        if len(snapshots) < 2:
+            return {
+                "status": "first_ingestion",
+                "current": {m: current.get(m, 0) for m in _METRICS},
+                "captured_at": current.get("captured_at", ""),
+            }
+
+        previous = snapshots[1]["s"]
+        changes: dict[str, dict[str, int]] = {}
+        summary_parts: list[str] = []
+
+        for m in _METRICS:
+            before = previous.get(m, 0) or 0
+            after = current.get(m, 0) or 0
+            delta = after - before
+            changes[m] = {"before": before, "after": after, "delta": delta}
+            if delta != 0:
+                label = m.replace("_count", "").replace("_", " ") + "s"
+                verb = "Added" if delta > 0 else "Removed"
+                summary_parts.append(f"{verb} {abs(delta)} {label}")
+
+        return {
+            "status": "diff",
+            "changes": changes,
+            "summary": ". ".join(summary_parts) + "." if summary_parts else "No changes.",
+            "current_captured_at": current.get("captured_at", ""),
+            "previous_captured_at": previous.get("captured_at", ""),
+        }
+
+    def get_snapshot_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return all snapshots ordered by date."""
+        result = self.graph.execute(
+            "MATCH (s:Snapshot) RETURN s ORDER BY s.captured_at DESC LIMIT $limit",
+            {"limit": limit},
+        )
+        return [r["s"] for r in result.records]
 
     # ------------------------------------------------------------------
     # Source code loader

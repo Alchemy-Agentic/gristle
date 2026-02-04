@@ -136,8 +136,7 @@ class PythonParser(LanguageParser):
         )
 
         file_security = (
-            detect_hardcoded_secrets(content, "python")
-            + detect_sql_injection(content, "python")
+            detect_hardcoded_secrets(content, "python") + detect_sql_injection(content, "python")
             if not is_test_file
             else []
         )
@@ -543,8 +542,7 @@ class PythonParser(LanguageParser):
         if class_name:
             calls = [f"{class_name}.{c[5:]}" if c.startswith("self.") else c for c in calls]
             callback_refs = [
-                (f"{class_name}.{name[5:]}" if name.startswith("self.") else name, ctx)
-                for name, ctx in callback_refs
+                (f"{class_name}.{name[5:]}" if name.startswith("self.") else name, ctx) for name, ctx in callback_refs
             ]
 
         is_fixture = any(
@@ -632,7 +630,9 @@ class PythonParser(LanguageParser):
     _PY_ARRAY_METHODS = frozenset({"apply"})
 
     def _extract_callback_refs(
-        self, node: Node, src: bytes,
+        self,
+        node: Node,
+        src: bytes,
     ) -> list[tuple[str, str]]:
         """Extract (callee_name, context) for function references passed as arguments."""
         refs: list[tuple[str, str]] = []
@@ -646,7 +646,10 @@ class PythonParser(LanguageParser):
         return unique
 
     def _walk_callback_refs(
-        self, node: Node, src: bytes, out: list[tuple[str, str]],
+        self,
+        node: Node,
+        src: bytes,
+        out: list[tuple[str, str]],
     ) -> None:
         if node.type == "call":
             func_node = node.child_by_field_name("function")
@@ -681,9 +684,16 @@ class PythonParser(LanguageParser):
             return "array_method"
         return None
 
-    _PY_CALLBACK_KWARG_NAMES = frozenset({
-        "key", "default", "callback", "handler", "func", "target",
-    })
+    _PY_CALLBACK_KWARG_NAMES = frozenset(
+        {
+            "key",
+            "default",
+            "callback",
+            "handler",
+            "func",
+            "target",
+        }
+    )
 
     def _collect_py_callback_args(
         self,
@@ -705,9 +715,9 @@ class PythonParser(LanguageParser):
                 if key_node and value_node:
                     key_text = self._text(key_node, src)
                     if key_text in self._PY_CALLBACK_KWARG_NAMES and value_node.type in ("identifier", "attribute"):
-                            name = self._resolve_call_name(value_node, src)
-                            if name:
-                                out.append((name, context))
+                        name = self._resolve_call_name(value_node, src)
+                        if name:
+                            out.append((name, context))
             elif kwarg_only:
                 # For sorted/min/max, only keyword args are callbacks
                 continue
@@ -1004,7 +1014,12 @@ class PythonParser(LanguageParser):
     _FIELD_CLASS_BASES = frozenset({"BaseModel", "TypedDict", "NamedTuple"})
 
     def _extract_class_fields(
-        self, body: Node, src: bytes, file_path: str, decorators: list[str], bases: list[str],
+        self,
+        body: Node,
+        src: bytes,
+        file_path: str,
+        decorators: list[str],
+        bases: list[str],
     ) -> list[ParsedTypeField]:
         """Extract typed fields from dataclass/Pydantic/TypedDict class bodies."""
         # Only extract fields from known field-bearing class patterns
@@ -1036,14 +1051,16 @@ class PythonParser(LanguageParser):
                     type_text = self._text(type_node, src)
                     default_value = self._text(right, src) if right else None
                     is_optional = "None" in (type_text or "") or "Optional" in (type_text or "")
-                    fields.append(ParsedTypeField(
-                        name=name,
-                        type_annotation=type_text,
-                        is_optional=is_optional,
-                        default_value=default_value,
-                        file_path=file_path,
-                        line=child.start_point[0] + 1,
-                    ))
+                    fields.append(
+                        ParsedTypeField(
+                            name=name,
+                            type_annotation=type_text,
+                            is_optional=is_optional,
+                            default_value=default_value,
+                            file_path=file_path,
+                            line=child.start_point[0] + 1,
+                        )
+                    )
             elif expr.type == "type":
                 # x: int  (annotation without assignment)
                 # tree-sitter parses this as a "type" node within expression_statement

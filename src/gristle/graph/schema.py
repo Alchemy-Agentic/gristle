@@ -42,6 +42,7 @@ _INDEXES: list[tuple[str, str]] = [
     ("EnvVar", "name"),
     ("TypeField", "id"),
     ("TypeField", "name"),
+    ("Snapshot", "captured_at"),
 ]
 
 # Full-text indexes for docstring search.

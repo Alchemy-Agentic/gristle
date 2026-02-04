@@ -1018,3 +1018,66 @@ class TestMain:
         mock_settings.transport = "invalid"
         with pytest.raises(SystemExit, match="Unknown transport"):
             main()
+
+
+# ==================================================================
+# gristle_services
+# ==================================================================
+
+
+class TestGristleServices:
+    @pytest.mark.asyncio
+    async def test_returns_service_categories(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_services
+
+        engine = _mock_engine()
+        engine.get_external_services.return_value = {
+            "categories": {"database": {"label": "Database & ORM", "packages": []}},
+            "uncategorized": [],
+        }
+        srv._engines["r1"] = engine
+        result = await gristle_services()
+        assert "categories" in result
+        engine.get_external_services.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_repo_returns_error(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_services
+
+        srv._engines.clear()
+        result = await gristle_services()
+        assert "error" in result
+
+
+# ==================================================================
+# gristle_changelog
+# ==================================================================
+
+
+class TestGristleChangelog:
+    @pytest.mark.asyncio
+    async def test_returns_changelog(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_changelog
+
+        engine = _mock_engine()
+        engine.get_changelog.return_value = {
+            "status": "diff",
+            "changes": {},
+            "summary": "Added 3 files.",
+        }
+        srv._engines["r1"] = engine
+        result = await gristle_changelog()
+        assert result["status"] == "diff"
+        engine.get_changelog.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_repo_returns_error(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_changelog
+
+        srv._engines.clear()
+        result = await gristle_changelog()
+        assert "error" in result

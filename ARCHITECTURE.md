@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (28 tools + 2 resources) |
+                                          | (30 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -65,7 +65,7 @@ src/gristle/
   models.py                # All parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo graph isolation
-    schema.py              # Index creation (26 property indexes, 2 full-text)
+    schema.py              # Index creation (27 property indexes, 2 full-text)
   parsers/
     base.py                # Abstract LanguageParser base class
     registry.py            # Extension-based parser dispatch
@@ -87,7 +87,7 @@ src/gristle/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 28 tools + 2 resources
+    server.py              # MCP server, 30 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)

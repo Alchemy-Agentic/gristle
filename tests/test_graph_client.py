@@ -198,9 +198,7 @@ class TestExecute:
 class TestCreateNode:
     def test_create_node_returns_id(self):
         client, mock_graph = _make_client()
-        mock_graph.query.return_value = _fake_query_result(
-            headers=["n.id"], rows=[["file_1"]], nodes_created=1
-        )
+        mock_graph.query.return_value = _fake_query_result(headers=["n.id"], rows=[["file_1"]], nodes_created=1)
         result = client.create_node("File", {"id": "file_1", "path": "a.py"})
         assert result == "file_1"
         call_args = mock_graph.query.call_args

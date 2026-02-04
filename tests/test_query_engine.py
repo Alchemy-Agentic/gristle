@@ -1074,8 +1074,8 @@ class TestFrameworkDetection:
     def test_nextjs_detected_from_deps(self):
         """Next.js should be detected from 'next' Dependency node."""
         engine, graph = _make_engine()
-        # Queries: deps, app files, pages files, directives, api routes, middleware,
-        # then react conventions (css modules, func components, class components)
+        # Queries: deps, nextjs(app/pages/directives/api/middleware),
+        # react conventions (css modules, func, class), ui conventions (shadcn)
         graph.execute.side_effect = [
             _qr([{"name": "next"}, {"name": "react"}]),  # deps
             _qr([{"c": 10}]),  # app files
@@ -1087,6 +1087,8 @@ class TestFrameworkDetection:
             _qr([{"c": 0}]),  # css modules
             _qr([{"c": 25}]),  # functional components
             _qr([{"c": 2}]),  # class components
+            # ui conventions
+            _qr([{"c": 0}]),  # shadcn imports
         ]
         result = engine._detect_frameworks()
         assert "nextjs" in result
@@ -1104,6 +1106,8 @@ class TestFrameworkDetection:
             _qr([{"c": 0}]),  # css modules
             _qr([{"c": 25}]),  # functional components
             _qr([{"c": 2}]),  # class components
+            # ui conventions (react detected → _detect_ui_conventions)
+            _qr([{"c": 0}]),  # shadcn imports
         ]
         result = engine._detect_frameworks()
         assert "react" in result
@@ -1117,3 +1121,333 @@ class TestFrameworkDetection:
         graph.execute.return_value = _qr([])
         result = engine._detect_frameworks()
         assert result == {}
+
+
+# ==================================================================
+# External service mapping
+# ==================================================================
+
+
+class TestExternalServices:
+    def test_supabase_clerk_stripe_classified(self):
+        """Known packages should be classified into correct categories."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {"name": "@supabase/supabase-js", "version": "2.39.0"},
+                {"name": "@clerk/nextjs", "version": "4.29.0"},
+                {"name": "stripe", "version": "14.0.0"},
+                {"name": "some-unknown-lib", "version": "1.0.0"},
+            ]
+        )
+        result = engine.get_external_services()
+        assert "database" in result["categories"]
+        assert "auth" in result["categories"]
+        assert "payments" in result["categories"]
+        assert result["categories"]["database"]["label"] == "Database & ORM"
+        assert len(result["uncategorized"]) == 1
+        assert result["uncategorized"][0]["name"] == "some-unknown-lib"
+
+    def test_prefix_matching_for_scoped_packages(self):
+        """Packages should match by exact name (no wildcard patterns in current impl)."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {"name": "tailwindcss", "version": "3.4.0"},
+                {"name": "clsx", "version": "2.0.0"},
+            ]
+        )
+        result = engine.get_external_services()
+        assert "ui" in result["categories"]
+        ui_pkg_names = [p["name"] for p in result["categories"]["ui"]["packages"]]
+        assert "tailwindcss" in ui_pkg_names
+        assert "clsx" in ui_pkg_names
+
+    def test_unknown_packages_uncategorized(self):
+        """Packages not in any category should be in uncategorized."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {"name": "my-custom-lib", "version": "1.0.0"},
+            ]
+        )
+        result = engine.get_external_services()
+        assert len(result["categories"]) == 0
+        assert len(result["uncategorized"]) == 1
+
+    def test_empty_deps_returns_empty(self):
+        """No dependencies should return empty categories."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([])
+        result = engine.get_external_services()
+        assert result["categories"] == {}
+        assert result["uncategorized"] == []
+
+
+# ==================================================================
+# Vibe coder stack detection
+# ==================================================================
+
+
+class TestVibeCoderDetection:
+    def test_supabase_conventions_detected(self):
+        """Supabase conventions should include client files and auth helpers."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "@supabase/supabase-js"}, {"name": "@supabase/auth-helpers-nextjs"}]),  # deps
+            # supabase conventions: client import count
+            _qr([{"c": 5}]),
+            # supabase edge functions
+            _qr([{"c": 2}]),
+        ]
+        result = engine._detect_frameworks()
+        assert "supabase" in result
+        assert result["supabase"]["client_files"] == 5
+        assert result["supabase"]["uses_auth_helpers"] is True
+        assert result["supabase"]["edge_function_count"] == 2
+
+    def test_shadcn_detected_via_imports(self):
+        """shadcn should be detected from @/components/ui/* import patterns."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "react"}, {"name": "tailwindcss"}]),  # deps
+            # react conventions: css modules, func components, class components
+            _qr([{"c": 0}]),
+            _qr([{"c": 10}]),
+            _qr([{"c": 0}]),
+            # ui conventions: shadcn imports
+            _qr([{"c": 8}]),
+        ]
+        result = engine._detect_frameworks()
+        assert "ui" in result
+        assert result["ui"]["uses_shadcn"] is True
+        assert result["ui"]["shadcn_component_count"] == 8
+
+    def test_auth_provider_clerk(self):
+        """Clerk should be detected as auth provider."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "@clerk/nextjs"}]),  # deps
+        ]
+        result = engine._detect_frameworks()
+        assert "auth" in result
+        assert result["auth"]["provider"] == "clerk"
+
+    def test_auth_provider_nextauth(self):
+        """NextAuth should be detected as auth provider."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "next-auth"}]),  # deps
+        ]
+        result = engine._detect_frameworks()
+        assert "auth" in result
+        assert result["auth"]["provider"] == "nextauth"
+
+    def test_orm_prisma_with_schema(self):
+        """Prisma with schema file should show has_schema=True."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "@prisma/client"}]),  # deps
+            # orm: prisma schema check
+            _qr([{"c": 1}]),
+        ]
+        result = engine._detect_frameworks()
+        assert "orm" in result
+        assert result["orm"]["orm"] == "prisma"
+        assert result["orm"]["has_schema"] is True
+
+    def test_orm_drizzle(self):
+        """Drizzle should be detected as ORM."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "drizzle-orm"}]),  # deps
+        ]
+        result = engine._detect_frameworks()
+        assert "orm" in result
+        assert result["orm"]["orm"] == "drizzle"
+
+    def test_payment_stripe(self):
+        """Stripe should be detected as payment provider."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "stripe"}]),  # deps
+        ]
+        result = engine._detect_frameworks()
+        assert "payments" in result
+        assert result["payments"]["provider"] == "stripe"
+
+    def test_payment_lemonsqueezy(self):
+        """LemonSqueezy should be detected as payment provider."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "@lemonsqueezy/lemonsqueezy.js"}]),  # deps
+        ]
+        result = engine._detect_frameworks()
+        # lemonsqueezy is not in _FRAMEWORK_PACKAGES, so no "payments" key
+        # It is only in _SERVICE_CATEGORIES
+        assert "payments" not in result
+
+    def test_full_vibe_stack(self):
+        """Full vibe coder stack should detect all components."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            # deps
+            _qr(
+                [
+                    {"name": "next"},
+                    {"name": "react"},
+                    {"name": "@supabase/supabase-js"},
+                    {"name": "@clerk/nextjs"},
+                    {"name": "stripe"},
+                    {"name": "@prisma/client"},
+                    {"name": "tailwindcss"},
+                    {"name": "lucide-react"},
+                ]
+            ),
+            # nextjs conventions: app files, pages files, directives, api routes, middleware
+            _qr([{"c": 20}]),  # app files
+            _qr([{"c": 0}]),  # pages files
+            _qr([{"directive": "use client", "c": 12}]),  # directives
+            _qr([{"c": 5}]),  # api routes
+            _qr([{"c": 1}]),  # middleware
+            # react conventions (merged into nextjs.react): css modules, func, class
+            _qr([{"c": 0}]),
+            _qr([{"c": 30}]),
+            _qr([{"c": 0}]),
+            # supabase conventions: client imports, edge functions
+            _qr([{"c": 8}]),
+            _qr([{"c": 1}]),
+            # auth conventions (clerk detected from deps)
+            # orm conventions: prisma schema check
+            _qr([{"c": 1}]),
+            # ui conventions: shadcn imports
+            _qr([{"c": 6}]),
+            # payments (stripe detected from deps)
+        ]
+        result = engine._detect_frameworks()
+        assert "nextjs" in result
+        assert "supabase" in result
+        assert "auth" in result
+        assert result["auth"]["provider"] == "clerk"
+        assert "orm" in result
+        assert result["orm"]["orm"] == "prisma"
+        assert "ui" in result
+        assert result["ui"]["uses_shadcn"] is True
+        assert result["ui"]["icon_library"] == "lucide-react"
+        assert "payments" in result
+        assert result["payments"]["provider"] == "stripe"
+
+
+# ==================================================================
+# Changelog
+# ==================================================================
+
+
+class TestChangelog:
+    def test_diff_computed_correctly(self):
+        """Two snapshots should produce correct deltas."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {
+                    "s": {
+                        "captured_at": "2024-01-02T00:00:00Z",
+                        "file_count": 15,
+                        "function_count": 50,
+                        "class_count": 5,
+                        "route_count": 3,
+                        "test_count": 10,
+                        "component_count": 8,
+                        "dependency_count": 20,
+                        "edge_count": 100,
+                    }
+                },
+                {
+                    "s": {
+                        "captured_at": "2024-01-01T00:00:00Z",
+                        "file_count": 12,
+                        "function_count": 45,
+                        "class_count": 5,
+                        "route_count": 3,
+                        "test_count": 8,
+                        "component_count": 6,
+                        "dependency_count": 18,
+                        "edge_count": 80,
+                    }
+                },
+            ]
+        )
+        result = engine.get_changelog()
+        assert result["status"] == "diff"
+        assert result["changes"]["file_count"]["delta"] == 3
+        assert result["changes"]["function_count"]["delta"] == 5
+        assert result["changes"]["class_count"]["delta"] == 0
+        assert result["changes"]["edge_count"]["delta"] == 20
+        assert "Added 3 files" in result["summary"]
+
+    def test_single_snapshot_first_ingestion(self):
+        """Single snapshot should return first_ingestion status."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {
+                    "s": {
+                        "captured_at": "2024-01-01T00:00:00Z",
+                        "file_count": 10,
+                        "function_count": 30,
+                        "class_count": 3,
+                        "route_count": 2,
+                        "test_count": 5,
+                        "component_count": 4,
+                        "dependency_count": 15,
+                        "edge_count": 50,
+                    }
+                },
+            ]
+        )
+        result = engine.get_changelog()
+        assert result["status"] == "first_ingestion"
+        assert result["current"]["file_count"] == 10
+
+    def test_no_snapshots_returns_empty(self):
+        """No snapshots should return no_snapshots status."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([])
+        result = engine.get_changelog()
+        assert result["status"] == "no_snapshots"
+
+    def test_summary_text_generated(self):
+        """Summary should describe added and removed items."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {
+                    "s": {
+                        "captured_at": "2024-01-02T00:00:00Z",
+                        "file_count": 10,
+                        "function_count": 30,
+                        "class_count": 3,
+                        "route_count": 1,
+                        "test_count": 5,
+                        "component_count": 4,
+                        "dependency_count": 15,
+                        "edge_count": 50,
+                    }
+                },
+                {
+                    "s": {
+                        "captured_at": "2024-01-01T00:00:00Z",
+                        "file_count": 10,
+                        "function_count": 30,
+                        "class_count": 3,
+                        "route_count": 3,
+                        "test_count": 5,
+                        "component_count": 4,
+                        "dependency_count": 15,
+                        "edge_count": 50,
+                    }
+                },
+            ]
+        )
+        result = engine.get_changelog()
+        assert "Removed 2 routes" in result["summary"]

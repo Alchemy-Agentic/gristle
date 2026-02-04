@@ -556,6 +556,74 @@ This is useful when you don't know the name but know what the code does.
 
 ---
 
+### `gristle_services(repo_id?)`
+
+**When to use:** You want to understand what external services and integrations are used by the codebase. Classifies dependencies into categories: database, auth, payments, email, AI, storage, analytics, UI, forms, and state management.
+
+```
+gristle_services()                    # All services
+gristle_services(repo_id="a1b2c3d4")  # For a specific repo
+```
+```json
+{
+  "database": [
+    {"name": "postgresql", "file_count": 12, "usage_count": 45}
+  ],
+  "auth": [
+    {"name": "firebase", "file_count": 8, "usage_count": 23}
+  ],
+  "payments": [
+    {"name": "stripe", "file_count": 5, "usage_count": 15}
+  ],
+  "email": [
+    {"name": "sendgrid", "file_count": 3, "usage_count": 8}
+  ],
+  "ai": [
+    {"name": "openai", "file_count": 4, "usage_count": 12}
+  ],
+  "storage": [
+    {"name": "s3", "file_count": 6, "usage_count": 18}
+  ],
+  "analytics": [],
+  "ui": [
+    {"name": "react", "file_count": 24, "usage_count": 156}
+  ],
+  "forms": [],
+  "state_management": [
+    {"name": "redux", "file_count": 8, "usage_count": 32}
+  ]
+}
+```
+
+---
+
+### `gristle_changelog(repo_id?)`
+
+**When to use:** You want to see what changed since the last ingestion. Compares graph snapshots to show count deltas for files, functions, classes, routes, tests, components, dependencies, and edges.
+
+```
+gristle_changelog()                   # Since last ingestion
+gristle_changelog(repo_id="a1b2c3d4") # For a specific repo
+```
+```json
+{
+  "timestamp": "2025-02-03T10:30:45Z",
+  "compared_to": "2025-02-02T14:15:22Z",
+  "deltas": {
+    "files": {"added": 3, "removed": 1, "modified": 12, "total": 234},
+    "functions": {"added": 15, "removed": 2, "modified": 8, "total": 1245},
+    "classes": {"added": 2, "removed": 0, "modified": 3, "total": 156},
+    "routes": {"added": 1, "removed": 0, "modified": 2, "total": 45},
+    "tests": {"added": 8, "removed": 1, "modified": 4, "total": 289},
+    "components": {"added": 5, "removed": 2, "modified": 6, "total": 98},
+    "dependencies": {"added": 2, "removed": 0, "modified": 1, "total": 67},
+    "edges": {"added": 45, "removed": 8, "modified": 0, "total": 4521}
+  },
+  "summary": "45 new calls, 8 edges removed. 3 new files with 15 functions added. 1 route modified."
+}
+```
+
+---
 ## MCP Resources
 
 | Resource URI | Description |

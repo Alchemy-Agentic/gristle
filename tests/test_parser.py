@@ -519,7 +519,9 @@ class TestPythonDunderAll:
 
     def test_function_in_all_is_exported(self):
         parser = PythonParser()
-        code = '__all__ = ["foo", "bar"]\n\ndef foo():\n    pass\n\ndef bar():\n    pass\n\ndef _internal():\n    pass\n'
+        code = (
+            '__all__ = ["foo", "bar"]\n\ndef foo():\n    pass\n\ndef bar():\n    pass\n\ndef _internal():\n    pass\n'
+        )
         result = parser.parse_file("module.py", code)
         by_name = {f.name: f for f in result.functions}
         assert by_name["foo"].is_exported is True
