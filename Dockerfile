@@ -26,7 +26,7 @@ COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin/gristle /usr/local/bin/gristle
 
 ENV GRISTLE_TRANSPORT=streamable-http \
-    GRISTLE_HTTP_HOST=:: \
+    GRISTLE_HTTP_HOST= \
     GRISTLE_HTTP_PORT=8080 \
     GRISTLE_FALKORDB_HOST=localhost \
     GRISTLE_FALKORDB_PORT=6390
@@ -34,6 +34,6 @@ ENV GRISTLE_TRANSPORT=streamable-http \
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://[::1]:8080/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
 
 CMD ["gristle"]

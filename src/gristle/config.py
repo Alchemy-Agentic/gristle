@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     transport: str = "stdio"
 
     # HTTP server settings (only used with streamable-http transport)
-    # Bind to :: (dual-stack) for Railway private networking IPv6 support
-    http_host: str = "::"
+    # Empty string = dual-stack (IPv4 + IPv6) for Railway private networking
+    http_host: str = ""
     http_port: int = 8080
 
     # Dependency staleness & vulnerability checking
