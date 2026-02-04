@@ -126,6 +126,12 @@ class IngestionPipeline:
         self._func_typed_params: dict[str, list[tuple[str, str | None]]] = {}
         # Type flow: func_id -> return_type string (for RETURNS resolution)
         self._func_return_types: dict[str, str] = {}
+        # Route auth: func_id -> decorators list (for has_auth resolution)
+        self._func_decorators: dict[str, list[str]] = {}
+        # Import resolution tracking: import_id -> resolved boolean
+        self._import_resolved: dict[str, bool] = {}
+        # Test file import targets: test_file_path -> set of production file_ids (JS/TS only)
+        self._test_file_import_targets: dict[str, set[str]] = {}
 
     def _register_name(self, name: str, node_id: str) -> None:
         """Register a name in both exact and case-insensitive lookup maps."""
@@ -173,6 +179,9 @@ class IngestionPipeline:
         self._env_var_ids.clear()
         self._func_typed_params.clear()
         self._func_return_types.clear()
+        self._func_decorators.clear()
+        self._import_resolved.clear()
+        self._test_file_import_targets.clear()
 
         # Walk and collect source files
         files = walk_repo(repo_path, self.registry.supported_extensions)
@@ -555,8 +564,42 @@ class IngestionPipeline:
         result.nodes_created += counts["nodes_created"]
         result.relationships_created += counts["relationships_created"]
 
+    # Auth-related keywords in decorators and middleware names
+    _AUTH_KEYWORDS = frozenset({
+        "auth", "login_required", "permission", "protect", "jwt", "token",
+        "requires_auth", "authenticated", "verify", "guard", "session",
+        "bearer", "oauth", "apikey", "api_key", "credentials",
+    })
+
+    def _detect_route_auth(self, route: ParsedRoute, handler_id: str | None) -> bool:
+        """Detect whether a route has authentication based on middleware and handler decorators."""
+        # Check route middleware for auth keywords
+        for mw in route.middleware:
+            mw_lower = mw.lower()
+            if any(kw in mw_lower for kw in self._AUTH_KEYWORDS):
+                return True
+
+        # Check handler function decorators for auth keywords
+        if handler_id:
+            decorators = self._func_decorators.get(handler_id, [])
+            for dec in decorators:
+                dec_lower = dec.lower()
+                if any(kw in dec_lower for kw in self._AUTH_KEYWORDS):
+                    return True
+
+        return False
+
     def _build_route(self, file_id: str, route: ParsedRoute, batch: BatchCollector) -> None:
         route_id = f"route::{route.file_path}::L{route.line}::{route.method}"
+
+        # Link route to its handler function if we can find it
+        handler_id = self._id_map.get(route.handler_name)
+        if not handler_id:
+            scoped = f"{route.file_path}::{route.handler_name}"
+            handler_id = self._id_map.get(scoped)
+
+        has_auth = self._detect_route_auth(route, handler_id)
+
         batch.add_node(
             "Route",
             {
@@ -568,17 +611,13 @@ class IngestionPipeline:
                 "line": route.line,
                 "end_line": route.end_line,
                 "middleware": route.middleware,
+                "has_auth": has_auth,
             },
         )
 
         # Link route to its file
         batch.add_relationship("CONTAINS", file_id, route_id)
 
-        # Link route to its handler function if we can find it
-        handler_id = self._id_map.get(route.handler_name)
-        if not handler_id:
-            scoped = f"{route.file_path}::{route.handler_name}"
-            handler_id = self._id_map.get(scoped)
         if handler_id:
             batch.add_relationship("HANDLES", route_id, handler_id)
 
@@ -693,6 +732,9 @@ class IngestionPipeline:
         # Track fixtures by name for USES_FIXTURE edge resolution
         if func.is_fixture:
             self._fixture_map[func.name] = func_id
+        # Store decorators for route auth detection
+        if func.decorators:
+            self._func_decorators[func_id] = func.decorators
 
         batch.add_node(
             "Function",
@@ -834,12 +876,15 @@ class IngestionPipeline:
     ) -> None:
         """Create TESTS_FUNCTION edges from test functions to production functions.
 
-        For each test function (is_test=true), walk its CALLS edges up to depth 2.
-        Any non-test function reached gets a TESTS_FUNCTION edge with a depth property
-        (1 = direct call, 2 = via helper). Also computes tested_by_count on each
-        production function.
+        Uses three strategies:
+        1. Walk CALLS edges at depth 1 (direct calls from test functions)
+        2. Walk CALLS edges at depth 2 (via helper functions)
+        3. Import-based fallback: if a test file imports from a production file,
+           link test functions in that file to exported functions in the production
+           file at depth 3 (inferred from imports). This is especially important
+           for JS/TS where describe/it callbacks don't create Function nodes.
         """
-        if not self._test_func_ids:
+        if not self._test_func_ids and not self._test_file_import_targets:
             return
 
         # tested_func_id -> set of test_func_ids that exercise it
@@ -883,6 +928,13 @@ class IngestionPipeline:
                     result.test_coverage_edges += 1
                     tested_by.setdefault(callee_id, set()).add(test_id)
 
+        # Depth 3: import-based fallback for JS/TS test files.
+        # In JS/TS, describe/it callbacks don't create Function nodes, so the call
+        # graph misses most test→production relationships. This fallback infers
+        # coverage from import statements. Not applied to Python where test_*
+        # naming gives reliable call-graph resolution.
+        self._resolve_import_based_test_edges(result, batch, tested_by)
+
         # Update tested_by_count on production Function nodes via direct query
         if tested_by:
             updates = [{"id": fid, "count": len(tids)} for fid, tids in tested_by.items()]
@@ -896,6 +948,66 @@ class IngestionPipeline:
                     "UNWIND $items AS item MATCH (n:Function) WHERE n.id = item.id SET n.tested_by_count = item.count",
                     {"items": chunk},
                 )
+
+    def _resolve_import_based_test_edges(
+        self,
+        result: IngestionResult,
+        batch: BatchCollector,
+        tested_by: dict[str, set[str]],
+    ) -> None:
+        """Create TESTS_FUNCTION edges from test files to production functions via imports.
+
+        Fallback strategy for test functions that have NO depth 1-2 edges (i.e. their
+        calls didn't resolve to any production functions). This is especially important
+        for JS/TS where describe/it callbacks don't create Function nodes, so the call
+        graph can't track what they test.
+
+        Uses depth=3 to distinguish from call-based (1, 2) test edges.
+        """
+        if not self._test_file_import_targets:
+            return
+
+        # Identify test functions that already have good coverage (depth 1-2)
+        test_funcs_with_coverage: set[str] = set()
+        for _prod_id, test_ids in tested_by.items():
+            test_funcs_with_coverage.update(test_ids)
+
+        for test_file_path, target_file_ids in self._test_file_import_targets.items():
+            # Find test function IDs in this file that lack depth 1-2 coverage
+            test_func_ids_in_file = [
+                tid for tid in self._test_func_ids
+                if tid.startswith(f"func::{test_file_path}::")
+                and tid not in test_funcs_with_coverage
+            ]
+
+            if not test_func_ids_in_file:
+                continue
+
+            # For each production file imported, find its exported functions
+            for target_file_id in target_file_ids:
+                target_path = target_file_id[6:]  # strip "file::"
+                exported = self._exported_file_entities.get(target_path, {})
+                # Fall back to all entities if nothing is explicitly exported
+                entities = exported or self._file_entities.get(target_path, {})
+
+                for _name, prod_func_id in entities.items():
+                    if not prod_func_id.startswith("func::"):
+                        continue
+                    if prod_func_id in self._test_func_ids:
+                        continue
+
+                    # Create edges from each uncovered test function to production functions
+                    for test_id in test_func_ids_in_file:
+                        if test_id in tested_by.get(prod_func_id, set()):
+                            continue
+                        batch.add_merge_relationship(
+                            "TESTS_FUNCTION",
+                            test_id,
+                            prod_func_id,
+                            {"depth": 3},
+                        )
+                        result.test_coverage_edges += 1
+                        tested_by.setdefault(prod_func_id, set()).add(test_id)
 
     # Primitives that don't need RETURNS/ACCEPTS edges
     _PRIMITIVE_TYPES = frozenset({
@@ -1420,6 +1532,7 @@ class IngestionPipeline:
             file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
 
             for imp in pf.imports:
+                imp_id = f"import::{pf.path}::{imp.line}"
                 target_id = self._resolve_single_import(
                     imp,
                     file_dir,
@@ -1432,7 +1545,14 @@ class IngestionPipeline:
                 )
                 if target_id and target_id != file_id:
                     batch.add_merge_relationship("IMPORTS", file_id, target_id)
+                    self._import_resolved[imp_id] = True
+                    # Track test file import targets for TESTS_FUNCTION resolution (JS/TS only)
+                    if pf.is_test_file and pf.language != "python":
+                        target_path = target_id[6:]  # strip "file::"
+                        if target_path not in self._test_file_paths:
+                            self._test_file_import_targets.setdefault(pf.path, set()).add(target_id)
                 elif not target_id and not imp.is_relative:
+                    self._import_resolved[imp_id] = False
                     # Unresolved non-relative import = external dependency
                     pkg = self._extract_package_name(imp.module_path, pf.language)
                     if pkg:
@@ -1508,6 +1628,19 @@ class IngestionPipeline:
 
         # Link functions to the external dependencies they use
         self._resolve_dependency_usage(parsed_files, batch)
+
+        # Update Import nodes with resolved status
+        if self._import_resolved:
+            updates = [{"id": imp_id, "resolved": resolved} for imp_id, resolved in self._import_resolved.items()]
+            counts = batch.flush()
+            result.nodes_created += counts["nodes_created"]
+            result.relationships_created += counts["relationships_created"]
+            for i in range(0, len(updates), 200):
+                chunk = updates[i : i + 200]
+                self.graph.execute(
+                    "UNWIND $items AS item MATCH (n:Import) WHERE n.id = item.id SET n.resolved = item.resolved",
+                    {"items": chunk},
+                )
 
     def _extract_dependency_versions(self, repo_path: str) -> None:
         """Extract dependency version strings from manifest files.
