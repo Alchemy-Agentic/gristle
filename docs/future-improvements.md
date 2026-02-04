@@ -413,7 +413,7 @@ def get_security_issues(self, severity: str | None = None) -> dict:
 
 ---
 
-### 7. Framework Convention Detection 📋 **TODO**
+### 7. Framework Convention Detection ✅ **COMPLETED**
 **Effort:** ~4-6 days per framework
 **Impact:** Medium (Cartographer)
 
@@ -503,7 +503,7 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 
 ---
 
-### 10. Changelog Generation from Commits 📋 **TODO**
+### 10. Changelog Generation ✅ **COMPLETED**
 **Effort:** ~5-7 days
 **Impact:** Medium (Cartographer)
 
@@ -544,10 +544,10 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 | Change Impact Scoring | 3-4 days | High | Short-term | ✅ **DONE** |
 | Type Flow Analysis | 5-7 days | Very High | Short-term | ✅ **DONE** |
 | Security Pattern Detection | 6-8 days | High (new use case) | Medium-term | ✅ COMPLETED |
-| Framework Convention Detection | 4-6 days/framework | Medium | Medium-term | 📋 TODO |
+| Framework Convention Detection | 4-6 days/framework | Medium | Medium-term | ✅ **DONE** |
 | Dependency Staleness | 3-4 days | Medium | Medium-term | ✅ COMPLETED |
 | Mocking Recommendations | 2-3 days | Low-Medium | Nice-to-have | 📋 TODO |
-| Changelog Generation | 5-7 days | Medium | Nice-to-have | 📋 TODO |
+| Changelog Generation | 5-7 days | Medium | Nice-to-have | ✅ **DONE** |
 
 ---
 
@@ -590,19 +590,26 @@ Improvements to graph accuracy and depth, verified against live FalkorDB with bo
 
 ---
 
+### ✅ Phase 4: Vibe Coder Stack Intelligence (Completed)
+
+Targeted the vibe coder audience (Replit, Lovable, Bolt, v0 users). Typical stack: Next.js + Supabase + Tailwind + shadcn/ui + Clerk/NextAuth + Stripe + Prisma/Drizzle.
+
+- **External Service Mapping** (`gristle_services` tool) — classifies dependencies into 10 categories (database, auth, payments, email, AI, storage, analytics, UI, forms, state management)
+- **Vibe Coder Stack Detection** — expanded `gristle_conventions` with convention-specific analysis for auth provider, ORM, UI library (shadcn via import patterns), payments, Supabase edge functions
+- **Framework Convention Detection** — detects Next.js, React, Express, Supabase, Clerk, Prisma, Drizzle, Stripe, Tailwind with framework-specific conventions
+- **Changelog Generation** (`gristle_changelog` tool) — captures graph Snapshot nodes during ingestion, diffs between runs to show what changed (files, functions, routes, etc.)
+
+**Results:**
+- Added 5 new query methods + 2 new MCP tools (`gristle_services`, `gristle_changelog`)
+- Snapshot node type with automatic pruning (max 20)
+- 845 tests passing
+
+---
+
 ## Next Steps
 
 **Recommended next priorities:**
 
-1. **Framework Convention Detection** (~4-6 days/framework, Medium Impact)
-   - Next.js: server/client components, route types, dynamic routes
-   - FastAPI: dependencies, response models, auth patterns
-   - Django: model fields, admin registration
-
-2. **Mocking Recommendations** (~2-3 days, Low-Medium Impact)
+1. **Mocking Recommendations** (~2-3 days, Low-Medium Impact)
    - Detect functions calling external APIs/databases
    - Suggest what to mock in tests
-
-3. **Changelog Generation** (~5-7 days, Medium Impact)
-   - Diff graph snapshots between commits
-   - Generate structured changelogs
