@@ -146,6 +146,8 @@ Represents a function or method.
 | `is_entry_point` | `bool` | Route handler, main(), page default export |
 | `entry_point_reason` | `str \| None` | Why it's an entry point (e.g. `"route_handler"`, `"react_component"`, `"nextjs_page"`, `"pytest_fixture"`, `"cli_command"`) |
 | `is_fixture` | `bool` | @pytest.fixture |
+| `is_callback` | `bool` | Target of a PASSED_TO edge (function passed as argument) |
+| `is_documentation` | `bool` | True if function is in a documentation directory (docs/, design/, stories/, examples/, fixtures/, mocks/) |
 | `visibility` | `str` | `"public"` / `"protected"` / `"private"` |
 | `return_type` | `str \| None` | Return type annotation |
 | `complexity` | `int` | Cyclomatic complexity (default 1) |
@@ -200,21 +202,23 @@ Represents a function or method.
 
 Container for all entities parsed from a single source file.
 
-| Field | Type |
-|-------|------|
-| `path` | `str` |
-| `language` | `str` |
-| `classes` | `list[ParsedClass]` |
-| `functions` | `list[ParsedFunction]` |
-| `imports` | `list[ParsedImport]` |
-| `routes` | `list[ParsedRoute]` |
-| `test_cases` | `list[ParsedTestCase]` |
-| `module_docstring` | `str \| None` |
-| `line_count` | `int` |
-| `is_test_file` | `bool` |
-| `todos` | `list[str]` |
-| `env_var_refs` | `list[str]` |
-| `auth_middleware_paths` | `list[str]` |
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | `str` | Relative file path |
+| `language` | `str` | Language (python, typescript, javascript, markdown) |
+| `classes` | `list[ParsedClass]` | Classes defined in file |
+| `functions` | `list[ParsedFunction]` | Functions defined in file |
+| `imports` | `list[ParsedImport]` | Import statements |
+| `routes` | `list[ParsedRoute]` | HTTP routes |
+| `test_cases` | `list[ParsedTestCase]` | Test cases |
+| `module_docstring` | `str \| None` | Module-level docstring |
+| `line_count` | `int` | Total lines |
+| `is_test_file` | `bool` | True if in test directory |
+| `is_documentation` | `bool` | True if file is in docs/, design/, stories/, examples/, fixtures/, mocks/ directory |
+| `react_directive` | `str` | "use client" or "use server" if detected in file, else empty string |
+| `todos` | `list[str]` | TODO/FIXME/HACK comments |
+| `env_var_refs` | `list[str]` | Environment variable references |
+| `auth_middleware_paths` | `list[str]` | Auth middleware path patterns |
 
 ### ParsedEnvVar
 
@@ -293,6 +297,7 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Module docstrings:** Leading JSDoc blocks, `@module`/`@fileoverview` tags, or `//` comments extracted as `module_docstring`
 - **Auth middleware paths:** Detects `app.use('/path', authMiddleware)` patterns where middleware names contain auth keywords (auth, jwt, clerk, guard, verify, etc.). Extracted as `ParsedFile.auth_middleware_paths` for route auth detection in the pipeline.
 - **Callback detection:** Identifies function references passed as arguments to known patterns: `.use(fn)` (middleware), `.get/.post(path, fn)` (route_handler), `.on/.addEventListener(event, fn)` (callback), `.then/.catch(fn)` (callback), `.map/.filter/.forEach/.reduce/.sort(fn)` (array_method). Each produces a `(callee_name, context)` tuple on `callback_refs`.
+- **JSX callback detection:** React event handler props (`onClick`, `onChange`, `onSubmit`, etc.) are extracted as callback references with context `jsx_callback`. Only `on*` attributes with PascalCase suffix are captured; inline arrow functions are ignored.
 
 ### Config Parser (`parsers/config.py`)
 
@@ -358,7 +363,7 @@ This phase creates all relationship edges that require cross-file knowledge:
 1. **Detect Python source roots** (e.g., `src/`, `lib/`) for module path resolution.
 2. **Register stripped module keys** so `from mypackage.utils import x` resolves correctly.
 3. **Resolve CALLS edges** for every function's `calls` list using a 6-step strategy (see below).
-4. **Resolve PASSED_TO edges** for every function's `callback_refs` list using the same 6-step resolution. Each edge carries a `context` property (middleware, route_handler, callback, array_method, argument).
+4. **Resolve PASSED_TO edges** for every function's `callback_refs` list using the same 6-step resolution. Each edge carries a `context` property (middleware, route_handler, callback, array_method, argument). Target functions are marked `is_callback=true` via batch update.
 5. **Resolve INHERITS_FROM edges** between classes, populating `_class_bases` for MRO walking.
 6. **Resolve IMPORTS edges** (File -> File) based on import statements. Each import is tracked as `resolved=True` (internal) or `resolved=False` (external/unresolved).
 7. **Resolve TESTS edges** (test File -> production File) by matching import paths.
@@ -448,6 +453,10 @@ Route nodes include a `has_auth` boolean property computed from three sources:
 1. **Per-route middleware:** Middleware names on the `ParsedRoute` are checked for auth keywords (`auth`, `jwt`, `protect`, `guard`, `verify`, `session`, etc.).
 2. **Handler decorators:** If the route's handler function has decorators containing auth keywords (e.g., `@login_required`, `@jwt_required`).
 3. **App-level auth middleware:** The TS parser extracts `app.use('/path', authMiddleware)` patterns. During route building, route paths are matched against these patterns. Same-file `*` wildcards apply to all routes in that file; cross-file `*` wildcards are ignored (sub-router scoping). Explicit path patterns like `/api/admin/*` apply across files.
+
+### Unlinked Route Handler Resolution
+
+During Phase 1, route handler resolution checks the global ID map and file-scoped names. If a handler can't be resolved (e.g. Supabase edge functions where the handler is imported from a shared module), the route is tracked as "unlinked". In Phase 2, after all import maps are built, unlinked routes are resolved via `_get_imported_entities()` — the same import-aware resolution used for CALLS edges.
 
 ### Import Resolution Tracking
 

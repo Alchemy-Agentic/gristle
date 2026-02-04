@@ -150,6 +150,7 @@ class ParsedFile:
     env_var_refs: list[str] = field(default_factory=list)  # Env var names referenced in source
     security_findings: list[SecurityFinding] = field(default_factory=list)  # File-level findings
     auth_middleware_paths: list[str] = field(default_factory=list)  # Path patterns with auth middleware
+    react_directive: str | None = None  # "use client" or "use server" (Next.js)
 
 
 # ------------------------------------------------------------------

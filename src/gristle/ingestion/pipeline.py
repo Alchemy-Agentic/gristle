@@ -64,6 +64,14 @@ class IngestionPipeline:
 
     _DOC_EXTENSIONS = frozenset({"md", "mdx"})
 
+    # Path patterns indicating documentation, storybook, design mockup, or fixture dirs
+    _DOC_PATH_RE = re.compile(
+        r"(?:^|/)"
+        r"(?:docs?|stories|storybook|archive|design|handoffs?|examples?|fixtures?|mocks?|__mocks__)"
+        r"/",
+        re.IGNORECASE,
+    )
+
     def __init__(
         self,
         graph: GraphClient,
@@ -134,6 +142,10 @@ class IngestionPipeline:
         self._test_file_import_targets: dict[str, set[str]] = {}
         # App-level auth middleware paths: (path_pattern, source_file_path)
         self._auth_middleware_paths: list[tuple[str, str]] = []
+        # Unlinked routes: (route_id, handler_name, file_path) for Phase 2 resolution
+        self._unlinked_routes: list[tuple[str, str, str]] = []
+        # PASSED_TO target IDs for is_callback batch update
+        self._callback_target_ids: set[str] = set()
 
     def _register_name(self, name: str, node_id: str) -> None:
         """Register a name in both exact and case-insensitive lookup maps."""
@@ -185,6 +197,8 @@ class IngestionPipeline:
         self._import_resolved.clear()
         self._test_file_import_targets.clear()
         self._auth_middleware_paths.clear()
+        self._unlinked_routes.clear()
+        self._callback_target_ids.clear()
 
         # Walk and collect source files
         files = walk_repo(repo_path, self.registry.supported_extensions)
@@ -487,6 +501,7 @@ class IngestionPipeline:
         self._register_name(basename, file_id)
 
         # File node
+        is_doc = bool(self._DOC_PATH_RE.search(parsed.path))
         batch.add_node(
             "File",
             {
@@ -496,7 +511,9 @@ class IngestionPipeline:
                 "line_count": parsed.line_count,
                 "docstring": parsed.module_docstring or "",
                 "is_test_file": parsed.is_test_file,
+                "is_documentation": is_doc,
                 "todo_count": len(parsed.todos),
+                "react_directive": parsed.react_directive or "",
             },
         )
 
@@ -572,11 +589,26 @@ class IngestionPipeline:
         result.relationships_created += counts["relationships_created"]
 
     # Auth-related keywords in decorators and middleware names
-    _AUTH_KEYWORDS = frozenset({
-        "auth", "login_required", "permission", "protect", "jwt", "token",
-        "requires_auth", "authenticated", "verify", "guard", "session",
-        "bearer", "oauth", "apikey", "api_key", "credentials",
-    })
+    _AUTH_KEYWORDS = frozenset(
+        {
+            "auth",
+            "login_required",
+            "permission",
+            "protect",
+            "jwt",
+            "token",
+            "requires_auth",
+            "authenticated",
+            "verify",
+            "guard",
+            "session",
+            "bearer",
+            "oauth",
+            "apikey",
+            "api_key",
+            "credentials",
+        }
+    )
 
     @staticmethod
     def _path_matches_pattern(route_path: str, pattern: str) -> bool:
@@ -653,6 +685,9 @@ class IngestionPipeline:
 
         if handler_id:
             batch.add_relationship("HANDLES", route_id, handler_id)
+        elif route.handler_name and route.handler_name != "<serve>":
+            # Track for Phase 2 import-aware resolution
+            self._unlinked_routes.append((route_id, route.handler_name, route.file_path))
 
     def _build_test_case(self, file_id: str, tc: ParsedTestCase, batch: BatchCollector) -> None:
         tc_id = f"testcase::{tc.file_path}::L{tc.start_line}"
@@ -794,6 +829,7 @@ class IngestionPipeline:
                 "is_test": func.is_test,
                 "is_entry_point": func.is_entry_point,
                 "entry_point_reason": func.entry_point_reason or "",
+                "is_documentation": bool(self._DOC_PATH_RE.search(func.file_path)),
                 "todo_count": len(func.todos),
                 "security_finding_count": len(func.security_findings),
                 "security_findings": func.security_findings,
@@ -860,11 +896,28 @@ class IngestionPipeline:
         # Resolve USES_FIXTURE edges (test function param -> fixture function)
         self._resolve_fixture_edges(parsed_files, batch)
 
+        # Resolve unlinked route handlers via import-aware resolution
+        self._resolve_unlinked_route_handlers(batch)
+
         # Resolve TESTS_FUNCTION edges (test function -> production function, depth 1-2)
         self._resolve_test_function_edges(result, batch)
 
         # Resolve RETURNS and ACCEPTS edges (type flow)
         self._resolve_type_edges(parsed_files, batch)
+
+        # Update is_callback on PASSED_TO target functions
+        if self._callback_target_ids:
+            ids = [{"id": fid} for fid in self._callback_target_ids]
+            # Flush batch first so PASSED_TO edges are written
+            counts = batch.flush()
+            result.nodes_created += counts["nodes_created"]
+            result.relationships_created += counts["relationships_created"]
+            for i in range(0, len(ids), 200):
+                chunk = ids[i : i + 200]
+                self.graph.execute(
+                    "UNWIND $items AS item MATCH (n:Function) WHERE n.id = item.id SET n.is_callback = true",
+                    {"items": chunk},
+                )
 
         # Flush all Phase 2 relationships
         counts = batch.flush()
@@ -901,6 +954,36 @@ class IngestionPipeline:
             fixture_id = self._fixture_map.get(param)
             if fixture_id:
                 batch.add_merge_relationship("USES_FIXTURE", caller_id, fixture_id)
+
+    def _resolve_unlinked_route_handlers(self, batch: BatchCollector) -> None:
+        """Resolve route handlers that couldn't be linked in Phase 1.
+
+        During Phase 1, route handler resolution only checks the global ID map
+        and file-scoped names. This misses handlers imported from other files
+        (e.g. Supabase edge functions importing from _shared/ modules).
+        Phase 2 has all file entities and import maps available, so we can use
+        import-aware resolution.
+        """
+        if not self._unlinked_routes:
+            return
+
+        resolved = 0
+        for route_id, handler_name, file_path in self._unlinked_routes:
+            pf = self._parsed_files_by_path.get(file_path)
+            if not pf:
+                continue
+            imported = self._get_imported_entities(pf)
+            handler_id = imported.get(handler_name)
+            if handler_id:
+                batch.add_relationship("HANDLES", route_id, handler_id)
+                resolved += 1
+
+        if resolved:
+            logger.debug(
+                "Resolved %d/%d unlinked route handlers via imports",
+                resolved,
+                len(self._unlinked_routes),
+            )
 
     def _resolve_test_function_edges(
         self,
@@ -1008,9 +1091,9 @@ class IngestionPipeline:
         for test_file_path, target_file_ids in self._test_file_import_targets.items():
             # Find test function IDs in this file that lack depth 1-2 coverage
             test_func_ids_in_file = [
-                tid for tid in self._test_func_ids
-                if tid.startswith(f"func::{test_file_path}::")
-                and tid not in test_funcs_with_coverage
+                tid
+                for tid in self._test_func_ids
+                if tid.startswith(f"func::{test_file_path}::") and tid not in test_funcs_with_coverage
             ]
 
             if not test_func_ids_in_file:
@@ -1043,12 +1126,35 @@ class IngestionPipeline:
                         tested_by.setdefault(prod_func_id, set()).add(test_id)
 
     # Primitives that don't need RETURNS/ACCEPTS edges
-    _PRIMITIVE_TYPES = frozenset({
-        "str", "string", "int", "float", "number", "bool", "boolean",
-        "void", "None", "null", "undefined", "any", "unknown", "never",
-        "object", "bytes", "dict", "list", "tuple", "set", "frozenset",
-        "Object", "String", "Number", "Boolean",
-    })
+    _PRIMITIVE_TYPES = frozenset(
+        {
+            "str",
+            "string",
+            "int",
+            "float",
+            "number",
+            "bool",
+            "boolean",
+            "void",
+            "None",
+            "null",
+            "undefined",
+            "any",
+            "unknown",
+            "never",
+            "object",
+            "bytes",
+            "dict",
+            "list",
+            "tuple",
+            "set",
+            "frozenset",
+            "Object",
+            "String",
+            "Number",
+            "Boolean",
+        }
+    )
 
     @staticmethod
     def _unwrap_generic(type_str: str) -> str:
@@ -1127,7 +1233,7 @@ class IngestionPipeline:
         for func_id, return_type in self._func_return_types.items():
             # Extract file path from func_id to find ParsedFile context
             # func_id format: "func::file/path.ts::FuncName" or "func::file/path.ts::Class.method"
-            qn = func_id[len("func::"):]
+            qn = func_id[len("func::") :]
             file_path = qn.rsplit("::", 1)[0] if "::" in qn else ""
             pf = pf_by_path.get(file_path)
             if not pf:
@@ -1141,7 +1247,7 @@ class IngestionPipeline:
                 batch.add_merge_relationship("RETURNS", func_id, class_id)
 
         for func_id, typed_params in self._func_typed_params.items():
-            qn = func_id[len("func::"):]
+            qn = func_id[len("func::") :]
             file_path = qn.rsplit("::", 1)[0] if "::" in qn else ""
             pf = pf_by_path.get(file_path)
             if not pf:
@@ -1179,8 +1285,12 @@ class IngestionPipeline:
             callee_id = self._find_callee(ref_name, func, pf)
             if callee_id:
                 batch.add_merge_relationship(
-                    "PASSED_TO", caller_id, callee_id, {"context": context},
+                    "PASSED_TO",
+                    caller_id,
+                    callee_id,
+                    {"context": context},
                 )
+                self._callback_target_ids.add(callee_id)
 
     def _find_callee(
         self,

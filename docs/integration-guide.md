@@ -35,7 +35,7 @@ This clones the repo and runs full ingestion in one step.
 | Label | Key Properties | Purpose |
 |-------|---------------|---------|
 | `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
-| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count` | Function or method |
+| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback` | Function or method |
 | `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
 | `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative`, `resolved` | Import statement |
 | `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware`, `has_auth` | HTTP endpoint |
@@ -53,7 +53,7 @@ This clones the repo and runs full ingestion in one step.
 | `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
 | `EXPORTS` | File | Function, Class | Module exports |
 | `CALLS` | Function | Function | Function call (with `depth` property) |
-| `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument) |
+| `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument, jsx_callback) |
 | `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
 | `INHERITS_FROM` | Class | Class | Class inheritance |
 | `IMPORTS` | File | File | File-level import dependency |
@@ -84,6 +84,8 @@ When you start working on an unfamiliar codebase, call this first. It returns:
 - Route methods and entry points
 - Most-imported files (core modules)
 - Visibility distribution
+- `frameworks` object with detected frameworks and their conventions
+- `production_components` and `documentation_components` counts
 
 This gives you the mental model of the project before you start exploring specifics.
 
@@ -412,9 +414,13 @@ gristle_docs(entity="Schema", mode="find")
 
 ---
 
-### `gristle_components(limit?)`
+### `gristle_components(limit?, include_docs?)`
 
 For React/TypeScript projects. Lists components (PascalCase functions returning JSX) with usage counts. Not relevant for pure Python repos.
+
+**Parameters:**
+- `limit` — Maximum number of components to return
+- `include_docs` (bool, default False) — Include components in documentation/mockup directories (docs/, design/, stories/, etc.)
 
 ---
 

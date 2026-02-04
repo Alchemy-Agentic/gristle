@@ -192,10 +192,12 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `complexity` | Architect, Pathfinder | Complexity hotspot detection, test gap prioritization |
 | `entry_point_reason` | Cartographer, Pathfinder | **Phase A** — categorized reason: `"react_component"`, `"route_handler"`, `"pytest_fixture"`, etc. |
 | `tested_by_count` | Pathfinder, Sentinel (enrichment) | **Phase A** — number of test functions exercising this function (via `TESTS_FUNCTION` edges) |
+| `is_callback` | Pathfinder | Dead code detection — callback functions are reachable even without direct CALLS edges |
 | `visibility` | Cartographer | Public API surface filtering (`IS NULL OR 'public'`) |
 | `docstring` | Cartographer | Function documentation for abstraction descriptions and public API doc coverage |
 | `security_findings` | Sentinel | List of security finding tags (e.g. `"unsafe_call:eval"`, `"llm_output_risk:exec"`) |
 | `security_finding_count` | Sentinel | Number of security findings for prioritization |
+| `is_documentation` | Cartographer | True if function is in a documentation directory |
 
 ### Dependency Node
 | Property | Used By | How |
@@ -216,6 +218,8 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `language` | Cartographer, Architect | Language breakdown |
 | `line_count` | Architect | File size analysis |
 | `is_test_file` | Pathfinder, Architect, Cartographer | Test vs production file classification, cycle/dead export/public API filtering |
+| `is_documentation` | Cartographer | True if file is in docs/, design/, stories/, examples/ directory |
+| `react_directive` | Cartographer | "use client" or "use server" if detected |
 
 ### Class Node
 | Property | Used By | How |
@@ -252,7 +256,7 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | Edge | Used By | How |
 |------|---------|-----|
 | `CALLS` | Pathfinder, Sentinel, Architect | Call chains, blast radius, dead code |
-| `PASSED_TO` | Pathfinder, Sentinel, Architect | **Phase D** — callback/handler detection (middleware, event handlers, array method callbacks). Traversed alongside `CALLS` in impact analysis, dead code, call paths. |
+| `PASSED_TO` | Pathfinder, Sentinel, Architect | **Phase D** — callback/handler detection (middleware, event handlers, array method callbacks, JSX callbacks). Traversed alongside `CALLS` in impact analysis, dead code, call paths. |
 | `IMPORTS` | Architect | Cycle detection (configurable depth), coupling analysis |
 | `EXPORTS` | Architect, Cartographer | Dead export detection, public API surface mapping |
 | `TESTS` | Pathfinder, Sentinel | Test coverage (file-level, fallback) |
@@ -312,6 +316,8 @@ All planned improvements from the spec at `../Ziggy/docs/specs/gristle-improveme
 10. ✅ **Dead export detection** — `gristle_dead_exports` MCP tool. Finds exported entities never imported by other files. Excludes entry points (route handlers, React components, etc.) to avoid false positives.
 11. ✅ **Import cycle detection** — `gristle_cycles` MCP tool. Detects circular import chains with configurable `max_length` (default 10). Deduplicates by normalizing cycles to lexicographically smallest start node.
 12. ✅ **Public API surface** — `gristle_public_api` MCP tool. Maps all public exported entities excluding test/internal files. Returns entity names, types, file paths, and documentation percentage.
+13. ✅ **Documentation filtering** — File and Function nodes now include `is_documentation` flag to identify documentation content in docs/, design/, stories/, examples/ directories. Agents can filter out documentation when analyzing production code.
+14. ✅ **Framework directive detection** — File nodes include `react_directive` property for Next.js "use client" and "use server" directives, enabling Cartographer to identify client vs server components.
 
 ---
 

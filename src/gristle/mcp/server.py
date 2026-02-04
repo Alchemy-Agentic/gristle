@@ -558,6 +558,7 @@ async def gristle_routes(
 @mcp.tool()
 async def gristle_components(
     limit: int = 50,
+    include_docs: bool = False,
     repo_id: str | None = None,
 ) -> dict:
     """List React/UI components with usage counts.
@@ -567,13 +568,14 @@ async def gristle_components(
 
     Args:
         limit: Maximum results (default 50).
+        include_docs: Include components in documentation/mockup directories (default False).
         repo_id: Repository identifier.
     """
     engine = _resolve_engine(repo_id)
     if engine is None:
         return {"error": "No repository ingested. Call gristle_ingest first."}
 
-    components = engine.get_components(limit)
+    components = engine.get_components(limit, exclude_docs=not include_docs)
     return {"count": len(components), "components": components}
 
 

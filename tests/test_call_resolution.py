@@ -1678,8 +1678,11 @@ class TestRouteHasAuth:
 
         handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/users", handler_name="getUsers",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/users",
+            handler_name="getUsers",
+            file_path="src/routes.ts",
+            line=5,
         )
         prod_file = _make_file("src/routes.ts", functions=[handler])
         prod_file.routes = [route]
@@ -1695,8 +1698,11 @@ class TestRouteHasAuth:
 
         handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/users", handler_name="getUsers",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/users",
+            handler_name="getUsers",
+            file_path="src/routes.ts",
+            line=5,
             middleware=["authMiddleware"],
         )
         prod_file = _make_file("src/routes.ts", functions=[handler])
@@ -1714,8 +1720,11 @@ class TestRouteHasAuth:
         handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
         handler.decorators = ["login_required"]
         route = ParsedRoute(
-            method="GET", path="/users", handler_name="getUsers",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/users",
+            handler_name="getUsers",
+            file_path="src/routes.ts",
+            line=5,
         )
         prod_file = _make_file("src/routes.ts", functions=[handler])
         prod_file.routes = [route]
@@ -1732,8 +1741,11 @@ class TestRouteHasAuth:
         handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
         handler.decorators = ["jwt_required"]
         route = ParsedRoute(
-            method="GET", path="/users", handler_name="getUsers",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/users",
+            handler_name="getUsers",
+            file_path="src/routes.ts",
+            line=5,
         )
         prod_file = _make_file("src/routes.ts", functions=[handler])
         prod_file.routes = [route]
@@ -1749,8 +1761,11 @@ class TestRouteHasAuth:
 
         handler = _make_func("getUsers", "src/routes.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/users", handler_name="getUsers",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/users",
+            handler_name="getUsers",
+            file_path="src/routes.ts",
+            line=5,
             middleware=["protectRoute"],
         )
         prod_file = _make_file("src/routes.ts", functions=[handler])
@@ -1766,8 +1781,11 @@ class TestRouteHasAuth:
         from gristle.models import ParsedRoute
 
         route = ParsedRoute(
-            method="GET", path="/health", handler_name="unknownHandler",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/health",
+            handler_name="unknownHandler",
+            file_path="src/routes.ts",
+            line=5,
         )
         prod_file = _make_file("src/routes.ts")
         prod_file.routes = [route]
@@ -1882,8 +1900,10 @@ class TestImportBasedTestFunctionEdges:
 
         # Test function that DOES call validate directly
         test_func = _make_func(
-            "test_validate", "tests/validate.test.ts",
-            calls=["validate"], is_test=True,
+            "test_validate",
+            "tests/validate.test.ts",
+            calls=["validate"],
+            is_test=True,
         )
         test_file = _make_file(
             "tests/validate.test.ts",
@@ -1940,8 +1960,11 @@ class TestAppLevelAuthMiddleware:
 
         handler = _make_func("listUsers", "src/admin.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/api/admin/users", handler_name="listUsers",
-            file_path="src/admin.ts", line=10,
+            method="GET",
+            path="/api/admin/users",
+            handler_name="listUsers",
+            file_path="src/admin.ts",
+            line=10,
         )
         admin_file = _make_file("src/admin.ts", functions=[handler])
         admin_file.routes = [route]
@@ -1958,8 +1981,11 @@ class TestAppLevelAuthMiddleware:
 
         handler = _make_func("healthCheck", "src/routes.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/health", handler_name="healthCheck",
-            file_path="src/routes.ts", line=5,
+            method="GET",
+            path="/health",
+            handler_name="healthCheck",
+            file_path="src/routes.ts",
+            line=5,
         )
         routes_file = _make_file("src/routes.ts", functions=[handler])
         routes_file.routes = [route]
@@ -1976,8 +2002,11 @@ class TestAppLevelAuthMiddleware:
 
         handler = _make_func("getUser", "src/admin.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/users", handler_name="getUser",
-            file_path="src/admin.ts", line=10,
+            method="GET",
+            path="/users",
+            handler_name="getUser",
+            file_path="src/admin.ts",
+            line=10,
         )
         admin_file = _make_file("src/admin.ts", functions=[handler])
         admin_file.routes = [route]
@@ -1999,8 +2028,11 @@ class TestAppLevelAuthMiddleware:
         # File B has a route — should NOT inherit admin's wildcard auth
         handler = _make_func("getPublic", "src/public.ts", is_exported=True)
         route = ParsedRoute(
-            method="GET", path="/public", handler_name="getPublic",
-            file_path="src/public.ts", line=5,
+            method="GET",
+            path="/public",
+            handler_name="getPublic",
+            file_path="src/public.ts",
+            line=5,
         )
         public_file = _make_file("src/public.ts", functions=[handler])
         public_file.routes = [route]
@@ -2021,8 +2053,11 @@ class TestAppLevelAuthMiddleware:
         # File B has a route under /api/admin/
         handler = _make_func("deleteUser", "src/admin-routes.ts", is_exported=True)
         route = ParsedRoute(
-            method="DELETE", path="/api/admin/users", handler_name="deleteUser",
-            file_path="src/admin-routes.ts", line=5,
+            method="DELETE",
+            path="/api/admin/users",
+            handler_name="deleteUser",
+            file_path="src/admin-routes.ts",
+            line=5,
         )
         routes_file = _make_file("src/admin-routes.ts", functions=[handler])
         routes_file.routes = [route]
@@ -2031,3 +2066,166 @@ class TestAppLevelAuthMiddleware:
         nodes = _extract_batch_nodes(pipeline.graph, "Route")
         assert len(nodes) == 1
         assert nodes[0]["has_auth"] is True
+
+
+class TestUnlinkedRouteHandlerResolution:
+    """Route handlers imported from other files should resolve in Phase 2."""
+
+    def test_handler_resolved_via_import(self):
+        """Handler imported from shared module should link via HANDLES in Phase 2."""
+        from gristle.models import ParsedRoute
+
+        # Shared module with the handler function
+        get_model = _make_func("getPhaseModel", "supabase/functions/_shared/modelConfig.ts", is_exported=True)
+        shared_file = _make_file(
+            "supabase/functions/_shared/modelConfig.ts",
+            functions=[get_model],
+        )
+
+        # Edge function that imports and uses the handler
+        edge_func_file = _make_file(
+            "supabase/functions/analyze-intent/index.ts",
+            imports=[
+                _make_import(
+                    "./_shared/modelConfig",
+                    imported_names=["getPhaseModel"],
+                )
+            ],
+        )
+        edge_func_file.routes = [
+            ParsedRoute(
+                method="POST",
+                path="/analyze-intent",
+                handler_name="getPhaseModel",
+                file_path="supabase/functions/analyze-intent/index.ts",
+                line=10,
+            )
+        ]
+
+        pipeline = _setup_pipeline_with_resolution([shared_file, edge_func_file])
+
+        # Check HANDLES edge was created via Phase 2 resolution
+        rels = _extract_batch_create_rels(pipeline.graph)
+        handles_rels = [(f, t) for f, t, r in rels if r == "HANDLES"]
+        assert len(handles_rels) == 1
+        assert handles_rels[0][1] == "func::supabase/functions/_shared/modelConfig.ts::getPhaseModel"
+
+    def test_handler_in_same_file_resolved_in_phase1(self):
+        """Handler defined in the same file should resolve in Phase 1 (no unlinked route)."""
+        from gristle.models import ParsedRoute
+
+        handler = _make_func("validatePrompt", "supabase/functions/analyze-domain/index.ts", is_exported=True)
+        edge_func_file = _make_file(
+            "supabase/functions/analyze-domain/index.ts",
+            functions=[handler],
+        )
+        edge_func_file.routes = [
+            ParsedRoute(
+                method="POST",
+                path="/analyze-domain",
+                handler_name="validatePrompt",
+                file_path="supabase/functions/analyze-domain/index.ts",
+                line=10,
+            )
+        ]
+
+        pipeline = _setup_pipeline([edge_func_file])
+
+        # Handler should resolve in Phase 1 — not tracked as unlinked
+        assert len(pipeline._unlinked_routes) == 0
+
+        # HANDLES edge should exist
+        rels = _extract_batch_create_rels(pipeline.graph)
+        handles_rels = [(f, t) for f, t, r in rels if r == "HANDLES"]
+        assert len(handles_rels) == 1
+
+    def test_serve_placeholder_not_tracked(self):
+        """Routes with <serve> handler_name should not be tracked as unlinked."""
+        from gristle.models import ParsedRoute
+
+        edge_func_file = _make_file("supabase/functions/cleanup/index.ts")
+        edge_func_file.routes = [
+            ParsedRoute(
+                method="POST",
+                path="/cleanup",
+                handler_name="<serve>",
+                file_path="supabase/functions/cleanup/index.ts",
+                line=5,
+            )
+        ]
+
+        pipeline = _setup_pipeline([edge_func_file])
+        assert len(pipeline._unlinked_routes) == 0
+
+
+class TestDocumentationFiltering:
+    """Files in doc/design/stories directories should have is_documentation=True."""
+
+    def test_docs_dir_file_is_documentation(self):
+        """File in docs/ should have is_documentation=True on File and Function nodes."""
+        func = _make_func("MockButton", "docs/design/MockButton.tsx", is_exported=True)
+        pf = _make_file("docs/design/MockButton.tsx", functions=[func])
+
+        pipeline = _setup_pipeline([pf])
+        file_nodes = _extract_batch_nodes(pipeline.graph, "File")
+        func_nodes = _extract_batch_nodes(pipeline.graph, "Function")
+
+        doc_file = next(n for n in file_nodes if n["path"] == "docs/design/MockButton.tsx")
+        assert doc_file["is_documentation"] is True
+
+        doc_func = next(n for n in func_nodes if n["name"] == "MockButton")
+        assert doc_func["is_documentation"] is True
+
+    def test_src_dir_file_not_documentation(self):
+        """File in src/ should have is_documentation=False."""
+        func = _make_func("Button", "src/components/Button.tsx", is_exported=True)
+        pf = _make_file("src/components/Button.tsx", functions=[func])
+
+        pipeline = _setup_pipeline([pf])
+        file_nodes = _extract_batch_nodes(pipeline.graph, "File")
+        func_nodes = _extract_batch_nodes(pipeline.graph, "Function")
+
+        src_file = next(n for n in file_nodes if n["path"] == "src/components/Button.tsx")
+        assert src_file["is_documentation"] is False
+
+        src_func = next(n for n in func_nodes if n["name"] == "Button")
+        assert src_func["is_documentation"] is False
+
+    def test_storybook_dir_is_documentation(self):
+        """File in stories/ directory should be documentation."""
+        func = _make_func("ButtonStory", "stories/Button.stories.tsx")
+        pf = _make_file("stories/Button.stories.tsx", functions=[func])
+
+        pipeline = _setup_pipeline([pf])
+        file_nodes = _extract_batch_nodes(pipeline.graph, "File")
+        doc_file = next(n for n in file_nodes if n["path"] == "stories/Button.stories.tsx")
+        assert doc_file["is_documentation"] is True
+
+    def test_examples_dir_is_documentation(self):
+        """File in examples/ directory should be documentation."""
+        func = _make_func("Example", "examples/basic/App.tsx")
+        pf = _make_file("examples/basic/App.tsx", functions=[func])
+
+        pipeline = _setup_pipeline([pf])
+        file_nodes = _extract_batch_nodes(pipeline.graph, "File")
+        doc_file = next(n for n in file_nodes if n["path"] == "examples/basic/App.tsx")
+        assert doc_file["is_documentation"] is True
+
+    def test_react_directive_written_to_file_node(self):
+        """react_directive from ParsedFile should be written to File node."""
+        pf = _make_file("app/page.tsx")
+        pf.react_directive = "use client"
+
+        pipeline = _setup_pipeline([pf])
+        file_nodes = _extract_batch_nodes(pipeline.graph, "File")
+        file_node = next(n for n in file_nodes if n["path"] == "app/page.tsx")
+        assert file_node["react_directive"] == "use client"
+
+    def test_no_react_directive_writes_empty_string(self):
+        """File without react_directive should have empty string."""
+        pf = _make_file("src/utils.ts")
+
+        pipeline = _setup_pipeline([pf])
+        file_nodes = _extract_batch_nodes(pipeline.graph, "File")
+        file_node = next(n for n in file_nodes if n["path"] == "src/utils.ts")
+        assert file_node["react_directive"] == ""

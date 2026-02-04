@@ -462,6 +462,182 @@ class TestPipelinePassedTo:
 # ======================================================================
 
 
+# ======================================================================
+# JSX prop callback detection
+# ======================================================================
+
+
+class TestJSXCallbackDetection:
+    def test_onclick_handler(self):
+        parser = TypeScriptParser()
+        code = """
+function App() {
+  return <Button onClick={handleClick} />;
+}
+"""
+        result = parser.parse_file("App.tsx", code)
+        func = result.functions[0]
+        assert ("handleClick", "jsx_callback") in func.callback_refs
+
+    def test_onchange_handler(self):
+        parser = TypeScriptParser()
+        code = """
+function Form() {
+  return <input onChange={validateField} />;
+}
+"""
+        result = parser.parse_file("Form.tsx", code)
+        func = result.functions[0]
+        assert ("validateField", "jsx_callback") in func.callback_refs
+
+    def test_onsubmit_handler(self):
+        parser = TypeScriptParser()
+        code = """
+function Form() {
+  return <form onSubmit={handleSubmit}><button /></form>;
+}
+"""
+        result = parser.parse_file("Form.tsx", code)
+        func = result.functions[0]
+        assert ("handleSubmit", "jsx_callback") in func.callback_refs
+
+    def test_multiple_jsx_callbacks(self):
+        parser = TypeScriptParser()
+        code = """
+function App() {
+  return (
+    <div>
+      <Button onClick={handleClick} onHover={handleHover} />
+      <Input onChange={handleChange} />
+    </div>
+  );
+}
+"""
+        result = parser.parse_file("App.tsx", code)
+        func = result.functions[0]
+        refs = func.callback_refs
+        assert ("handleClick", "jsx_callback") in refs
+        assert ("handleHover", "jsx_callback") in refs
+        assert ("handleChange", "jsx_callback") in refs
+
+    def test_member_expression_jsx_callback(self):
+        parser = TypeScriptParser()
+        code = """
+function App() {
+  return <Button onClick={handlers.submit} />;
+}
+"""
+        result = parser.parse_file("App.tsx", code)
+        func = result.functions[0]
+        assert ("handlers.submit", "jsx_callback") in func.callback_refs
+
+    def test_non_event_jsx_props_ignored(self):
+        """Non-on* attributes like className, ref, key should not be callbacks."""
+        parser = TypeScriptParser()
+        code = """
+function App() {
+  return <div className={styles.container} ref={myRef} key={id} />;
+}
+"""
+        result = parser.parse_file("App.tsx", code)
+        func = result.functions[0]
+        jsx_refs = [(n, c) for n, c in func.callback_refs if c == "jsx_callback"]
+        assert len(jsx_refs) == 0
+
+    def test_inline_arrow_not_captured(self):
+        """Inline arrow functions like onClick={() => foo()} should not create PASSED_TO."""
+        parser = TypeScriptParser()
+        code = """
+function App() {
+  return <Button onClick={() => doSomething()} />;
+}
+"""
+        result = parser.parse_file("App.tsx", code)
+        func = result.functions[0]
+        jsx_refs = [(n, c) for n, c in func.callback_refs if c == "jsx_callback"]
+        assert len(jsx_refs) == 0
+
+    def test_jsx_callback_in_js_file(self):
+        from gristle.parsers.typescript import JavaScriptParser
+
+        parser = JavaScriptParser()
+        code = """
+function App() {
+  return <Button onClick={handleClick} />;
+}
+"""
+        result = parser.parse_file("App.jsx", code)
+        func = result.functions[0]
+        assert ("handleClick", "jsx_callback") in func.callback_refs
+
+
+# ======================================================================
+# Pipeline — is_callback marking
+# ======================================================================
+
+
+class TestPipelineIsCallback:
+    def test_callback_targets_tracked(self):
+        """PASSED_TO targets should be added to _callback_target_ids."""
+        from gristle.ingestion.batch import BatchCollector
+        from gristle.ingestion.pipeline import IngestionPipeline
+        from gristle.models import ParsedFile, ParsedFunction
+
+        mock_graph = MagicMock()
+        pipeline = IngestionPipeline(mock_graph)
+
+        caller = ParsedFunction(
+            name="App",
+            qualified_name="App.tsx::App",
+            file_path="App.tsx",
+            start_line=1,
+            end_line=5,
+            signature="function App()",
+            calls=[],
+            callback_refs=[("handleClick", "jsx_callback")],
+        )
+        pf = ParsedFile(path="App.tsx", language="typescript", functions=[caller])
+
+        pipeline._qualified_map["App.tsx::handleClick"] = "func::App.tsx::handleClick"
+        pipeline._file_entities["App.tsx"] = {"handleClick": "func::App.tsx::handleClick"}
+
+        batch = BatchCollector(mock_graph, batch_size=500)
+        pipeline._resolve_function_calls(caller, pf, batch)
+
+        assert "func::App.tsx::handleClick" in pipeline._callback_target_ids
+
+    def test_unresolved_callback_not_tracked(self):
+        """Unresolved callback refs should not be tracked."""
+        from gristle.ingestion.batch import BatchCollector
+        from gristle.ingestion.pipeline import IngestionPipeline
+        from gristle.models import ParsedFile, ParsedFunction
+
+        mock_graph = MagicMock()
+        pipeline = IngestionPipeline(mock_graph)
+
+        caller = ParsedFunction(
+            name="App",
+            qualified_name="App.tsx::App",
+            file_path="App.tsx",
+            start_line=1,
+            end_line=5,
+            signature="function App()",
+            calls=[],
+            callback_refs=[("unknownFn", "jsx_callback")],
+        )
+        pf = ParsedFile(path="App.tsx", language="typescript", functions=[caller])
+
+        batch = BatchCollector(mock_graph, batch_size=500)
+        pipeline._resolve_function_calls(caller, pf, batch)
+
+        assert len(pipeline._callback_target_ids) == 0
+
+
+# ======================================================================
+# JavaScript parser (same as TS but via JS parser)
+# ======================================================================
+
+
 class TestJSCallbackDetection:
     def test_js_parser_detects_callbacks(self):
         from gristle.parsers.typescript import JavaScriptParser

@@ -447,7 +447,9 @@ class TestModuleDocstring:
 
     def test_skips_license_header(self):
         parser = TypeScriptParser()
-        code = "/** Copyright 2024 Acme Corp. MIT License. */\n/** Data validation helpers. */\nfunction validate() {}\n"
+        code = (
+            "/** Copyright 2024 Acme Corp. MIT License. */\n/** Data validation helpers. */\nfunction validate() {}\n"
+        )
         result = parser.parse_file("utils/validate.ts", code)
         assert result.module_docstring is not None
         assert "validation" in result.module_docstring.lower()
@@ -479,6 +481,7 @@ class TestPythonModuleDocstring:
 
     def test_python_module_docstring(self):
         from gristle.parsers.python import PythonParser
+
         parser = PythonParser()
         code = '"""Utility functions for data processing."""\n\ndef process():\n    pass\n'
         result = parser.parse_file("utils.py", code)
@@ -1192,3 +1195,45 @@ app.use('*', logger);
         assert "/api/admin/*" in result.auth_middleware_paths
         assert "/api/billing/*" in result.auth_middleware_paths
         assert len(result.auth_middleware_paths) == 2
+
+
+class TestReactDirective:
+    """Test 'use client' / 'use server' directive detection."""
+
+    def test_use_client_detected(self):
+        parser = TypeScriptParser()
+        code = "'use client';\n\nimport React from 'react';\n\nexport function Button() {\n  return <button>Click</button>;\n}\n"
+        result = parser.parse_file("app/Button.tsx", code)
+        assert result.react_directive == "use client"
+
+    def test_use_server_detected(self):
+        parser = TypeScriptParser()
+        code = '"use server";\n\nexport async function createUser() {\n  // server action\n}\n'
+        result = parser.parse_file("app/actions.ts", code)
+        assert result.react_directive == "use server"
+
+    def test_no_directive_returns_none(self):
+        parser = TypeScriptParser()
+        code = "import React from 'react';\n\nexport function App() {\n  return <div />;\n}\n"
+        result = parser.parse_file("app/App.tsx", code)
+        assert result.react_directive is None
+
+    def test_directive_after_import_still_detected(self):
+        parser = TypeScriptParser()
+        code = "import React from 'react';\n'use client';\n\nexport function App() {\n  return <div />;\n}\n"
+        result = parser.parse_file("app/App.tsx", code)
+        assert result.react_directive == "use client"
+
+    def test_directive_after_code_returns_none(self):
+        parser = TypeScriptParser()
+        code = "const x = 1;\n'use client';\n\nexport function App() {\n  return <div />;\n}\n"
+        result = parser.parse_file("app/App.tsx", code)
+        assert result.react_directive is None
+
+    def test_directive_in_js_file(self):
+        from gristle.parsers.typescript import JavaScriptParser
+
+        parser = JavaScriptParser()
+        code = "'use client';\n\nexport function Button() {\n  return <button>Click</button>;\n}\n"
+        result = parser.parse_file("app/Button.jsx", code)
+        assert result.react_directive == "use client"

@@ -131,8 +131,7 @@ class TypeScriptParser(LanguageParser):
         )
 
         file_security = (
-            detect_hardcoded_secrets(content, "typescript")
-            + detect_sql_injection(content, "typescript")
+            detect_hardcoded_secrets(content, "typescript") + detect_sql_injection(content, "typescript")
             if not is_test_file
             else []
         )
@@ -167,7 +166,27 @@ class TypeScriptParser(LanguageParser):
             env_var_refs=env_var_refs,
             security_findings=file_security,
             auth_middleware_paths=auth_mw_paths,
+            react_directive=self._detect_react_directive(root, src),
         )
+
+    # ------------------------------------------------------------------
+    # React directive detection
+    # ------------------------------------------------------------------
+
+    def _detect_react_directive(self, root: Node, src: bytes) -> str | None:
+        """Detect 'use client' or 'use server' directive at the top of a file."""
+        for child in root.children:
+            if child.type == "expression_statement":
+                named = child.named_children
+                if len(named) == 1 and named[0].type == "string":
+                    text = self._text(named[0], src).strip("'\"")
+                    if text in ("use client", "use server"):
+                        return text
+            elif child.type in ("comment", "import_statement", "export_statement"):
+                continue
+            else:
+                break
+        return None
 
     # ------------------------------------------------------------------
     # Imports
@@ -467,14 +486,16 @@ class TypeScriptParser(LanguageParser):
                 default_node = child.child_by_field_name("value")
                 default_value = self._text(default_node, src) if default_node else None
 
-                fields.append(ParsedTypeField(
-                    name=name,
-                    type_annotation=type_text,
-                    is_optional=is_optional,
-                    default_value=default_value,
-                    file_path=file_path,
-                    line=child.start_point[0] + 1,
-                ))
+                fields.append(
+                    ParsedTypeField(
+                        name=name,
+                        type_annotation=type_text,
+                        is_optional=is_optional,
+                        default_value=default_value,
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    )
+                )
             elif child.type == "enum_assignment":
                 # Enum member: enum Status { Active = 0, Inactive = 1 }
                 name_node = child.child_by_field_name("name")
@@ -483,13 +504,15 @@ class TypeScriptParser(LanguageParser):
                 name = self._text(name_node, src)
                 value_node = child.child_by_field_name("value")
                 default_value = self._text(value_node, src) if value_node else None
-                fields.append(ParsedTypeField(
-                    name=name,
-                    type_annotation=None,
-                    default_value=default_value,
-                    file_path=file_path,
-                    line=child.start_point[0] + 1,
-                ))
+                fields.append(
+                    ParsedTypeField(
+                        name=name,
+                        type_annotation=None,
+                        default_value=default_value,
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    )
+                )
         return fields
 
     def _extract_typed_params(self, params_node: Node | None, src: bytes) -> list[tuple[str, str | None]]:
@@ -682,10 +705,21 @@ class TypeScriptParser(LanguageParser):
     _ROUTE_METHODS = frozenset({"get", "post", "put", "delete", "patch", "all", "head", "options"})
     _EVENT_METHODS = frozenset({"on", "once", "addEventListener", "addListener", "removeListener"})
     _PROMISE_METHODS = frozenset({"then", "catch", "finally"})
-    _ARRAY_METHODS = frozenset({
-        "map", "filter", "reduce", "forEach", "find", "findIndex",
-        "some", "every", "flatMap", "sort", "reduceRight",
-    })
+    _ARRAY_METHODS = frozenset(
+        {
+            "map",
+            "filter",
+            "reduce",
+            "forEach",
+            "find",
+            "findIndex",
+            "some",
+            "every",
+            "flatMap",
+            "sort",
+            "reduceRight",
+        }
+    )
 
     def _extract_calls(self, node: Node, src: bytes) -> list[str]:
         calls: list[str] = []
@@ -699,7 +733,9 @@ class TypeScriptParser(LanguageParser):
         return unique
 
     def _extract_callback_refs(
-        self, node: Node, src: bytes,
+        self,
+        node: Node,
+        src: bytes,
     ) -> list[tuple[str, str]]:
         """Extract (callee_name, context) for function references passed as arguments."""
         refs: list[tuple[str, str]] = []
@@ -713,8 +749,13 @@ class TypeScriptParser(LanguageParser):
                 unique.append(r)
         return unique
 
+    _JSX_EVENT_PREFIX = "on"
+
     def _walk_callback_refs(
-        self, node: Node, src: bytes, out: list[tuple[str, str]],
+        self,
+        node: Node,
+        src: bytes,
+        out: list[tuple[str, str]],
     ) -> None:
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
@@ -724,8 +765,41 @@ class TypeScriptParser(LanguageParser):
                 context = self._classify_callback_context(method_name)
                 if context:
                     self._collect_callback_args(args_node, src, context, out)
+        # JSX attributes: <Component onClick={handler} /> -> PASSED_TO
+        if node.type == "jsx_attribute":
+            self._collect_jsx_callback(node, src, out)
         for child in node.children:
             self._walk_callback_refs(child, src, out)
+
+    def _collect_jsx_callback(
+        self,
+        attr_node: Node,
+        src: bytes,
+        out: list[tuple[str, str]],
+    ) -> None:
+        """Extract callback from JSX event handler attributes (e.g. onClick={handler})."""
+        named = attr_node.named_children
+        if len(named) < 2:
+            return
+        # First named child is property_identifier, second is jsx_expression
+        name_node = named[0]
+        if name_node.type != "property_identifier":
+            return
+        attr_name = self._text(name_node, src)
+        if not attr_name:
+            return
+        # Only treat on* attributes as callbacks (onClick, onChange, onSubmit, etc.)
+        if not (attr_name.startswith(self._JSX_EVENT_PREFIX) and len(attr_name) > 2 and attr_name[2].isupper()):
+            return
+        value_node = named[1]
+        if value_node.type != "jsx_expression":
+            return
+        # The expression inside {}: look for identifier or member_expression
+        for child in value_node.named_children:
+            if child.type in ("identifier", "member_expression"):
+                name = self._resolve_call_name(child, src)
+                if name:
+                    out.append((name, "jsx_callback"))
 
     def _get_method_name(self, func_node: Node, src: bytes) -> str | None:
         """Extract the method name from a call expression's function node."""
@@ -1187,11 +1261,27 @@ class TypeScriptParser(LanguageParser):
         return routes
 
     # Auth keywords for detecting auth middleware in .use() calls
-    _AUTH_MW_KEYWORDS = frozenset({
-        "auth", "login", "permission", "protect", "jwt", "token",
-        "verify", "guard", "session", "bearer", "oauth", "apikey",
-        "api_key", "credentials", "clerk", "passport", "unkey",
-    })
+    _AUTH_MW_KEYWORDS = frozenset(
+        {
+            "auth",
+            "login",
+            "permission",
+            "protect",
+            "jwt",
+            "token",
+            "verify",
+            "guard",
+            "session",
+            "bearer",
+            "oauth",
+            "apikey",
+            "api_key",
+            "credentials",
+            "clerk",
+            "passport",
+            "unkey",
+        }
+    )
 
     def _extract_auth_middleware_paths(self, root: Node, src: bytes) -> list[str]:
         """Extract path patterns guarded by auth middleware via .use() calls.
@@ -1607,8 +1697,7 @@ class JavaScriptParser(LanguageParser):
         functions = self._ts_parser._extract_module_functions(root, src, file_path)
 
         file_security = (
-            detect_hardcoded_secrets(content, "javascript")
-            + detect_sql_injection(content, "javascript")
+            detect_hardcoded_secrets(content, "javascript") + detect_sql_injection(content, "javascript")
             if not is_test_file
             else []
         )
@@ -1642,6 +1731,7 @@ class JavaScriptParser(LanguageParser):
             todos=self._ts_parser._extract_todos(root, src),
             env_var_refs=env_var_refs,
             security_findings=file_security,
+            react_directive=self._ts_parser._detect_react_directive(root, src),
         )
 
         # Detect serve() / Deno.serve() entry points

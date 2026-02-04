@@ -429,8 +429,7 @@ class TestImpactScoring:
             "routes": [{"method": "GET", "path": "/users", "file_path": "api.py", "line": 10}],
         }
         transitive_callers = [
-            {"caller": f"api.caller{i}", "file_path": f"mod{i}.py", "depth": i % 2 + 1}
-            for i in range(10)
+            {"caller": f"api.caller{i}", "file_path": f"mod{i}.py", "depth": i % 2 + 1} for i in range(10)
         ]
         engine, graph = _make_engine()
         graph.execute.side_effect = [
@@ -880,7 +879,7 @@ class TestGetTodos:
 class TestInferConventions:
     def test_infer_conventions(self):
         dir_stats = [{"language": "python", "file_count": 30}]
-        component_stats = [{"file_path": "src/components/Button.tsx"}]
+        component_stats = [{"file_path": "src/components/Button.tsx", "is_documentation": False}]
         test_stats = [{"path": "tests/test_api.py"}, {"path": "tests/test_auth.py"}]
         route_stats = [{"method": "GET", "count": 10}, {"method": "POST", "count": 5}]
         entry_points = [{"name": "main", "file_path": "app.py", "signature": "def main()"}]
@@ -898,16 +897,20 @@ class TestInferConventions:
             _qr(top_imported),
             _qr(visibility_stats),
             _qr(layer_violations),  # detect_layer_violations query
+            _qr([]),  # _detect_frameworks: dependency names (empty)
         ]
         result = engine.infer_conventions()
         assert result["languages"]["python"] == 30
         assert result["route_methods"]["GET"] == 10
         assert "tests" in result["test_locations"]
         assert "src/components" in result["component_locations"]
+        assert result["production_components"] == 1
+        assert result["documentation_components"] == 0
         assert len(result["entry_points"]) == 1
         assert result["visibility_distribution"]["public"] == 80
         assert "layer_violations" in result
         assert result["layer_violations"]["total"] == 1
+        assert result["frameworks"] == {}
 
 
 # ==================================================================
@@ -932,7 +935,15 @@ class TestDependencies:
         funcs = [
             {"name": "fetch", "qualified_name": "api.fetch", "file_path": "api.py", "start_line": 10, "is_test": False},
         ]
-        health = [{"version": ">=2.28.0", "latest_version": "2.31.0", "is_outdated": True, "vulnerability_count": 0, "vulnerabilities": []}]
+        health = [
+            {
+                "version": ">=2.28.0",
+                "latest_version": "2.31.0",
+                "is_outdated": True,
+                "vulnerability_count": 0,
+                "vulnerabilities": [],
+            }
+        ]
         engine, graph = _make_engine()
         graph.execute.side_effect = [_qr(files), _qr(funcs), _qr(health)]
         result = engine.get_dependency_users("requests")
@@ -992,3 +1003,117 @@ class TestLoadSource:
     def test_load_source_missing_file(self):
         engine = QueryEngine(MagicMock(), repo_path="/nonexistent")
         assert engine._load_source("missing.py", 1, 5) is None
+
+
+# ==================================================================
+# Component filtering (is_documentation)
+# ==================================================================
+
+
+class TestComponentFiltering:
+    def test_exclude_docs_filters_documentation_components(self):
+        """exclude_docs=True should pass the parameter to the Cypher query."""
+        recs = [
+            {
+                "name": "Button",
+                "qualified_name": "src/Button.tsx::Button",
+                "file_path": "src/Button.tsx",
+                "start_line": 1,
+                "signature": "function Button()",
+                "is_exported": True,
+                "is_documentation": False,
+                "usage_count": 5,
+            },
+        ]
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(recs)
+        result = engine.get_components(limit=50, exclude_docs=True)
+        assert len(result) == 1
+        # Verify the query was called with correct params
+        params = graph.execute.call_args[0][1]
+        assert params["exclude_docs"] is True
+
+    def test_include_docs_shows_all(self):
+        """exclude_docs=False should pass false to the Cypher query."""
+        recs = [
+            {
+                "name": "Button",
+                "qualified_name": "src/Button.tsx::Button",
+                "file_path": "src/Button.tsx",
+                "start_line": 1,
+                "signature": "function Button()",
+                "is_exported": True,
+                "is_documentation": False,
+                "usage_count": 5,
+            },
+            {
+                "name": "MockButton",
+                "qualified_name": "docs/MockButton.tsx::MockButton",
+                "file_path": "docs/MockButton.tsx",
+                "start_line": 1,
+                "signature": "function MockButton()",
+                "is_exported": True,
+                "is_documentation": True,
+                "usage_count": 0,
+            },
+        ]
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(recs)
+        result = engine.get_components(limit=50, exclude_docs=False)
+        assert len(result) == 2
+        params = graph.execute.call_args[0][1]
+        assert params["exclude_docs"] is False
+
+
+# ==================================================================
+# Framework detection
+# ==================================================================
+
+
+class TestFrameworkDetection:
+    def test_nextjs_detected_from_deps(self):
+        """Next.js should be detected from 'next' Dependency node."""
+        engine, graph = _make_engine()
+        # Queries: deps, app files, pages files, directives, api routes, middleware,
+        # then react conventions (css modules, func components, class components)
+        graph.execute.side_effect = [
+            _qr([{"name": "next"}, {"name": "react"}]),  # deps
+            _qr([{"c": 10}]),  # app files
+            _qr([{"c": 0}]),  # pages files
+            _qr([{"directive": "use client", "c": 5}]),  # directives
+            _qr([{"c": 3}]),  # api routes
+            _qr([{"c": 1}]),  # middleware
+            # react conventions (merged into nextjs.react)
+            _qr([{"c": 0}]),  # css modules
+            _qr([{"c": 25}]),  # functional components
+            _qr([{"c": 2}]),  # class components
+        ]
+        result = engine._detect_frameworks()
+        assert "nextjs" in result
+        assert result["nextjs"]["router"] == "app"
+        assert result["nextjs"]["use_client"] == 5
+        assert result["nextjs"]["api_routes"] == 3
+        assert result["nextjs"]["has_middleware"] is True
+
+    def test_react_conventions_detected(self):
+        """React state management and styling should be detected from deps."""
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([{"name": "react"}, {"name": "zustand"}, {"name": "tailwindcss"}]),  # deps
+            # React conventions: css modules check, func components, class components
+            _qr([{"c": 0}]),  # css modules
+            _qr([{"c": 25}]),  # functional components
+            _qr([{"c": 2}]),  # class components
+        ]
+        result = engine._detect_frameworks()
+        assert "react" in result
+        assert "zustand" in result["react"]["state_management"]
+        assert "tailwind" in result["react"]["styling"]
+        assert result["react"]["component_style"] == "functional"
+
+    def test_empty_deps_returns_empty(self):
+        """No deps should return empty frameworks dict."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([])
+        result = engine._detect_frameworks()
+        assert result == {}

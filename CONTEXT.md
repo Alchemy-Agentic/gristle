@@ -19,6 +19,8 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 
 ### Graph Schema
 **11 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField
+- File: includes `is_documentation`, `react_directive` properties
+- Function: includes `is_documentation` property
 
 **20 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS
 
@@ -30,7 +32,9 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
-- 28 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components, deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health
+- 28 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components (with `include_docs` parameter), deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health
+  - `gristle_components`: `include_docs` parameter filters documentation components
+  - `gristle_conventions`: returns `frameworks` and `production_components`/`documentation_components` in output
 - 2 resources: `gristle://repos`, `gristle://repos/{repo_id}/overview`
 - Transports: stdio (local) + streamable-http (remote/Railway)
 - Optional bearer token auth (`GRISTLE_API_KEY`)
@@ -48,7 +52,7 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - Incremental file watcher
 - Optional semantic search (sentence-transformers)
 - Structured logging (JSON for prod, text for dev)
-- 791 tests (mock graph clients, no FalkorDB needed for CI)
+- 821 tests (mock graph clients, no FalkorDB needed for CI)
 
 ---
 
@@ -135,6 +139,12 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 - Python `__all__` export detection — functions/classes listed in `__all__` get `is_exported=True`, creating EXPORTS edges
 - App-level auth middleware detection — TS parser extracts `app.use('/path', authMiddleware)` patterns, pipeline matches route paths against auth middleware path patterns
 - Dependency staleness & vulnerability checking — enriches Dependency nodes with latest versions from npm/PyPI and CVEs from OSV.dev (`gristle_dependency_health` tool)
+- JSX prop callback detection — React `on*` attributes like `onClick={handler}` create PASSED_TO edges with context `jsx_callback`
+- Deno.serve handler resolution — Phase 2 import-aware resolution links route handlers imported from shared modules (e.g. Supabase edge functions importing from `_shared/`)
+- `is_callback` marking — functions that are PASSED_TO targets get `is_callback=true` set via batch update
+- Documentation/mockup filtering — `is_documentation` property on File and Function nodes flags components in docs/, design/, stories/, examples/ directories; excluded by default from `gristle_components`, `gristle_dead_exports`, and `gristle_public_api`
+- React directive detection — `react_directive` property on File nodes captures `"use client"` or `"use server"` directives (Next.js)
+- Framework convention detection — `gristle_conventions` now returns detected frameworks (Next.js, React, Express, etc.) with framework-specific conventions (router type, state management, styling, component style)
 
 ---
 
@@ -164,7 +174,7 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 
 ```bash
 pip install -e ".[dev]"       # install with dev deps
-pytest                        # run 791 tests
+pytest                        # run 821 tests
 ruff check src/ tests/        # lint
 ruff format src/ tests/       # format
 mypy src/                     # type check

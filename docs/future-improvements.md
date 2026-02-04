@@ -565,7 +565,7 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 - Added 3 new query methods: `detect_dead_exports()`, `detect_import_cycles()`, `get_public_api()`
 - Added 4 new MCP tools: `gristle_dead_exports`, `gristle_cycles`, `gristle_public_api`, `gristle_impact_score`
 - Enhanced impact analysis with scoring algorithm
-- 791 tests passing
+- 821 tests passing
 
 ---
 
@@ -578,9 +578,12 @@ Improvements to graph accuracy and depth, verified against live FalkorDB with bo
 - **Import-based test edges (JS/TS)** — depth-3 `TESTS_FUNCTION` fallback for test functions that import production files but lack direct call coverage (Ziggy: 104→368 TESTS_FUNCTION edges)
 - **Python `__all__` export detection** — functions/classes in `__all__` get `is_exported=True`, creating EXPORTS edges
 - **App-level auth middleware** — TS parser detects `app.use('/path', authMiddleware)` patterns, pipeline matches route paths against auth middleware path patterns
+- **JSX prop callback detection** — React `on*` event handler props (onClick, onChange, etc.) create PASSED_TO edges with `jsx_callback` context
+- **Deno.serve handler resolution** — Phase 2 import-aware resolution links route handlers imported from shared modules
+- **`is_callback` marking** — PASSED_TO target functions get `is_callback=true` via batch update
 
 **Results:**
-- 791 tests passing
+- 821 tests passing
 - Ziggy test coverage: 3.1% → 6.7% (via import-based test linking)
 - Route `has_auth` populated for all routes (was `None`)
 - Import resolved: 67.9% for Ziggy, 39.2% for Gristle

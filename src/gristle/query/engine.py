@@ -628,12 +628,18 @@ class QueryEngine:
     # 11. Components
     # ------------------------------------------------------------------
 
-    def get_components(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Get all React/UI components."""
+    def get_components(self, limit: int = 50, exclude_docs: bool = True) -> list[dict[str, Any]]:
+        """Get all React/UI components.
+
+        Args:
+            limit: Maximum results.
+            exclude_docs: If True (default), exclude components in documentation/mockup directories.
+        """
         result = self.graph.execute(
             """
             MATCH (f:Function)
             WHERE f.is_component = true
+              AND ($exclude_docs = false OR f.is_documentation <> true)
             OPTIONAL MATCH (caller:Function)-[:CALLS]->(f)
             RETURN f.name AS name,
                    f.qualified_name AS qualified_name,
@@ -641,11 +647,12 @@ class QueryEngine:
                    f.start_line AS start_line,
                    f.signature AS signature,
                    f.is_exported AS is_exported,
+                   f.is_documentation AS is_documentation,
                    count(DISTINCT caller) AS usage_count
             ORDER BY usage_count DESC
             LIMIT $limit
             """,
-            {"limit": limit},
+            {"limit": limit, "exclude_docs": exclude_docs},
         )
         return result.records
 
@@ -868,7 +875,8 @@ class QueryEngine:
             """
             MATCH (f:Function)
             WHERE f.is_component = true
-            RETURN f.file_path AS file_path
+            RETURN f.file_path AS file_path,
+                   f.is_documentation AS is_documentation
             """
         )
 
@@ -920,8 +928,15 @@ class QueryEngine:
 
         # Detect folder conventions from component/test locations
         component_dirs: dict[str, int] = {}
+        production_components = 0
+        documentation_components = 0
         for rec in component_stats.records:
             path = rec["file_path"]
+            is_doc = rec.get("is_documentation")
+            if is_doc:
+                documentation_components += 1
+            else:
+                production_components += 1
             dir_part = path.rsplit("/", 1)[0] if "/" in path else ""
             # Get first 2 directory levels
             top = "/".join(dir_part.split("/")[:2])
@@ -937,10 +952,15 @@ class QueryEngine:
         # Layer violations
         layer_data = self.detect_layer_violations()
 
+        # Framework detection
+        frameworks = self._detect_frameworks()
+
         return {
             "languages": {r["language"]: r["file_count"] for r in dir_stats.records},
             "route_methods": {r["method"]: r["count"] for r in route_stats.records},
             "component_locations": dict(sorted(component_dirs.items(), key=lambda x: -x[1])[:5]),
+            "production_components": production_components,
+            "documentation_components": documentation_components,
             "test_locations": dict(sorted(test_dirs.items(), key=lambda x: -x[1])[:5]),
             "entry_points": [
                 {"name": r["name"], "file": r["file_path"], "signature": r["signature"]} for r in entry_points.records
@@ -948,7 +968,168 @@ class QueryEngine:
             "most_imported_files": [{"path": r["path"], "imports": r["import_count"]} for r in top_imported.records],
             "visibility_distribution": {r["visibility"]: r["count"] for r in visibility_stats.records},
             "layer_violations": layer_data,
+            "frameworks": frameworks,
         }
+
+    # ------------------------------------------------------------------
+    # Framework detection
+    # ------------------------------------------------------------------
+
+    # Known frameworks and their npm/PyPI package names
+    _FRAMEWORK_PACKAGES: dict[str, list[str]] = {
+        "nextjs": ["next"],
+        "react": ["react"],
+        "express": ["express"],
+        "hono": ["hono"],
+        "fastify": ["fastify"],
+        "supabase": ["@supabase/supabase-js", "supabase"],
+        "fastapi": ["fastapi"],
+        "django": ["django"],
+        "flask": ["flask"],
+        "vue": ["vue"],
+        "angular": ["@angular/core"],
+        "svelte": ["svelte"],
+        "nuxt": ["nuxt"],
+        "remix": ["@remix-run/react"],
+        "astro": ["astro"],
+    }
+
+    def _detect_frameworks(self) -> dict[str, Any]:
+        """Detect frameworks from Dependency nodes and file patterns."""
+        # Get all dependency names
+        deps_result = self.graph.execute("MATCH (d:Dependency) RETURN d.name AS name")
+        dep_names = {r["name"] for r in deps_result.records}
+
+        detected: dict[str, Any] = {}
+
+        for framework, packages in self._FRAMEWORK_PACKAGES.items():
+            if any(pkg in dep_names for pkg in packages):
+                detected[framework] = True
+
+        # Enrich with framework-specific conventions
+        if "nextjs" in detected:
+            detected["nextjs"] = self._detect_nextjs_conventions()
+
+        if "react" in detected and "nextjs" not in detected:
+            detected["react"] = self._detect_react_conventions(dep_names)
+        elif "react" in detected:
+            # React is present but Next.js is the primary framework
+            react_info = self._detect_react_conventions(dep_names)
+            if isinstance(detected.get("nextjs"), dict):
+                detected["nextjs"]["react"] = react_info
+
+        return detected
+
+    def _detect_nextjs_conventions(self) -> dict[str, Any]:
+        """Detect Next.js-specific conventions from the graph."""
+        info: dict[str, Any] = {}
+
+        # App router vs Pages router
+        app_files = self.graph.execute("MATCH (f:File) WHERE f.path CONTAINS '/app/' RETURN count(f) AS c")
+        pages_files = self.graph.execute("MATCH (f:File) WHERE f.path CONTAINS '/pages/' RETURN count(f) AS c")
+        app_count = app_files.records[0]["c"] if app_files.records else 0
+        pages_count = pages_files.records[0]["c"] if pages_files.records else 0
+
+        if app_count > 0 and pages_count > 0:
+            info["router"] = "hybrid"
+        elif app_count > 0:
+            info["router"] = "app"
+        elif pages_count > 0:
+            info["router"] = "pages"
+        else:
+            info["router"] = "unknown"
+
+        # Server vs client components (react_directive)
+        directive_result = self.graph.execute(
+            """
+            MATCH (f:File)
+            WHERE f.react_directive <> ''
+            RETURN f.react_directive AS directive, count(f) AS c
+            """
+        )
+        directives: dict[str, int] = {}
+        for r in directive_result.records:
+            directives[r["directive"]] = r["c"]
+        info["use_client"] = directives.get("use client", 0)
+        info["use_server"] = directives.get("use server", 0)
+
+        # API routes
+        api_routes = self.graph.execute(
+            """
+            MATCH (f:File)
+            WHERE f.path =~ '.*/(api|app/api)/.*route\\.[tj]sx?$'
+            RETURN count(f) AS c
+            """
+        )
+        info["api_routes"] = api_routes.records[0]["c"] if api_routes.records else 0
+
+        # Middleware
+        middleware = self.graph.execute(
+            "MATCH (f:File) WHERE f.path =~ '.*/middleware\\.[tj]sx?$' RETURN count(f) AS c"
+        )
+        info["has_middleware"] = (middleware.records[0]["c"] if middleware.records else 0) > 0
+
+        return info
+
+    def _detect_react_conventions(self, dep_names: set[str]) -> dict[str, Any]:
+        """Detect React-specific conventions."""
+        info: dict[str, Any] = {}
+
+        # State management
+        state_libs = {
+            "redux": ["redux", "@reduxjs/toolkit"],
+            "zustand": ["zustand"],
+            "jotai": ["jotai"],
+            "recoil": ["recoil"],
+            "mobx": ["mobx"],
+            "react-query": ["@tanstack/react-query", "react-query"],
+            "swr": ["swr"],
+        }
+        found_state = []
+        for lib_name, packages in state_libs.items():
+            if any(pkg in dep_names for pkg in packages):
+                found_state.append(lib_name)
+        if found_state:
+            info["state_management"] = found_state
+
+        # Styling approach
+        style_libs = {
+            "tailwind": ["tailwindcss"],
+            "styled-components": ["styled-components"],
+            "emotion": ["@emotion/react", "@emotion/styled"],
+            "mui": ["@mui/material"],
+            "chakra": ["@chakra-ui/react"],
+            "ant-design": ["antd"],
+            "css-modules": [],  # detected from file patterns
+        }
+        found_styles = []
+        for lib_name, packages in style_libs.items():
+            if packages and any(pkg in dep_names for pkg in packages):
+                found_styles.append(lib_name)
+        # Check for CSS modules via file pattern
+        css_modules = self.graph.execute("MATCH (f:File) WHERE f.path =~ '.*\\.module\\.css$' RETURN count(f) AS c")
+        if css_modules.records and css_modules.records[0]["c"] > 0:
+            found_styles.append("css-modules")
+        if found_styles:
+            info["styling"] = found_styles
+
+        # Component style: functional vs class
+        func_components = self.graph.execute("MATCH (f:Function) WHERE f.is_component = true RETURN count(f) AS c")
+        class_components = self.graph.execute(
+            """
+            MATCH (c:Class)-[:CONTAINS]->(m:Function)
+            WHERE m.name = 'render'
+            RETURN count(DISTINCT c) AS c
+            """
+        )
+        func_count = func_components.records[0]["c"] if func_components.records else 0
+        class_count = class_components.records[0]["c"] if class_components.records else 0
+        if func_count > 0 or class_count > 0:
+            info["component_style"] = "functional" if func_count > class_count else "class"
+            info["functional_components"] = func_count
+            info["class_components"] = class_count
+
+        return info
 
     # ------------------------------------------------------------------
     # Layer violation detection
@@ -987,9 +1168,7 @@ class QueryEngine:
                 return layers[lower]
         return None
 
-    def detect_layer_violations(
-        self, layer_config: dict[str, tuple[int, str]] | None = None
-    ) -> dict[str, Any]:
+    def detect_layer_violations(self, layer_config: dict[str, tuple[int, str]] | None = None) -> dict[str, Any]:
         """Detect architectural layer violations from IMPORTS edges.
 
         A violation occurs when a file in a higher layer imports from a
@@ -1025,15 +1204,17 @@ class QueryEngine:
             # Violation: higher layer imports from non-adjacent lower layer
             if src_num > tgt_num + 1:
                 violation_type = f"{src_name}→{tgt_name}"
-                violations.append({
-                    "source": source_path,
-                    "target": target_path,
-                    "source_layer": src_name,
-                    "target_layer": tgt_name,
-                    "source_level": src_num,
-                    "target_level": tgt_num,
-                    "violation_type": violation_type,
-                })
+                violations.append(
+                    {
+                        "source": source_path,
+                        "target": target_path,
+                        "source_layer": src_name,
+                        "target_layer": tgt_name,
+                        "source_level": src_num,
+                        "target_level": tgt_num,
+                        "violation_type": violation_type,
+                    }
+                )
                 layer_summary[violation_type] = layer_summary.get(violation_type, 0) + 1
 
         return {
@@ -1273,13 +1454,15 @@ class QueryEngine:
         # Build inputs
         inputs = []
         for r in accepts_result.records:
-            inputs.append({
-                "param_name": r["param_name"],
-                "type": r["type_name"],
-                "qualified_name": r["type_qname"],
-                "kind": r["kind"],
-                "fields": type_fields.get(r["type_qname"], []),
-            })
+            inputs.append(
+                {
+                    "param_name": r["param_name"],
+                    "type": r["type_name"],
+                    "qualified_name": r["type_qname"],
+                    "kind": r["kind"],
+                    "fields": type_fields.get(r["type_qname"], []),
+                }
+            )
 
         # Build output
         output = None
@@ -1431,6 +1614,7 @@ class QueryEngine:
               AND other.path <> file.path
         }
         AND NOT entity.is_entry_point
+        AND file.is_documentation <> true
         RETURN entity.qualified_name AS qualified_name,
                entity.name AS name,
                file.path AS file,
@@ -1512,6 +1696,7 @@ class QueryEngine:
         query = f"""
         MATCH (file:File)-[:EXPORTS]->(entity)
         WHERE NOT file.is_test_file
+          AND file.is_documentation <> true
           AND entity.visibility = 'public'
           {internal_filter}
         RETURN entity.qualified_name AS qualified_name,
@@ -1582,14 +1767,16 @@ class QueryEngine:
         by_category: dict[str, int] = {}
 
         for r in result.records:
-            all_findings.append({
-                "function": r["qualified_name"],
-                "name": r["name"],
-                "file": r["file"],
-                "line": r["line"],
-                "findings": r["findings"],
-                "count": r["count"],
-            })
+            all_findings.append(
+                {
+                    "function": r["qualified_name"],
+                    "name": r["name"],
+                    "file": r["file"],
+                    "line": r["line"],
+                    "findings": r["findings"],
+                    "count": r["count"],
+                }
+            )
             for tag in r["findings"]:
                 cat = tag.split(":")[0] if ":" in tag else tag
                 by_category[cat] = by_category.get(cat, 0) + 1

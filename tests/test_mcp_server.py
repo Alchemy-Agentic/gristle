@@ -594,7 +594,7 @@ class TestGristleComponents:
         srv._engines["r1"] = engine
         result = await gristle_components(limit=10)
         assert result["count"] == 1
-        engine.get_components.assert_called_once_with(10)
+        engine.get_components.assert_called_once_with(10, exclude_docs=True)
 
 
 # ==================================================================
