@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -118,8 +119,12 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
     )
     pipeline = IngestionPipeline(graph, _registry)
 
-    with Timer() as t:
-        result = pipeline.ingest_repo(repo_path_resolved)
+    def _ingest():
+        with Timer() as t:
+            res = pipeline.ingest_repo(repo_path_resolved)
+        return res, t.ms
+
+    result, duration_ms = await asyncio.to_thread(_ingest)
 
     engine = QueryEngine(graph, repo_path=repo_path_resolved)
     _engines[rid] = engine
@@ -131,7 +136,7 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
         extra={
             "event": "tool_ingest",
             "repo_id": rid,
-            "duration_ms": t.ms,
+            "duration_ms": duration_ms,
             "files": result.files_processed,
             "nodes": result.nodes_created,
             "rels": result.relationships_created,
@@ -155,7 +160,7 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
         "todos_found": result.todos_found,
         "dependencies_found": result.dependencies_found,
         "test_coverage_edges": result.test_coverage_edges,
-        "duration_ms": t.ms,
+        "duration_ms": duration_ms,
         "errors": result.errors[:10] if result.errors else [],
     }
 
@@ -202,21 +207,25 @@ async def gristle_ingest_github(
 
     tmp_dir = tempfile.mkdtemp(prefix="gristle_")
     try:
-        # Clone (shallow for speed)
+        # Clone (shallow for speed) — run in thread to avoid blocking event loop
         clone_kwargs: dict = {"depth": 1}
         if ref:
             clone_kwargs["branch"] = ref
 
-        with Timer() as clone_timer:
-            logger.info("Cloning %s to %s", repo_url, tmp_dir)
-            Repo.clone_from(clone_url, tmp_dir, **clone_kwargs)
+        def _clone() -> float:
+            with Timer() as t:
+                logger.info("Cloning %s to %s", repo_url, tmp_dir)
+                Repo.clone_from(clone_url, tmp_dir, **clone_kwargs)
+            return t.ms
+
+        clone_ms = await asyncio.to_thread(_clone)
 
         logger.info(
             "Clone completed",
-            extra={"event": "clone_done", "repo_id": rid, "duration_ms": clone_timer.ms},
+            extra={"event": "clone_done", "repo_id": rid, "duration_ms": clone_ms},
         )
 
-        # Ingest using existing pipeline
+        # Ingest using existing pipeline — run in thread to avoid blocking event loop
         graph = GraphClient(
             host=settings.falkordb_host,
             port=settings.falkordb_port,
@@ -225,8 +234,12 @@ async def gristle_ingest_github(
         )
         pipeline = IngestionPipeline(graph, _registry)
 
-        with Timer() as ingest_timer:
-            result = pipeline.ingest_repo(tmp_dir)
+        def _ingest():
+            with Timer() as t:
+                res = pipeline.ingest_repo(tmp_dir)
+            return res, t.ms
+
+        result, ingest_ms = await asyncio.to_thread(_ingest)
 
         engine = QueryEngine(graph, repo_path=tmp_dir)
         _engines[rid] = engine
@@ -238,7 +251,7 @@ async def gristle_ingest_github(
             extra={
                 "event": "tool_ingest_github",
                 "repo_id": rid,
-                "duration_ms": clone_timer.ms + ingest_timer.ms,
+                "duration_ms": clone_ms + ingest_ms,
                 "files": result.files_processed,
                 "nodes": result.nodes_created,
                 "rels": result.relationships_created,
@@ -260,7 +273,7 @@ async def gristle_ingest_github(
             "test_cases_found": result.test_cases_found,
             "dependencies_found": result.dependencies_found,
             "test_coverage_edges": result.test_coverage_edges,
-            "duration_ms": clone_timer.ms + ingest_timer.ms,
+            "duration_ms": clone_ms + ingest_ms,
             "errors": result.errors[:10] if result.errors else [],
         }
     except Exception as e:
