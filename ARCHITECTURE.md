@@ -249,6 +249,43 @@ Container for all entities parsed from a single source file.
 | `sections` | `list[DocumentSection]` | Heading-delimited sections |
 | `code_references` | `list[CodeReference]` | References to code entities |
 
+### ParsedModel (Schema Extraction)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Model/table name |
+| `qualified_name` | `str` | `file_path::name` |
+| `file_path` | `str` | Source file path |
+| `line_start` / `line_end` | `int` | Source location |
+| `orm` | `str` | `prisma` / `drizzle` / `typeorm` / etc. |
+| `table_name` | `str \| None` | Explicit DB table name |
+| `primary_key` | `str \| None` | PK field name(s) |
+| `is_enum` | `bool` | True for enum definitions |
+| `fields` | `list[ParsedModelField]` | Model columns |
+| `relations` | `list[ParsedModelRelation]` | Relationships to other models |
+
+### ParsedModelField
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Column name |
+| `field_type` | `str` | Application type (string, number, boolean, Date) |
+| `db_type` | `str \| None` | DB-level type (uuid, varchar, etc.) |
+| `is_primary_key` | `bool` | PK field |
+| `is_nullable` | `bool` | Nullable (default True, Prisma overrides to False) |
+| `is_foreign_key` | `bool` | FK field |
+| `references_model` | `str \| None` | FK target model |
+
+### SchemaExtractionResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `models_found` | `int` | Total models detected |
+| `fields_found` | `int` | Total fields across all models |
+| `relations_found` | `int` | Total relations detected |
+| `nodes_created` | `int` | Graph nodes written |
+| `relationships_created` | `int` | Graph edges written |
+
 ---
 
 ## Language Parsers
@@ -381,6 +418,17 @@ Runs after Phase 2 (so source file entities exist for USES_ENV edges):
 4. Creates `EnvVar` nodes for env vars defined in config files, with `DEFINED_IN` edges.
 5. For source files with `env_var_refs`, creates `EnvVar` nodes (if not already created) and `USES_ENV` edges.
 6. Deduplication: `EnvVar` nodes are keyed by name, so a var defined in `.env.example` and referenced in source creates only one node.
+
+### Schema Phase: ORM Model Detection
+
+Runs after Config Phase (needs `INHERITS_FROM` edges for ORM base class detection):
+
+1. `SchemaExtractor` receives walked files and `_path_to_id` map from pipeline.
+2. **Prisma DSL** (`.prisma` files): Regex-based parser extracts `model` and `enum` blocks with brace-counting.
+3. **Drizzle ORM** (`.ts`/`.js` files): Detects `pgTable`/`mysqlTable`/`sqliteTable` calls, extracts columns and FK references.
+4. **ORM class promoter** (P1/P2 stub): Framework placeholder for TypeORM, SQLAlchemy, Django, etc.
+5. Creates `Model` and `ModelField` nodes, plus `CONTAINS`, `HAS_MODEL_FIELD`, `REFERENCES`, `RELATED_TO`, and `PROMOTED_FROM` edges.
+6. Creates `File` nodes for `.prisma` files (not created by Phase 1 since no parser registered).
 
 ### Phase 3: Process Documentation
 

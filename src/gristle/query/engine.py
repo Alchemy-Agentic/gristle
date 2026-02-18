@@ -2218,6 +2218,103 @@ class QueryEngine:
         return [r["s"] for r in result.records]
 
     # ------------------------------------------------------------------
+    # Schema / model queries
+    # ------------------------------------------------------------------
+
+    def get_models(self) -> dict:
+        """List all database models (excluding enums) with fields and relationships."""
+        result = self.graph.execute(
+            """
+            MATCH (m:Model)
+            WHERE NOT m.is_enum
+            OPTIONAL MATCH (m)-[:HAS_MODEL_FIELD]->(f:ModelField)
+            WITH m, collect({
+                name: f.name,
+                fieldType: f.field_type,
+                dbType: f.db_type,
+                isPrimaryKey: f.is_primary_key,
+                isNullable: f.is_nullable,
+                isUnique: f.is_unique,
+                isForeignKey: f.is_foreign_key,
+                referencesModel: f.references_model
+            }) AS fields
+            OPTIONAL MATCH (m)-[r:RELATED_TO]->(other:Model)
+            WITH m, fields, collect({
+                targetModel: other.name,
+                relationType: r.relation_type,
+                foreignKeyField: r.foreign_key_field,
+                throughModel: r.through_model
+            }) AS relations
+            RETURN m.name AS name, m.orm AS orm, m.table_name AS tableName,
+                   m.file_path AS filePath, m.field_count AS fieldCount,
+                   m.primary_key AS primaryKey, m.is_junction AS isJunction,
+                   m.is_enum AS isEnum, fields, relations
+            ORDER BY m.name
+            """
+        )
+        return {"models": result.records, "count": len(result.records)}
+
+    def get_model_detail(self, model_name: str) -> dict:
+        """Get detailed information about a specific database model."""
+        result = self.graph.execute(
+            """
+            MATCH (m:Model {name: $name})
+            OPTIONAL MATCH (m)-[:HAS_MODEL_FIELD]->(f:ModelField)
+            WITH m, collect({
+                name: f.name,
+                fieldType: f.field_type,
+                dbType: f.db_type,
+                isPrimaryKey: f.is_primary_key,
+                isNullable: f.is_nullable,
+                isUnique: f.is_unique,
+                isIndexed: f.is_indexed,
+                hasDefault: f.has_default,
+                defaultValue: f.default_value,
+                isForeignKey: f.is_foreign_key,
+                referencesModel: f.references_model,
+                referencesField: f.references_field,
+                line: f.line
+            }) AS fields
+            OPTIONAL MATCH (m)-[out:RELATED_TO]->(outModel:Model)
+            WITH m, fields, collect({
+                targetModel: outModel.name,
+                relationType: out.relation_type,
+                foreignKeyField: out.foreign_key_field,
+                throughModel: out.through_model
+            }) AS outgoing
+            OPTIONAL MATCH (inModel:Model)-[inc:RELATED_TO]->(m)
+            WITH m, fields, outgoing, collect({
+                sourceModel: inModel.name,
+                relationType: inc.relation_type,
+                foreignKeyField: inc.foreign_key_field
+            }) AS incoming
+            RETURN m.name AS name, m.orm AS orm, m.table_name AS tableName,
+                   m.file_path AS filePath, m.line_start AS lineStart,
+                   m.line_end AS lineEnd, m.primary_key AS primaryKey,
+                   m.docstring AS docstring,
+                   fields, outgoing AS outgoingRelations, incoming AS incomingRelations
+            """,
+            {"name": model_name},
+        )
+        if not result.records:
+            return {"error": f"Model '{model_name}' not found."}
+        return result.records[0]
+
+    def get_model_relationships(self) -> dict:
+        """Get all model-to-model relationships."""
+        result = self.graph.execute(
+            """
+            MATCH (a:Model)-[r:RELATED_TO]->(b:Model)
+            RETURN a.name AS sourceModel, b.name AS targetModel,
+                   r.relation_type AS relationType,
+                   r.foreign_key_field AS foreignKeyField,
+                   r.through_model AS throughModel
+            ORDER BY a.name, b.name
+            """
+        )
+        return {"relationships": result.records, "count": len(result.records)}
+
+    # ------------------------------------------------------------------
     # Source code loader
     # ------------------------------------------------------------------
 

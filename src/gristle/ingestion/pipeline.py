@@ -58,6 +58,9 @@ class IngestionResult:
     test_coverage_edges: int = 0
     config_files_processed: int = 0
     env_vars_found: int = 0
+    models_found: int = 0
+    model_fields_found: int = 0
+    model_relations_found: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -211,8 +214,9 @@ class IngestionPipeline:
         self._unlinked_routes.clear()
         self._callback_target_ids.clear()
 
-        # Walk and collect source files
-        files = walk_repo(repo_path, self.registry.supported_extensions)
+        # Walk and collect source files (include .prisma for schema extraction)
+        schema_extensions = frozenset({"prisma"})
+        files = walk_repo(repo_path, self.registry.supported_extensions | schema_extensions)
         logger.info("Found %d parseable files in %s", len(files), repo_path)
 
         # Phase 1: Parse all files and build nodes
@@ -276,6 +280,30 @@ class IngestionPipeline:
             extra={
                 "event": "config_phase_done",
                 "duration_ms": config_phase.ms,
+                "repo_id": self.graph.repo_id,
+            },
+        )
+
+        # Schema phase: Detect ORM models, Prisma schemas, Drizzle tables
+        with Timer() as schema_phase:
+            from gristle.ingestion.schema_extractor import SchemaExtractor
+
+            extractor = SchemaExtractor(self.graph, dict(self._path_to_id))
+            schema_result = extractor.extract(files)
+            result.nodes_created += schema_result.nodes_created
+            result.relationships_created += schema_result.relationships_created
+            result.models_found = schema_result.models_found
+            result.model_fields_found = schema_result.fields_found
+            result.model_relations_found = schema_result.relations_found
+
+        logger.info(
+            "Schema phase complete: %d models, %d fields, %d relations",
+            schema_result.models_found,
+            schema_result.fields_found,
+            schema_result.relations_found,
+            extra={
+                "event": "schema_phase_done",
+                "duration_ms": schema_phase.ms,
                 "repo_id": self.graph.repo_id,
             },
         )

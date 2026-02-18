@@ -252,6 +252,31 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `is_optional` | Architect | Whether field is optional |
 | `default_value` | Architect | Default value if any |
 
+### Model Node
+| Property | Used By | How |
+|----------|---------|-----|
+| `name` | Domain Research | Model/table name (e.g., "User", "Post") |
+| `orm` | Domain Research | ORM framework ("prisma", "drizzle", etc.) |
+| `table_name` | Domain Research | Actual DB table name |
+| `primary_key` | Domain Research | PK field name(s) |
+| `field_count` | Domain Research | Number of fields |
+| `is_enum` | Domain Research | Filter with `WHERE NOT m.is_enum` for table models only |
+| `is_junction` | Domain Research | Many-to-many join tables |
+| `docstring` | Domain Research | Model-level documentation |
+
+### ModelField Node
+| Property | Used By | How |
+|----------|---------|-----|
+| `name` | Domain Research | Column/field name |
+| `field_type` | Domain Research | Application type (string, number, boolean, Date, object) |
+| `db_type` | Domain Research | Database type if explicit (uuid, varchar, etc.) |
+| `is_primary_key` | Domain Research | PK field |
+| `is_nullable` | Domain Research | Nullable column |
+| `is_unique` | Domain Research | Unique constraint |
+| `is_foreign_key` | Domain Research | FK field |
+| `references_model` | Domain Research | FK target model name |
+| `references_field` | Domain Research | FK target field |
+
 ### Edge Types
 | Edge | Used By | How |
 |------|---------|-----|
@@ -270,6 +295,10 @@ These properties are queried by Ziggy agents. **Renaming or removing them is a b
 | `HAS_FIELD` | Architect | Class/Interface → TypeField (type structure) |
 | `RETURNS` | Architect | Function → Class (return type resolution) |
 | `ACCEPTS` | Architect | Function → Class (parameter type, has `param_name` property) |
+| `HAS_MODEL_FIELD` | Domain Research | Model → ModelField (model's columns) |
+| `REFERENCES` | Domain Research | ModelField → Model (FK relationship) |
+| `RELATED_TO` | Domain Research | Model → Model (high-level relationship with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint`) |
+| `PROMOTED_FROM` | Domain Research | Model → Class (ORM class promoter link) |
 
 ---
 

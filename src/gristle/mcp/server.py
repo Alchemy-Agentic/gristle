@@ -160,6 +160,9 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
         "todos_found": result.todos_found,
         "dependencies_found": result.dependencies_found,
         "test_coverage_edges": result.test_coverage_edges,
+        "models_found": result.models_found,
+        "model_fields_found": result.model_fields_found,
+        "model_relations_found": result.model_relations_found,
         "duration_ms": duration_ms,
         "errors": result.errors[:10] if result.errors else [],
     }
@@ -273,6 +276,9 @@ async def gristle_ingest_github(
             "test_cases_found": result.test_cases_found,
             "dependencies_found": result.dependencies_found,
             "test_coverage_edges": result.test_coverage_edges,
+            "models_found": result.models_found,
+            "model_fields_found": result.model_fields_found,
+            "model_relations_found": result.model_relations_found,
             "duration_ms": clone_ms + ingest_ms,
             "errors": result.errors[:10] if result.errors else [],
         }
@@ -1096,6 +1102,45 @@ async def gristle_changelog(
         return {"error": "No repository loaded. Run gristle_ingest first."}
 
     return engine.get_changelog()
+
+
+@mcp.tool()
+async def gristle_models(repo_id: str | None = None) -> dict:
+    """List all database models with their fields and relationships.
+
+    Returns models detected from Prisma schemas, Drizzle table definitions,
+    and ORM class patterns (TypeORM, SQLAlchemy, Django, etc.).
+
+    Each model includes: name, ORM framework, table name, fields with types
+    and constraints, and relationships to other models.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    return engine.get_models()
+
+
+@mcp.tool()
+async def gristle_model_detail(model_name: str, repo_id: str | None = None) -> dict:
+    """Get detailed information about a specific database model.
+
+    Returns the model definition including all fields with full constraint
+    details, all relationships (incoming and outgoing), and which functions
+    read/write this model's data.
+
+    Args:
+        model_name: Name of the model to look up (e.g. "User", "Post").
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    return engine.get_model_detail(model_name)
 
 
 # ======================================================================

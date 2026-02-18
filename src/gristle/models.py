@@ -190,3 +190,65 @@ class ParsedDocument:
     sections: list[DocumentSection] = field(default_factory=list)
     code_references: list[CodeReference] = field(default_factory=list)
     line_count: int = 0
+
+
+@dataclass(slots=True)
+class ParsedModelField:
+    """A field/column in a database model."""
+
+    name: str
+    field_type: str  # Application type: "string", "number", "boolean", "Date", etc.
+    db_type: str | None = None  # DB type if explicit: "uuid", "varchar(255)", "text"
+    is_primary_key: bool = False
+    is_nullable: bool = True  # Default to nullable; ORMs override
+    is_unique: bool = False
+    is_indexed: bool = False
+    has_default: bool = False
+    default_value: str | None = None
+    is_foreign_key: bool = False
+    references_model: str | None = None  # FK target model name
+    references_field: str | None = None  # FK target field (usually "id")
+    line: int = 0
+
+
+@dataclass(slots=True)
+class ParsedModelRelation:
+    """A relationship between two models."""
+
+    target_model: str  # Name of the related model
+    relation_type: str  # "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many"
+    foreign_key_field: str | None = None  # FK field on this model (for many-to-one)
+    through_model: str | None = None  # Junction table (for many-to-many)
+    source_field: str | None = None  # ORM relation field name (e.g., Prisma relation field)
+    orm_hint: str = ""  # How detected: "prisma_relation", "fk_inference", "decorator"
+
+
+@dataclass(slots=True)
+class ParsedModel:
+    """A database model/table definition detected from ORM or schema DSL."""
+
+    name: str
+    qualified_name: str
+    file_path: str
+    line_start: int
+    line_end: int
+    orm: str  # "prisma" | "drizzle" | "mongoose" | "typeorm" | "sqlalchemy" | "django" | "sequelize"
+    table_name: str | None = None  # Explicit table name override (null = inferred from model name)
+    primary_key: str | None = None  # PK field name(s)
+    is_junction: bool = False
+    is_enum: bool = False  # True for enum definitions (Prisma enums, TS enums, etc.)
+    docstring: str | None = None
+    fields: list[ParsedModelField] = field(default_factory=list)
+    relations: list[ParsedModelRelation] = field(default_factory=list)
+    source_class_qualified_name: str | None = None  # For ORM class promoter: links back to Class node
+
+
+@dataclass(slots=True)
+class SchemaExtractionResult:
+    """Result of schema extraction phase."""
+
+    models_found: int = 0
+    fields_found: int = 0
+    relations_found: int = 0
+    nodes_created: int = 0
+    relationships_created: int = 0

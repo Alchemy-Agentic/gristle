@@ -43,6 +43,12 @@ _INDEXES: list[tuple[str, str]] = [
     ("TypeField", "id"),
     ("TypeField", "name"),
     ("Snapshot", "captured_at"),
+    ("Model", "id"),
+    ("Model", "name"),
+    ("Model", "file_path"),
+    ("Model", "orm"),
+    ("ModelField", "id"),
+    ("ModelField", "name"),
 ]
 
 # Full-text indexes for docstring search.

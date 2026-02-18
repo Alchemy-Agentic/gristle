@@ -18,21 +18,23 @@ Graph-based code intelligence for AI agents. Gristle parses repositories into a 
 - **Markdown** (`.md`, `.mdx`) — headings, sections, code references, doc type classification
 
 ### Graph Schema
-**12 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField, Snapshot
+**14 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField, Snapshot, Model, ModelField
 - File: includes `is_documentation`, `react_directive` properties
 - Function: includes `is_documentation` property
 
-**20 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS
+**24 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS, HAS_MODEL_FIELD, REFERENCES (ModelField→Model FK), RELATED_TO, PROMOTED_FROM
 
-**27 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
+**33 property indexes** + 2 full-text indexes (Function.docstring, Class.docstring)
 
-### Ingestion Pipeline (3 phases)
+### Ingestion Pipeline (3 phases + schema)
 1. **Parse & Build Nodes** — walk repo, parse files, create nodes + in-memory maps
 2. **Resolve Cross-File Edges** — CALLS (6-step resolution), INHERITS_FROM (MRO walking), IMPORTS (with `resolved` tracking), TESTS, TESTS_FUNCTION (depth 1-3, import-based fallback for JS/TS), USES_FIXTURE, USES_DEPENDENCY, RETURNS, ACCEPTS (type flow); route `has_auth` detection (middleware, decorators, app-level auth)
+- **Config Phase** — EnvVar nodes, USES_ENV edges from config files
+- **Schema Phase** — Model/ModelField nodes from Prisma schemas (.prisma), Drizzle table definitions (.ts/.js), ORM class promotion (P1/P2 stub)
 3. **Process Documentation** — Document/DocumentSection nodes, REFERENCES edges
 
 ### MCP Server
-- 30 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components (with `include_docs` parameter), deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health, services, changelog
+- 32 tools: ingest, ingest_github, drop, watch, explore, impact, impact_score, trace, search, docs, routes, components (with `include_docs` parameter), deps, tests, conventions, config, embed, semantic_search, stats, overview, dead_exports, cycles, public_api, data_contract, type_usage, security, unauthenticated_routes, dependency_health, services, changelog, models, model_detail
   - `gristle_components`: `include_docs` parameter filters documentation components
   - `gristle_conventions`: returns `frameworks` and `production_components`/`documentation_components` in output
 - 2 resources: `gristle://repos`, `gristle://repos/{repo_id}/overview`
@@ -156,8 +158,8 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 | File | Purpose |
 |------|---------|
 | `src/gristle/config.py` | All settings (GRISTLE_ prefix, Pydantic) |
-| `src/gristle/models.py` | 8 dataclasses for parsed entities |
-| `src/gristle/mcp/server.py` | MCP server (30 tools + 2 resources) |
+| `src/gristle/models.py` | 12 dataclasses for parsed entities |
+| `src/gristle/mcp/server.py` | MCP server (32 tools + 2 resources) |
 | `src/gristle/mcp/auth.py` | Bearer token auth |
 | `src/gristle/ingestion/pipeline.py` | Three-phase graph builder (~1700 lines, core logic) |
 | `src/gristle/ingestion/batch.py` | BatchCollector for UNWIND writes |
@@ -166,10 +168,13 @@ All planned improvements from `../Ziggy/docs/specs/gristle-improvements.md` are 
 | `src/gristle/parsers/python.py` | Python parser (~900 lines) |
 | `src/gristle/parsers/typescript.py` | TS/JS parser (~1500 lines) |
 | `src/gristle/parsers/markdown.py` | Markdown parser (~200 lines) |
+| `src/gristle/parsers/prisma.py` | Prisma schema parser (~330 lines) |
+| `src/gristle/parsers/drizzle.py` | Drizzle ORM schema parser (~260 lines) |
 | `src/gristle/parsers/registry.py` | Extension-based dispatch |
+| `src/gristle/ingestion/schema_extractor.py` | Schema extraction orchestrator |
 | `src/gristle/query/engine.py` | 20+ Cypher query templates |
 | `src/gristle/graph/client.py` | FalkorDB wrapper, per-repo isolation |
-| `src/gristle/graph/schema.py` | Index creation (22 + 2 full-text) |
+| `src/gristle/graph/schema.py` | Index creation (33 + 2 full-text) |
 
 ---
 

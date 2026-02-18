@@ -44,6 +44,8 @@ This clones the repo and runs full ingestion in one step.
 | `DocumentSection` | `id`, `file_path`, `heading`, `level`, `start_line`, `end_line` | Doc section |
 | `Dependency` | `id`, `name`, `version`, `latest_version`, `is_outdated`, `vulnerability_count`, `vulnerabilities`, `checked_at` | External package |
 | `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
+| `Model` | `id`, `name`, `qualified_name`, `file_path`, `line_start`, `line_end`, `orm`, `table_name`, `is_junction`, `is_enum`, `primary_key`, `field_count`, `docstring` | Database model/table definition (Prisma, Drizzle, ORM class) |
+| `ModelField` | `id`, `name`, `field_type`, `db_type`, `is_primary_key`, `is_nullable`, `is_unique`, `is_indexed`, `has_default`, `default_value`, `is_foreign_key`, `references_model`, `references_field`, `line` | Column/field in a database model |
 
 ### Edge Types
 
@@ -67,10 +69,14 @@ This clones the repo and runs full ingestion in one step.
 | `HANDLES` | Route | Function | Route handler |
 | `DEFINED_IN` | EnvVar | File | Env var defined in config file |
 | `USES_ENV` | File | EnvVar | Source file references env var |
+| `HAS_MODEL_FIELD` | Model | ModelField | Model's column/field |
+| `REFERENCES` | ModelField | Model | FK relationship (when `is_foreign_key: true`) |
+| `RELATED_TO` | Model | Model | High-level relationship (with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint` properties) |
+| `PROMOTED_FROM` | Model | Class | Link to source Class node (ORM class promoter) |
 
 ### Indexes
 
-24 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
+33 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`, `orm`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
 
 ---
 
@@ -620,6 +626,58 @@ gristle_changelog(repo_id="a1b2c3d4") # For a specific repo
     "edges": {"added": 45, "removed": 8, "modified": 0, "total": 4521}
   },
   "summary": "45 new calls, 8 edges removed. 3 new files with 15 functions added. 1 route modified."
+}
+```
+
+### `gristle_models(repo_id?)`
+
+**When to use:** You want to see all database models detected in the codebase. Returns models from Prisma schemas, Drizzle table definitions, and ORM class patterns.
+
+```
+gristle_models()
+gristle_models(repo_id="a1b2c3d4")
+```
+```json
+{
+  "models": [
+    {
+      "name": "User",
+      "orm": "prisma",
+      "tableName": "users",
+      "filePath": "prisma/schema.prisma",
+      "fieldCount": 6,
+      "primaryKey": "id",
+      "fields": [{"name": "id", "fieldType": "string", "isPrimaryKey": true}, ...],
+      "relations": [{"targetModel": "Post", "relationType": "one-to-many"}]
+    }
+  ],
+  "count": 5
+}
+```
+
+### `gristle_model_detail(model_name, repo_id?)`
+
+**When to use:** You want full details about a specific model including all field constraints and both incoming/outgoing relationships.
+
+```
+gristle_model_detail(model_name="User")
+```
+```json
+{
+  "name": "User",
+  "orm": "prisma",
+  "tableName": "users",
+  "filePath": "prisma/schema.prisma",
+  "lineStart": 5,
+  "lineEnd": 15,
+  "primaryKey": "id",
+  "fields": [
+    {"name": "id", "fieldType": "string", "isPrimaryKey": true, "isNullable": false},
+    {"name": "email", "fieldType": "string", "isUnique": true, "isNullable": false},
+    {"name": "name", "fieldType": "string", "isNullable": true}
+  ],
+  "outgoingRelations": [{"targetModel": "Post", "relationType": "one-to-many"}],
+  "incomingRelations": [{"sourceModel": "Profile", "relationType": "one-to-one"}]
 }
 ```
 
