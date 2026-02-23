@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -2184,6 +2185,7 @@ class QueryEngine:
             return {
                 "status": "first_ingestion",
                 "current": {m: current.get(m, 0) for m in _METRICS},
+                "files": None,
                 "captured_at": current.get("captured_at", ""),
             }
 
@@ -2201,9 +2203,22 @@ class QueryEngine:
                 verb = "Added" if delta > 0 else "Removed"
                 summary_parts.append(f"{verb} {abs(delta)} {label}")
 
+        # File-level diffs (when file_paths_json is available on snapshots)
+        files: dict[str, list[str]] | None = None
+        prev_paths_json = previous.get("file_paths_json")
+        curr_paths_json = current.get("file_paths_json")
+        if prev_paths_json and curr_paths_json:
+            prev_files = set(json.loads(prev_paths_json))
+            curr_files = set(json.loads(curr_paths_json))
+            files = {
+                "added": sorted(curr_files - prev_files),
+                "removed": sorted(prev_files - curr_files),
+            }
+
         return {
             "status": "diff",
             "changes": changes,
+            "files": files,
             "summary": ". ".join(summary_parts) + "." if summary_parts else "No changes.",
             "current_captured_at": current.get("captured_at", ""),
             "previous_captured_at": previous.get("captured_at", ""),

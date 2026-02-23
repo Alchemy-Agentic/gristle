@@ -2563,10 +2563,15 @@ class IngestionPipeline:
         edge_result = self.graph.execute("MATCH ()-[r]->() RETURN count(r) AS c")
         counts["edge_count"] = edge_result.records[0]["c"] if edge_result.records else 0
 
+        # File paths for file-level changelog diffs
+        file_result = self.graph.execute("MATCH (f:File) RETURN f.path AS path")
+        file_paths = sorted([r["path"] for r in file_result.records if r.get("path")])
+
         return {
             "snapshot_id": str(uuid.uuid4()),
             "captured_at": datetime.now(UTC).isoformat(),
             **counts,
+            "file_paths_json": json.dumps(file_paths),
         }
 
     def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -2583,7 +2588,8 @@ class IngestionPipeline:
                 test_count: $test_count,
                 component_count: $component_count,
                 dependency_count: $dependency_count,
-                edge_count: $edge_count
+                edge_count: $edge_count,
+                file_paths_json: $file_paths_json
             })
             """,
             snapshot,
