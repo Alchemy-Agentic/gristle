@@ -254,6 +254,9 @@ class IngestionPipeline:
         # Extract dependency versions from manifest files
         self._extract_dependency_versions(repo_path)
 
+        # Collect tsconfig/jsconfig path aliases for deterministic TS/JS imports
+        self._collect_ts_path_aliases(repo_path)
+
         # Phase 2: Resolve cross-file call relationships
         rels_before = result.relationships_created
         with Timer() as phase2:
@@ -2237,6 +2240,13 @@ class IngestionPipeline:
             resolved = self._resolve_relative_path(module, file_dir)
             return self._lookup_resolved_path(resolved, path_to_id, stem_to_id, dir_index_to_id)
 
+        # Non-relative: try tsconfig/jsconfig "paths" aliases first (deterministic),
+        # then fall back to the heuristic alias stripping below.
+        for candidate in self._resolve_ts_alias(module):
+            found = self._lookup_resolved_path(candidate, path_to_id, stem_to_id, dir_index_to_id)
+            if found:
+                return found
+
         # Non-relative: could be a path alias like @/lib/foo or a package
         stripped = self._strip_path_alias(module)
         if stripped is None:
@@ -2327,6 +2337,75 @@ class IngestionPipeline:
                 return rest
 
         return None
+
+    # ------------------------------------------------------------------
+    # tsconfig / jsconfig path-alias resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _norm_join(a: str, b: str) -> str:
+        """Join two path segments and normalize ``.``/``..`` to a forward-slash path."""
+        parts: list[str] = []
+        for seg in f"{a}/{b}".replace("\\", "/").split("/"):
+            if seg in ("", "."):
+                continue
+            if seg == "..":
+                if parts:
+                    parts.pop()
+            else:
+                parts.append(seg)
+        return "/".join(parts)
+
+    @staticmethod
+    def _load_jsonc(text: str) -> dict[str, Any]:
+        """Parse JSON with comments / trailing commas (tsconfig is JSONC)."""
+        import re as _re
+
+        text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.DOTALL)
+        text = _re.sub(r"(?m)//.*$", "", text)
+        text = _re.sub(r",(\s*[}\]])", r"\1", text)
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+
+    def _collect_ts_path_aliases(self, repo_path: str) -> None:
+        """Parse tsconfig/jsconfig ``compilerOptions.paths`` into project-relative
+        targets so aliased/monorepo imports resolve deterministically.
+
+        Stored on ``self._ts_path_aliases`` as ``(pattern, [project_relative_targets])``.
+        """
+        aliases: list[tuple[str, list[str]]] = []
+        for wf in walk_repo(repo_path, frozenset({"json"})):
+            name = Path(wf.relative_path).name
+            if name != "jsconfig.json" and not name.startswith("tsconfig"):
+                continue
+            try:
+                data = self._load_jsonc(Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            opts = data.get("compilerOptions", {})
+            paths = opts.get("paths", {}) if isinstance(opts, dict) else {}
+            if not isinstance(paths, dict) or not paths:
+                continue
+            cfg_dir = str(Path(wf.relative_path).parent).replace("\\", "/")
+            cfg_dir = "" if cfg_dir == "." else cfg_dir
+            base_prefix = self._norm_join(cfg_dir, str(opts.get("baseUrl", ".")))
+            for pattern, targets in paths.items():
+                if isinstance(targets, list):
+                    aliases.append((pattern, [self._norm_join(base_prefix, str(t)) for t in targets]))
+        self._ts_path_aliases = aliases
+
+    def _resolve_ts_alias(self, module: str) -> list[str]:
+        """Return candidate project-relative paths for a tsconfig-aliased import."""
+        candidates: list[str] = []
+        for pattern, targets in getattr(self, "_ts_path_aliases", []):
+            if "*" in pattern:
+                pre, _, post = pattern.partition("*")
+                if module.startswith(pre) and module.endswith(post):
+                    captured = module[len(pre) : len(module) - len(post) if post else len(module)]
+                    candidates.extend(t.replace("*", captured) for t in targets)
+            elif module == pattern:
+                candidates.extend(targets)
+        return candidates
 
     @staticmethod
     def _extract_package_name(module_path: str, language: str) -> str | None:

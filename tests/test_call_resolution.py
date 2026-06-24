@@ -2359,3 +2359,36 @@ class TestSnapshotCapture:
         # Should be a valid ISO timestamp
         assert "T" in snapshot["captured_at"]
         assert snapshot["captured_at"].endswith("+00:00") or snapshot["captured_at"].endswith("Z")
+
+
+class TestTsconfigPathAliases:
+    """tsconfig/jsconfig `paths` give deterministic alias import resolution."""
+
+    def test_resolve_alias_wildcard(self):
+        p = IngestionPipeline(graph=MagicMock())
+        p._ts_path_aliases = [("@/*", ["src/*"])]
+        assert p._resolve_ts_alias("@/b/c") == ["src/b/c"]
+
+    def test_resolve_alias_exact_match(self):
+        p = IngestionPipeline(graph=MagicMock())
+        p._ts_path_aliases = [("@utils", ["packages/utils/src/index.ts"])]
+        assert p._resolve_ts_alias("@utils") == ["packages/utils/src/index.ts"]
+
+    def test_resolve_alias_no_match_returns_empty(self):
+        p = IngestionPipeline(graph=MagicMock())
+        p._ts_path_aliases = [("@/*", ["src/*"])]
+        assert p._resolve_ts_alias("react") == []
+
+    def test_collect_aliases_from_tsconfig(self, tmp_path):
+        (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}')
+        p = IngestionPipeline(graph=MagicMock())
+        p._collect_ts_path_aliases(str(tmp_path))
+        assert ("@/*", ["src/*"]) in p._ts_path_aliases
+
+    def test_collect_handles_jsonc_comments(self, tmp_path):
+        (tmp_path / "tsconfig.json").write_text(
+            '{\n  // editor config\n  "compilerOptions": {\n    "paths": {"~/*": ["app/*"]},\n  }\n}'
+        )
+        p = IngestionPipeline(graph=MagicMock())
+        p._collect_ts_path_aliases(str(tmp_path))
+        assert ("~/*", ["app/*"]) in p._ts_path_aliases
