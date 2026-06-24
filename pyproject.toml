@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gristle"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Graph-based code intelligence for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -57,7 +57,10 @@ Repository = "https://github.com/Alchemy-Agentic/gristle"
 Issues = "https://github.com/Alchemy-Agentic/gristle/issues"
 
 [project.scripts]
-gristle = "gristle.mcp.server:main"
+gristle = "gristle.cli:main"
+
+[tool.hatch.version]
+path = "src/gristle/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gristle"]

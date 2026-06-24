@@ -1312,9 +1312,7 @@ def _rehydrate_engine(repo_id: str) -> QueryEngine | None:
         return None
     repo_path: str | None = None
     try:
-        rows = graph.execute(
-            "MATCH (s:Snapshot) RETURN s.repo_path AS p ORDER BY s.captured_at DESC LIMIT 1"
-        ).records
+        rows = graph.execute("MATCH (s:Snapshot) RETURN s.repo_path AS p ORDER BY s.captured_at DESC LIMIT 1").records
         if rows and rows[0].get("p"):
             repo_path = rows[0]["p"]
     except Exception:

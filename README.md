@@ -22,23 +22,46 @@ Vector search over chunked code loses structure. "Function A calls function B wh
 
 **Prerequisites:** Python 3.11+ and Docker (with Docker Compose). FalkorDB runs in Docker; everything else is pip-installed.
 
-### Local (stdio transport)
+### 1. Install
 
-Start FalkorDB, then run Gristle as a local MCP server:
+> Once published, the fastest path will be `uvx gristle` / `pipx install gristle`, or `docker run ghcr.io/alchemy-agentic/gristle`.
+
+For now (and for development), install from source:
+
+```bash
+git clone https://github.com/Alchemy-Agentic/gristle
+cd gristle
+pip install -e .
+```
+
+### 2. Start FalkorDB and check your setup
 
 ```bash
 docker compose up -d falkordb   # start FalkorDB (exposes localhost:6390)
-pip install -e ".[dev]"         # install Gristle
-gristle                         # start MCP server (stdio)
+gristle doctor                  # verify FalkorDB, parsers, and config
 ```
 
-Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`):
+### 3. Index a repo and explore it — from the terminal
+
+```bash
+gristle ingest examples/sample-app --repo-id demo
+gristle overview --repo-id demo
+gristle explore register --repo-id demo
+gristle query "MATCH (f:Function)-[:CALLS]->(g:Function) RETURN f.name, g.name LIMIT 10" --repo-id demo
+```
+
+Point `gristle ingest` at your own project to index it. See [examples/](examples/) for a guided walkthrough.
+
+### 4. Wire it into your AI client (MCP)
+
+Run Gristle as a local MCP server (`gristle serve`, or just `gristle`) and add it to your client config — e.g. Claude Desktop's `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "gristle": {
       "command": "gristle",
+      "args": ["serve"],
       "env": {
         "GRISTLE_FALKORDB_HOST": "localhost",
         "GRISTLE_FALKORDB_PORT": "6390"
@@ -48,9 +71,15 @@ Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`)
 }
 ```
 
-### Try it: index your first repo
+> FalkorDB must be running (`docker compose up -d falkordb`) before the first tool call.
 
-With FalkorDB running and Gristle installed, index a repository and query the graph directly from Python:
+Or with the Claude Code CLI: `claude mcp add gristle --env GRISTLE_FALKORDB_PORT=6390 -- gristle serve`.
+
+Then ask your agent to ingest a repo (`gristle_ingest`) and explore the code, trace calls, or run an impact analysis.
+
+### Use as a library
+
+Gristle's pipeline and query engine are usable directly from Python:
 
 ```python
 from gristle.graph.client import GraphClient
@@ -58,17 +87,10 @@ from gristle.ingestion.pipeline import IngestionPipeline
 from gristle.parsers.registry import ParserRegistry
 
 graph = GraphClient(host="localhost", port=6390, repo_id="myrepo")
-pipeline = IngestionPipeline(graph, ParserRegistry().build_default())
-
-result = pipeline.ingest_repo("/path/to/your/repo")
-print(f"Indexed {result.files_processed} files, {result.nodes_created} nodes")
-
-# The graph is now queryable with Cypher:
+IngestionPipeline(graph, ParserRegistry().build_default()).ingest_repo("/path/to/your/repo")
 rows = graph.execute("MATCH (f:Function) RETURN count(f) AS functions").records
 print(rows)  # e.g. [{'functions': 1234}]
 ```
-
-The same indexing is exposed as the `gristle_ingest` MCP tool once Gristle is wired into a client (above) — point your agent at a repo, then ask it to explore the code, trace calls, or run an impact analysis.
 
 ### Remote (HTTP transport)
 

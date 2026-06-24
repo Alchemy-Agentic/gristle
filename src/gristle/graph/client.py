@@ -155,7 +155,9 @@ class GraphClient:
             props_clause = f" {{{props_inner}}}"
 
         a, b = self._labeled_endpoints(from_id, to_id)
-        query = f"MATCH ({a}), ({b}) WHERE a.id = $from_id AND b.id = $to_id CREATE (a)-[:{rel_type}{props_clause}]->(b)"
+        query = (
+            f"MATCH ({a}), ({b}) WHERE a.id = $from_id AND b.id = $to_id CREATE (a)-[:{rel_type}{props_clause}]->(b)"
+        )
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if properties:
             params.update(properties)
