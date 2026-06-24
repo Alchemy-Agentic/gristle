@@ -95,12 +95,36 @@ def _extract_block_body(content: str, start: int) -> tuple[str, int]:
     return content[idx + 1 :], len(content)
 
 
+def _split_top_level_columns(body: str) -> list[tuple[str, int]]:
+    """Split a Drizzle column block into column segments on top-level commas.
+
+    Columns commonly span multiple lines via chained calls
+    (``userId: uuid("userId").notNull().references(() => user.id)``), so splitting
+    on newlines would detach ``.references()`` from its column. Returns
+    ``(segment_text, newlines_before_segment)`` for line tracking.
+    """
+    segments: list[tuple[str, int]] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(body):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            segments.append((body[start:i], body.count("\n", 0, start)))
+            start = i + 1
+    if body[start:].strip():
+        segments.append((body[start:], body.count("\n", 0, start)))
+    return segments
+
+
 def _parse_column_line(
     line: str,
     var_to_table: dict[str, str],
     line_offset: int,
 ) -> tuple[str, ParsedModelField] | None:
-    """Parse a single column definition line.
+    """Parse a single column definition (may span multiple lines).
 
     Returns ``(js_field_name, field)`` so the caller can map JS property names
     (used in index blocks) back to the parsed field.
@@ -197,8 +221,8 @@ def parse_drizzle_schema(file_path: str, content: str) -> list[ParsedModel]:
             fields: list[ParsedModelField] = []
             js_name_to_field: dict[str, ParsedModelField] = {}
             primary_key: str | None = None
-            for i, line in enumerate(col_body.splitlines()):
-                result = _parse_column_line(line, var_to_table, col_body_start_line + i)
+            for segment, nl_offset in _split_top_level_columns(col_body):
+                result = _parse_column_line(segment, var_to_table, col_body_start_line + nl_offset)
                 if result is not None:
                     js_name, field = result
                     fields.append(field)

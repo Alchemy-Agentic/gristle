@@ -300,7 +300,7 @@ class IngestionPipeline:
                 from gristle.ingestion.schema_extractor import SchemaExtractor
 
                 extractor = SchemaExtractor(self.graph, dict(self._path_to_id))
-                schema_result = extractor.extract(files)
+                schema_result = extractor.extract(files, parsed_files)
                 result.nodes_created += schema_result.nodes_created
                 result.relationships_created += schema_result.relationships_created
                 result.models_found = schema_result.models_found

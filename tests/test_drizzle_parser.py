@@ -542,3 +542,26 @@ export const accounts = pgTable('accounts', {
         email_field = fields_by_name["email"]
         assert email_field.is_nullable is False
         assert email_field.is_unique is True
+
+
+def test_multiline_column_with_references_extracts_fk():
+    """Columns whose .references() is chained across lines must still yield an FK
+    + RELATED_TO relation (regression: line-based parsing detached .references())."""
+    content = (
+        "import { pgTable, uuid } from 'drizzle-orm/pg-core';\n"
+        "export const user = pgTable('User', {\n"
+        "  id: uuid('id').primaryKey(),\n"
+        "});\n"
+        "export const chat = pgTable('Chat', {\n"
+        "  id: uuid('id').primaryKey(),\n"
+        "  userId: uuid('userId')\n"
+        "    .notNull()\n"
+        "    .references(() => user.id),\n"
+        "});\n"
+    )
+    models = {m.name: m for m in parse_drizzle_schema("schema.ts", content)}
+    chat = models["Chat"]
+    fk = next(f for f in chat.fields if f.name == "userId")
+    assert fk.is_foreign_key is True
+    assert fk.references_model == "User"
+    assert any(r.target_model == "User" and r.relation_type == "many-to-one" for r in chat.relations)

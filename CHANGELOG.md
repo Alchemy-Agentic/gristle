@@ -15,6 +15,9 @@ All notable changes to Gristle are documented here. This file is intended for co
 - **Parsers** — TS/JS decorator extraction, NestJS controller routes, tsconfig
   `paths`/`baseUrl` import resolution, and SQLAlchemy/Django/TypeORM model
   detection (Model/ModelField/relation nodes).
+- **Code → data edges** — new `USES_MODEL` edge (Function → Model, with a
+  read/write `access` property) links code that queries a model to it, for
+  Django/SQLAlchemy/Prisma method-chain access patterns.
 - **Packaging** — tag-triggered PyPI + GHCR release workflow, single-source
   version (hatch dynamic), and `examples/sample-app`.
 
@@ -31,6 +34,18 @@ All notable changes to Gristle are documented here. This file is intended for co
   when FalkorDB is unreachable) instead of leaking raw exceptions.
 - Incremental watch path passed the wrong type to call resolution
   (`AttributeError`); now uses a `BatchCollector`.
+- `MERGE` relationship writes mis-bound per-row properties (a property map in a
+  MERGE pattern is match criteria in FalkorDB); now applied with `SET`. Affected
+  `RELATED_TO` and any merged edge with properties.
+- Drizzle foreign keys/relations on multi-line column chains were dropped
+  (line-based parsing detached `.references()`); now split on top-level commas
+  (e.g. ai-chatbot: 0 → 6 model relations).
+- `gristle_impact` double-counted transitive callers (one row per path); now
+  one row per node (min depth).
+- `detect_unauthenticated_routes` flagged routes that authenticate via an inline
+  `auth()` call (e.g. Next.js); now honors a `calls_auth` signal + auth callees.
+- Python `is_exported` only fired on `__all__`, leaving `gristle_public_api` and
+  coverage empty for most repos; now public module-level names are exported.
 
 ---
 
@@ -49,7 +64,7 @@ Initial release.
 ### Graph Schema
 
 - **14 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField, Model, ModelField, Snapshot
-- **23 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS, HAS_MODEL_FIELD, RELATED_TO, PROMOTED_FROM
+- **24 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS, HAS_MODEL_FIELD, RELATED_TO, PROMOTED_FROM, USES_MODEL
 - **33 property indexes + 2 full-text indexes** (Function.docstring, Class.docstring)
 
 ### MCP Tools (30)

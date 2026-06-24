@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,16 @@ from gristle.models import ParsedModel, SchemaExtractionResult
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
     from gristle.ingestion.walker import WalkedFile
+    from gristle.models import ParsedFile
+
+# Verbs in a call chain that indicate writing vs reading a model/table.
+_WRITE_VERBS = frozenset(
+    {"create", "insert", "save", "add", "update", "delete", "remove", "bulk_create", "upsert", "put", "write"}
+)
+_READ_VERBS = frozenset(
+    {"query", "select", "get", "find", "filter", "all", "first", "one", "fetch", "read", "exists", "count", "list"}
+)
+_IDENT_SPLIT = re.compile(r"[^A-Za-z0-9_]+")
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +35,14 @@ class SchemaExtractor:
         self.graph = graph
         self._file_path_to_id = file_path_to_id
 
-    def extract(self, walked_files: list[WalkedFile]) -> SchemaExtractionResult:
-        """Run all schema detection strategies and write to graph."""
+    def extract(
+        self, walked_files: list[WalkedFile], parsed_files: list[ParsedFile] | None = None
+    ) -> SchemaExtractionResult:
+        """Run all schema detection strategies and write to graph.
+
+        ``parsed_files`` (optional) lets the extractor link code to the data
+        layer via USES_MODEL edges (Function -> Model).
+        """
         models: list[ParsedModel] = []
 
         # 1. Prisma DSL parsing
@@ -64,7 +81,7 @@ class SchemaExtractor:
                     models.extend(extract_python_orm_models(wf.relative_path, content))
 
         # 4. Write to graph
-        return self._write_models(models)
+        return self._write_models(models, parsed_files)
 
     @staticmethod
     def _read_file(wf: WalkedFile) -> str | None:
@@ -80,7 +97,9 @@ class SchemaExtractor:
         """Simple table name inference from model name."""
         return name.lower() + "s"
 
-    def _write_models(self, models: list[ParsedModel]) -> SchemaExtractionResult:
+    def _write_models(
+        self, models: list[ParsedModel], parsed_files: list[ParsedFile] | None = None
+    ) -> SchemaExtractionResult:
         batch = BatchCollector(self.graph, settings.ingestion_batch_size)
         model_name_to_id: dict[str, str] = {}
 
@@ -187,6 +206,10 @@ class SchemaExtractor:
                         },
                     )
 
+        # Phase D: Link code to the data layer (Function -> Model)
+        if parsed_files and model_name_to_id:
+            self._link_code_to_models(parsed_files, model_name_to_id, batch)
+
         counts = batch.flush()
         return SchemaExtractionResult(
             models_found=len(models),
@@ -195,3 +218,51 @@ class SchemaExtractor:
             nodes_created=counts["nodes_created"],
             relationships_created=counts["relationships_created"],
         )
+
+    def _link_code_to_models(
+        self,
+        parsed_files: list[ParsedFile],
+        model_name_to_id: dict[str, str],
+        batch: BatchCollector,
+    ) -> None:
+        """Create USES_MODEL edges (Function -> Model) from a function's call chains.
+
+        Precise by design: an edge is created only when a call chain contains BOTH
+        a known model name AND a read/write verb — e.g. ``User.objects.filter()``,
+        ``Article.objects.create()``, ``user.save()``, ``prisma.user.create()``.
+        Requiring the verb avoids false positives from incidental name reuse (a UI
+        component referencing a ``Document`` *type*, say). The ``access`` property is
+        "read" or "write".
+
+        Known limitation: ORM calls that pass the table/model as an *argument*
+        (Drizzle ``db.insert(chat)``, SQLAlchemy ``session.query(User)``) are not yet
+        captured, because call arguments aren't recorded — a follow-up.
+        """
+        token_to_model = {name.lower(): mid for name, mid in model_name_to_id.items()}
+
+        # Best access per (func_id, model_id): write outranks read.
+        edges: dict[tuple[str, str], str] = {}
+
+        for pf in parsed_files:
+            functions = list(pf.functions)
+            for cls in pf.classes:
+                functions.extend(cls.methods)
+            for func in functions:
+                func_id = f"func::{func.qualified_name}"
+                for call in func.calls:
+                    segments = [s.lower() for s in _IDENT_SPLIT.split(call) if s]
+                    matched = next((token_to_model[s] for s in segments if s in token_to_model), None)
+                    if matched is None:
+                        continue
+                    if any(s in _WRITE_VERBS for s in segments):
+                        access = "write"
+                    elif any(s in _READ_VERBS for s in segments):
+                        access = "read"
+                    else:
+                        continue  # name match without a read/write verb — skip (avoid noise)
+                    key = (func_id, matched)
+                    if access == "write" or key not in edges:
+                        edges[key] = access
+
+        for (func_id, model_id), access in edges.items():
+            batch.add_merge_relationship("USES_MODEL", func_id, model_id, {"access": access})

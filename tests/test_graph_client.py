@@ -408,6 +408,28 @@ class TestRelationshipLabeling:
         assert "MATCH (a:Class), (b:Class)" in query
 
 
+class TestMergeSetsProperties:
+    """MERGE must apply props via SET, not in the relationship pattern (where
+    FalkorDB treats them as match criteria and mis-binds across UNWIND rows)."""
+
+    def test_batch_merge_uses_set_not_pattern_props(self):
+        client, mock_graph = _make_client()
+        mock_graph.query.return_value = _empty_result(relationships_created=1)
+        client.batch_merge_relationships("USES_MODEL", [{"from_id": "func::a", "to_id": "model::M", "access": "read"}])
+        q = mock_graph.query.call_args[0][0]
+        assert "MATCH (a:Function), (b:Model)" in q  # labels live in the MATCH
+        assert "MERGE (a)-[r:USES_MODEL]->(b)" in q
+        assert "SET r.access = rel.access" in q
+        assert "USES_MODEL {" not in q  # props must NOT be in the MERGE pattern
+
+    def test_single_merge_uses_set(self):
+        client, mock_graph = _make_client()
+        mock_graph.query.return_value = _empty_result()
+        client.merge_relationship("func::a", "model::M", "USES_MODEL", properties={"access": "write"})
+        q = mock_graph.query.call_args[0][0]
+        assert "SET r.access = $access" in q
+
+
 class TestGraphDiscovery:
     def test_graph_exists_true(self):
         client, _ = _make_client("my-repo")

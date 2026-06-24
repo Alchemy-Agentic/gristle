@@ -170,14 +170,16 @@ class GraphClient:
         rel_type: str,
         properties: dict[str, Any] | None = None,
     ) -> None:
-        """Merge (upsert) a relationship between two nodes."""
-        props_clause = ""
-        if properties:
-            props_inner = ", ".join(f"{k}: ${k}" for k in properties)
-            props_clause = f" {{{props_inner}}}"
+        """Merge (upsert) a relationship between two nodes.
 
+        Properties are applied with SET (not in the MERGE pattern) so they are
+        not treated as match criteria.
+        """
         a, b = self._labeled_endpoints(from_id, to_id)
-        query = f"MATCH ({a}), ({b}) WHERE a.id = $from_id AND b.id = $to_id MERGE (a)-[:{rel_type}{props_clause}]->(b)"
+        rel_clause = f"MERGE (a)-[r:{rel_type}]->(b)"
+        if properties:
+            rel_clause += " SET " + ", ".join(f"r.{k} = ${k}" for k in properties)
+        query = f"MATCH ({a}), ({b}) WHERE a.id = $from_id AND b.id = $to_id {rel_clause}"
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if properties:
             params.update(properties)
@@ -236,10 +238,19 @@ class GraphClient:
         if not items:
             return 0
         prop_keys = [k for k in items[0] if k not in ("from_id", "to_id")]
-        props_clause = ""
-        if prop_keys:
-            props_inner = ", ".join(f"{k}: rel.{k}" for k in prop_keys)
-            props_clause = f" {{{props_inner}}}"
+
+        # CREATE puts props in the pattern. MERGE must NOT — a property map inside
+        # a MERGE relationship pattern is treated as match criteria and FalkorDB
+        # mis-binds it across UNWIND rows; MERGE the bare edge, then SET props.
+        if verb == "MERGE":
+            rel_clause = f"MERGE (a)-[r:{rel_type}]->(b)"
+            if prop_keys:
+                rel_clause += " SET " + ", ".join(f"r.{k} = rel.{k}" for k in prop_keys)
+        else:
+            props_clause = ""
+            if prop_keys:
+                props_clause = " {" + ", ".join(f"{k}: rel.{k}" for k in prop_keys) + "}"
+            rel_clause = f"CREATE (a)-[:{rel_type}{props_clause}]->(b)"
 
         groups: dict[tuple[str | None, str | None], list[dict[str, Any]]] = defaultdict(list)
         for item in items:
@@ -249,12 +260,7 @@ class GraphClient:
         for (from_label, to_label), group in groups.items():
             a = f"a:{from_label}" if from_label else "a"
             b = f"b:{to_label}" if to_label else "b"
-            query = (
-                "UNWIND $rels AS rel "
-                f"MATCH ({a}), ({b}) "
-                "WHERE a.id = rel.from_id AND b.id = rel.to_id "
-                f"{verb} (a)-[:{rel_type}{props_clause}]->(b)"
-            )
+            query = f"UNWIND $rels AS rel MATCH ({a}), ({b}) WHERE a.id = rel.from_id AND b.id = rel.to_id {rel_clause}"
             result = self.execute(query, {"rels": group})
             total += int(result.summary["relationships_created"])
         return total

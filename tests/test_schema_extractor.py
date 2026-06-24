@@ -138,6 +138,54 @@ class TestSchemaExtractor:
         merge_rel_types = {call.args[0] for call in graph.batch_merge_relationships.call_args_list}
         assert "RELATED_TO" in merge_rel_types
 
+    def test_links_functions_to_models(self):
+        """A function whose call chain hits a model name + read/write verb gets a
+        USES_MODEL edge with the right access; verb-less name reuse is ignored."""
+        from gristle.models import ParsedFile, ParsedFunction, ParsedModel
+
+        def _fn(name, calls):
+            return ParsedFunction(
+                name=name,
+                qualified_name=f"views.py::{name}",
+                file_path="views.py",
+                start_line=1,
+                end_line=2,
+                signature="",
+                calls=calls,
+            )
+
+        pf = ParsedFile(
+            path="views.py",
+            language="python",
+            functions=[
+                _fn("create_article", ["Article.objects.create"]),
+                _fn("list_articles", ["Article.objects.filter"]),
+                _fn("render", ["Article"]),  # no verb -> no edge
+            ],
+            classes=[],
+            imports=[],
+            line_count=2,
+        )
+        model = ParsedModel(
+            name="Article",
+            qualified_name="models.py::Article",
+            file_path="models.py",
+            line_start=1,
+            line_end=2,
+            orm="django",
+        )
+
+        graph = _make_graph_mock()
+        ext = SchemaExtractor(graph, file_path_to_id={})
+        ext._write_models([model], [pf])
+
+        uses = [c for c in graph.batch_merge_relationships.call_args_list if c.args[0] == "USES_MODEL"]
+        assert uses, "expected USES_MODEL edges"
+        items = {(i["from_id"], i["access"]) for call in uses for i in call.args[1]}
+        assert ("func::views.py::create_article", "write") in items
+        assert ("func::views.py::list_articles", "read") in items
+        assert not any(fid.endswith("::render") for fid, _ in items)  # verb-less ignored
+
     def test_related_to_props_have_no_nulls(self, prisma_file_with_relations):
         """RELATED_TO props must never be None — FalkorDB cannot MERGE on a null
         property value (a one-to-many relation has no FK/through/source field)."""
