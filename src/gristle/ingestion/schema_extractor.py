@@ -50,8 +50,14 @@ class SchemaExtractor:
                     if is_drizzle_schema(content):
                         models.extend(parse_drizzle_schema(wf.relative_path, content))
 
-        # 3. ORM class promotion (future: TypeORM, SQLAlchemy, Django, etc.)
-        models.extend(self._promote_orm_classes())
+        # 3. Python ORM detection (SQLAlchemy declarative + Django models)
+        for wf in walked_files:
+            if wf.extension in ("py", "pyi"):
+                content = self._read_file(wf)
+                if content is not None:
+                    from gristle.parsers.orm_python import extract_python_orm_models
+
+                    models.extend(extract_python_orm_models(wf.relative_path, content))
 
         # 4. Write to graph
         return self._write_models(models)
@@ -64,15 +70,6 @@ class SchemaExtractor:
         except OSError:
             logger.warning("Schema extractor: cannot read %s", wf.relative_path)
             return None
-
-    def _promote_orm_classes(self) -> list[ParsedModel]:
-        """Query graph for Class nodes that match ORM patterns and promote to Models.
-
-        P0: Returns empty list (framework only).
-        P1: Will add TypeORM (decorator-based) and SQLAlchemy (inheritance-based).
-        P2: Will add Django (models.Model) and Sequelize (Model.init).
-        """
-        return []
 
     @staticmethod
     def _infer_table_name(name: str) -> str:
