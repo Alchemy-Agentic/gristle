@@ -138,6 +138,20 @@ class TestSchemaExtractor:
         merge_rel_types = {call.args[0] for call in graph.batch_merge_relationships.call_args_list}
         assert "RELATED_TO" in merge_rel_types
 
+    def test_related_to_props_have_no_nulls(self, prisma_file_with_relations):
+        """RELATED_TO props must never be None — FalkorDB cannot MERGE on a null
+        property value (a one-to-many relation has no FK/through/source field)."""
+        graph = _make_graph_mock()
+        extractor = SchemaExtractor(graph, file_path_to_id={})
+
+        extractor.extract([prisma_file_with_relations])
+
+        for call in graph.batch_merge_relationships.call_args_list:
+            if call.args[0] != "RELATED_TO":
+                continue
+            for item in call.args[1]:
+                assert None not in item.values(), f"null prop in RELATED_TO item: {item}"
+
     def test_contains_edges(self, prisma_file):
         """Every model gets a CONTAINS edge from its File node."""
         graph = _make_graph_mock()

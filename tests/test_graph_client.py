@@ -356,3 +356,14 @@ class TestDrop:
         client, mock_graph = _make_client()
         mock_graph.delete.side_effect = ConnectionError("unreachable")
         client.drop()  # Should not raise
+
+
+class TestPing:
+    def test_ping_true_when_reachable(self):
+        client, _ = _make_client()
+        assert client.ping() is True
+
+    def test_ping_false_when_connection_raises(self):
+        client, _ = _make_client()
+        client._db.connection.ping.side_effect = ConnectionError("refused")
+        assert client.ping() is False

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from mcp.server.fastmcp import FastMCP
+from redis.exceptions import ConnectionError as RedisConnectionError
 from starlette.responses import JSONResponse
 
 from gristle.config import settings
@@ -19,6 +21,8 @@ from gristle.parsers.registry import ParserRegistry
 from gristle.query.engine import QueryEngine
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
@@ -68,6 +72,50 @@ def _get_engine(repo_id: str) -> QueryEngine | None:
     return _engines.get(repo_id)
 
 
+# ------------------------------------------------------------------
+# Uniform tool error boundary
+# ------------------------------------------------------------------
+# Every @mcp.tool() is wrapped so a raw exception becomes a structured
+# {"error": ...} the calling agent can act on, instead of a protocol error.
+# functools.wraps preserves the signature/annotations FastMCP reads to build
+# each tool's JSON schema, so wrapping is transparent to the client.
+
+
+def _tool_error_boundary(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except RedisConnectionError:
+            return {
+                "error": (
+                    f"Cannot reach FalkorDB at {settings.falkordb_host}:{settings.falkordb_port}. "
+                    "Is it running? Start it with: docker compose up -d falkordb"
+                ),
+                "tool": fn.__name__,
+            }
+        except Exception as e:  # noqa: BLE001 - boundary: every tool returns a clean error dict
+            logger.exception("Tool %s failed", fn.__name__)
+            return {"error": str(e), "tool": fn.__name__}
+
+    return wrapper
+
+
+_raw_tool = mcp.tool
+
+
+def _tool(*args: Any, **kwargs: Any) -> Callable[[Callable[..., Awaitable[Any]]], Any]:
+    decorator = _raw_tool(*args, **kwargs)
+
+    def apply(fn: Callable[..., Awaitable[Any]]) -> Any:
+        return decorator(_tool_error_boundary(fn))
+
+    return apply
+
+
+mcp.tool = _tool  # type: ignore[method-assign]
+
+
 # ======================================================================
 # Health check (bypasses auth)
 # ======================================================================
@@ -75,6 +123,7 @@ def _get_engine(repo_id: str) -> QueryEngine | None:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> JSONResponse:
+    """Liveness: the process is up and serving. Does not touch FalkorDB."""
     from gristle import __version__
 
     return JSONResponse(
@@ -86,6 +135,30 @@ async def health_check(request: Request) -> JSONResponse:
             "repos_loaded": len(_engines),
             "repos": list(_engines.keys()),
         }
+    )
+
+
+@mcp.custom_route("/ready", methods=["GET"])
+async def readiness_check(request: Request) -> JSONResponse:
+    """Readiness: returns 503 unless FalkorDB is reachable (orchestrator gate)."""
+    from gristle import __version__
+
+    reachable = await asyncio.to_thread(
+        lambda: GraphClient(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            password=settings.falkordb_password,
+        ).ping()
+    )
+    if reachable:
+        return JSONResponse({"status": "ready", "version": __version__, "falkordb": "reachable"})
+    return JSONResponse(
+        {
+            "status": "unavailable",
+            "version": __version__,
+            "falkordb": f"unreachable at {settings.falkordb_host}:{settings.falkordb_port}",
+        },
+        status_code=503,
     )
 
 

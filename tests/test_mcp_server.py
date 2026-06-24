@@ -1081,3 +1081,53 @@ class TestGristleChangelog:
         srv._engines.clear()
         result = await gristle_changelog()
         assert "error" in result
+
+
+class TestToolErrorBoundary:
+    @pytest.mark.asyncio
+    async def test_catches_and_returns_error_dict(self):
+        from gristle.mcp.server import _tool_error_boundary
+
+        @_tool_error_boundary
+        async def boom():
+            raise ValueError("kaboom")
+
+        assert await boom() == {"error": "kaboom", "tool": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_connection_error_is_actionable(self):
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        from gristle.mcp.server import _tool_error_boundary
+
+        @_tool_error_boundary
+        async def boom():
+            raise RedisConnectionError("refused")
+
+        result = await boom()
+        assert "FalkorDB" in result["error"]
+        assert "docker compose up -d falkordb" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_passes_through_success(self):
+        from gristle.mcp.server import _tool_error_boundary
+
+        @_tool_error_boundary
+        async def ok():
+            return {"status": "success"}
+
+        assert await ok() == {"status": "success"}
+
+    def test_preserves_signature_and_name(self):
+        """The boundary must preserve the wrapped signature so FastMCP can still
+        build the tool's JSON schema from it."""
+        import inspect
+
+        from gristle.mcp.server import _tool_error_boundary
+
+        @_tool_error_boundary
+        async def sample(a: int, b: str = "x") -> dict:
+            return {}
+
+        assert sample.__name__ == "sample"
+        assert list(inspect.signature(sample).parameters) == ["a", "b"]

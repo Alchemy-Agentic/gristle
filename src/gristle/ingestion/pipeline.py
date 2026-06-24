@@ -269,62 +269,76 @@ class IngestionPipeline:
             },
         )
 
-        # Config phase: Walk config files, create EnvVar nodes, resolve USES_ENV edges
-        with Timer() as config_phase:
-            self._process_config_files(repo_path, parsed_files, result)
+        # Config phase: Walk config files, create EnvVar nodes, resolve USES_ENV edges.
+        # Enrichment phases are isolated: a failure here is logged and recorded but
+        # must not abort the whole ingest (the core graph from Phases 1-2 is intact).
+        try:
+            with Timer() as config_phase:
+                self._process_config_files(repo_path, parsed_files, result)
 
-        logger.info(
-            "Config phase complete: %d config files, %d env vars",
-            result.config_files_processed,
-            result.env_vars_found,
-            extra={
-                "event": "config_phase_done",
-                "duration_ms": config_phase.ms,
-                "repo_id": self.graph.repo_id,
-            },
-        )
+            logger.info(
+                "Config phase complete: %d config files, %d env vars",
+                result.config_files_processed,
+                result.env_vars_found,
+                extra={
+                    "event": "config_phase_done",
+                    "duration_ms": config_phase.ms,
+                    "repo_id": self.graph.repo_id,
+                },
+            )
+        except Exception as e:
+            logger.warning("Config phase failed: %s", e, exc_info=True)
+            result.errors.append(f"Config phase failed: {e}")
 
         # Schema phase: Detect ORM models, Prisma schemas, Drizzle tables
-        with Timer() as schema_phase:
-            from gristle.ingestion.schema_extractor import SchemaExtractor
+        try:
+            with Timer() as schema_phase:
+                from gristle.ingestion.schema_extractor import SchemaExtractor
 
-            extractor = SchemaExtractor(self.graph, dict(self._path_to_id))
-            schema_result = extractor.extract(files)
-            result.nodes_created += schema_result.nodes_created
-            result.relationships_created += schema_result.relationships_created
-            result.models_found = schema_result.models_found
-            result.model_fields_found = schema_result.fields_found
-            result.model_relations_found = schema_result.relations_found
+                extractor = SchemaExtractor(self.graph, dict(self._path_to_id))
+                schema_result = extractor.extract(files)
+                result.nodes_created += schema_result.nodes_created
+                result.relationships_created += schema_result.relationships_created
+                result.models_found = schema_result.models_found
+                result.model_fields_found = schema_result.fields_found
+                result.model_relations_found = schema_result.relations_found
 
-        logger.info(
-            "Schema phase complete: %d models, %d fields, %d relations",
-            schema_result.models_found,
-            schema_result.fields_found,
-            schema_result.relations_found,
-            extra={
-                "event": "schema_phase_done",
-                "duration_ms": schema_phase.ms,
-                "repo_id": self.graph.repo_id,
-            },
-        )
+            logger.info(
+                "Schema phase complete: %d models, %d fields, %d relations",
+                schema_result.models_found,
+                schema_result.fields_found,
+                schema_result.relations_found,
+                extra={
+                    "event": "schema_phase_done",
+                    "duration_ms": schema_phase.ms,
+                    "repo_id": self.graph.repo_id,
+                },
+            )
+        except Exception as e:
+            logger.warning("Schema phase failed: %s", e, exc_info=True)
+            result.errors.append(f"Schema phase failed: {e}")
 
         # Phase 3: Walk and process documentation files
-        with Timer() as phase3:
-            doc_batch = BatchCollector(self.graph, self._batch_size)
-            doc_files = walk_repo(repo_path, self._DOC_EXTENSIONS)
-            for wf in doc_files:
-                self._process_document(wf, result, doc_batch)
-            doc_counts = doc_batch.flush()
-            result.nodes_created += doc_counts["nodes_created"]
-            result.relationships_created += doc_counts["relationships_created"]
+        try:
+            with Timer() as phase3:
+                doc_batch = BatchCollector(self.graph, self._batch_size)
+                doc_files = walk_repo(repo_path, self._DOC_EXTENSIONS)
+                for wf in doc_files:
+                    self._process_document(wf, result, doc_batch)
+                doc_counts = doc_batch.flush()
+                result.nodes_created += doc_counts["nodes_created"]
+                result.relationships_created += doc_counts["relationships_created"]
 
-        logger.info(
-            "Phase 3 complete: processed %d docs (%d/%d refs resolved)",
-            result.docs_processed,
-            result.doc_references_resolved,
-            result.doc_references_total,
-            extra={"event": "phase3_done", "duration_ms": phase3.ms, "repo_id": self.graph.repo_id},
-        )
+            logger.info(
+                "Phase 3 complete: processed %d docs (%d/%d refs resolved)",
+                result.docs_processed,
+                result.doc_references_resolved,
+                result.doc_references_total,
+                extra={"event": "phase3_done", "duration_ms": phase3.ms, "repo_id": self.graph.repo_id},
+            )
+        except Exception as e:
+            logger.warning("Doc phase failed: %s", e, exc_info=True)
+            result.errors.append(f"Doc phase failed: {e}")
 
         # Write snapshots for changelog generation
         try:

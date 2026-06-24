@@ -176,11 +176,13 @@ class SchemaExtractor:
                         model_id,
                         target_id,
                         {
-                            "relation_type": r.relation_type,
-                            "foreign_key_field": r.foreign_key_field,
-                            "through_model": r.through_model,
-                            "source_field": r.source_field,
-                            "orm_hint": r.orm_hint,
+                            # FalkorDB cannot MERGE on null property values, so
+                            # coerce optional relation fields to empty strings.
+                            "relation_type": r.relation_type or "",
+                            "foreign_key_field": r.foreign_key_field or "",
+                            "through_model": r.through_model or "",
+                            "source_field": r.source_field or "",
+                            "orm_hint": r.orm_hint or "",
                         },
                     )
 

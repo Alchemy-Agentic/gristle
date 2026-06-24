@@ -36,6 +36,8 @@ class GraphClient:
         repo_id: str = "default",
         password: str | None = None,
     ):
+        self._host = host
+        self._port = port
         self._db = FalkorDB(host=host, port=port, password=password)
         self._repo_id = repo_id
         self._graph_name = f"gristle_{self._sanitize_id(repo_id)}"
@@ -48,6 +50,18 @@ class GraphClient:
     @property
     def graph_name(self) -> str:
         return self._graph_name
+
+    def ping(self) -> bool:
+        """Return True if the FalkorDB server is reachable.
+
+        Used by readiness checks and ``gristle doctor`` to verify the graph
+        backend is up without raising.
+        """
+        try:
+            self._db.connection.ping()
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Query execution
