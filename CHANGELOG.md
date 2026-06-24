@@ -4,6 +4,36 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ---
 
+## [Unreleased]
+
+### Added
+- **`gristle` CLI** — `ingest`, `overview`, `explore`, `query`, `doctor`, and
+  `serve` subcommands (bare `gristle` still starts the MCP server).
+- **Engine rehydration** — tools work against previously-ingested repos after a
+  server restart (rebuilt from the FalkorDB graph) instead of re-ingesting.
+- **`/ready` endpoint** — pings FalkorDB; `/health` is now liveness-only.
+- **Parsers** — TS/JS decorator extraction, NestJS controller routes, tsconfig
+  `paths`/`baseUrl` import resolution, and SQLAlchemy/Django/TypeORM model
+  detection (Model/ModelField/relation nodes).
+- **Packaging** — tag-triggered PyPI + GHCR release workflow, single-source
+  version (hatch dynamic), and `examples/sample-app`.
+
+### Changed
+- Relationship writes are label-scoped so FalkorDB uses the id index instead of
+  a full-scan Cartesian product (~2× faster ingest on large repos).
+- GitHub ingests keep the clone under `GRISTLE_REPO_STORAGE_PATH` so source
+  loading works (removed by `gristle_drop`).
+
+### Fixed
+- Ingest no longer aborts on a null `RELATED_TO` relation property; enrichment
+  phases (config/schema/docs) are isolated so one failure degrades gracefully.
+- MCP tools return a structured `{"error": ...}` (with an actionable message
+  when FalkorDB is unreachable) instead of leaking raw exceptions.
+- Incremental watch path passed the wrong type to call resolution
+  (`AttributeError`); now uses a `BatchCollector`.
+
+---
+
 ## [0.1.0] - 2026-02-03
 
 Initial release.
