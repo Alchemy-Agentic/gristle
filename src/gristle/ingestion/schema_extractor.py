@@ -50,6 +50,10 @@ class SchemaExtractor:
                     if is_drizzle_schema(content):
                         models.extend(parse_drizzle_schema(wf.relative_path, content))
 
+                    from gristle.parsers.orm_typescript import extract_typeorm_models
+
+                    models.extend(extract_typeorm_models(wf.relative_path, content))
+
         # 3. Python ORM detection (SQLAlchemy declarative + Django models)
         for wf in walked_files:
             if wf.extension in ("py", "pyi"):
