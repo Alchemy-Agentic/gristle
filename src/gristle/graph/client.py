@@ -5,12 +5,38 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections import defaultdict
 from typing import Any
 
 from falkordb import FalkorDB
 from redis.exceptions import ResponseError
 
 logger = logging.getLogger(__name__)
+
+# Node ids encode their label as a leading ``prefix::`` segment. Labeling the
+# endpoints of relationship-write queries lets FalkorDB use the per-label id
+# index instead of planning an unlabeled ``MATCH (a),(b)`` as a Cartesian
+# product of two full node scans (the dominant ingest cost on large repos).
+_ID_PREFIX_TO_LABEL: dict[str, str] = {
+    "func": "Function",
+    "class": "Class",
+    "file": "File",
+    "import": "Import",
+    "route": "Route",
+    "testcase": "TestCase",
+    "doc": "Document",
+    "docsec": "DocumentSection",
+    "dep": "Dependency",
+    "envvar": "EnvVar",
+    "typefield": "TypeField",
+    "model": "Model",
+    "mf": "ModelField",
+}
+
+
+def _label_for_id(node_id: str) -> str | None:
+    """Return the node label encoded in an id's ``prefix::`` segment, if known."""
+    return _ID_PREFIX_TO_LABEL.get(node_id.split("::", 1)[0])
 
 
 class QueryResult:
@@ -110,7 +136,8 @@ class GraphClient:
             props_inner = ", ".join(f"{k}: ${k}" for k in properties)
             props_clause = f" {{{props_inner}}}"
 
-        query = f"MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id CREATE (a)-[:{rel_type}{props_clause}]->(b)"
+        a, b = self._labeled_endpoints(from_id, to_id)
+        query = f"MATCH ({a}), ({b}) WHERE a.id = $from_id AND b.id = $to_id CREATE (a)-[:{rel_type}{props_clause}]->(b)"
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if properties:
             params.update(properties)
@@ -129,7 +156,8 @@ class GraphClient:
             props_inner = ", ".join(f"{k}: ${k}" for k in properties)
             props_clause = f" {{{props_inner}}}"
 
-        query = f"MATCH (a), (b) WHERE a.id = $from_id AND b.id = $to_id MERGE (a)-[:{rel_type}{props_clause}]->(b)"
+        a, b = self._labeled_endpoints(from_id, to_id)
+        query = f"MATCH ({a}), ({b}) WHERE a.id = $from_id AND b.id = $to_id MERGE (a)-[:{rel_type}{props_clause}]->(b)"
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if properties:
             params.update(properties)
@@ -138,6 +166,15 @@ class GraphClient:
     # ------------------------------------------------------------------
     # Batch operations (UNWIND)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _labeled_endpoints(from_id: str, to_id: str) -> tuple[str, str]:
+        """Build ``a[:Label]``/``b[:Label]`` match patterns from id prefixes."""
+        from_label = _label_for_id(from_id)
+        to_label = _label_for_id(to_id)
+        a = f"a:{from_label}" if from_label else "a"
+        b = f"b:{to_label}" if to_label else "b"
+        return a, b
 
     def batch_create_nodes(self, label: str, items: list[dict[str, Any]]) -> int:
         """Create multiple nodes of the same label in a single UNWIND query.
@@ -159,26 +196,22 @@ class GraphClient:
         Each item must have ``from_id`` and ``to_id`` keys.
         Additional keys become relationship properties.
         """
-        if not items:
-            return 0
-        prop_keys = [k for k in items[0] if k not in ("from_id", "to_id")]
-        props_clause = ""
-        if prop_keys:
-            props_inner = ", ".join(f"{k}: rel.{k}" for k in prop_keys)
-            props_clause = f" {{{props_inner}}}"
-        query = (
-            "UNWIND $rels AS rel "
-            "MATCH (a), (b) "
-            "WHERE a.id = rel.from_id AND b.id = rel.to_id "
-            f"CREATE (a)-[:{rel_type}{props_clause}]->(b)"
-        )
-        result = self.execute(query, {"rels": items})
-        return int(result.summary["relationships_created"])
+        return self._batch_write_relationships(rel_type, items, verb="CREATE")
 
     def batch_merge_relationships(self, rel_type: str, items: list[dict[str, Any]]) -> int:
         """Merge (upsert) multiple relationships of the same type via UNWIND.
 
         Each item must have ``from_id`` and ``to_id`` keys.
+        """
+        return self._batch_write_relationships(rel_type, items, verb="MERGE")
+
+    def _batch_write_relationships(self, rel_type: str, items: list[dict[str, Any]], *, verb: str) -> int:
+        """CREATE/MERGE relationships via UNWIND, grouped by endpoint label.
+
+        Grouping by the (from, to) labels derived from id prefixes lets each
+        sub-query use the per-label id index (``Node By Index Scan``) instead of
+        an unlabeled ``MATCH (a),(b)`` Cartesian product. Items whose ids have an
+        unknown prefix fall back to an unlabeled match.
         """
         if not items:
             return 0
@@ -187,14 +220,24 @@ class GraphClient:
         if prop_keys:
             props_inner = ", ".join(f"{k}: rel.{k}" for k in prop_keys)
             props_clause = f" {{{props_inner}}}"
-        query = (
-            "UNWIND $rels AS rel "
-            "MATCH (a), (b) "
-            "WHERE a.id = rel.from_id AND b.id = rel.to_id "
-            f"MERGE (a)-[:{rel_type}{props_clause}]->(b)"
-        )
-        result = self.execute(query, {"rels": items})
-        return int(result.summary["relationships_created"])
+
+        groups: dict[tuple[str | None, str | None], list[dict[str, Any]]] = defaultdict(list)
+        for item in items:
+            groups[(_label_for_id(item["from_id"]), _label_for_id(item["to_id"]))].append(item)
+
+        total = 0
+        for (from_label, to_label), group in groups.items():
+            a = f"a:{from_label}" if from_label else "a"
+            b = f"b:{to_label}" if to_label else "b"
+            query = (
+                "UNWIND $rels AS rel "
+                f"MATCH ({a}), ({b}) "
+                "WHERE a.id = rel.from_id AND b.id = rel.to_id "
+                f"{verb} (a)-[:{rel_type}{props_clause}]->(b)"
+            )
+            result = self.execute(query, {"rels": group})
+            total += int(result.summary["relationships_created"])
+        return total
 
     # ------------------------------------------------------------------
     # Lifecycle

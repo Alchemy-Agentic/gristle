@@ -2553,12 +2553,21 @@ class IngestionPipeline:
 
         return None
 
+    # Labels that carry a file_path property (kept in sync with node builders).
+    _FILE_PATH_LABELS = ("Function", "Class", "Route", "TestCase", "Import", "DocumentSection", "Model")
+
     def _delete_file_nodes(self, file_path: str) -> None:
-        """Remove all nodes associated with a file."""
-        self.graph.execute(
-            "MATCH (n) WHERE n.file_path = $fp DETACH DELETE n",
-            {"fp": file_path},
-        )
+        """Remove all nodes associated with a file (incremental update path).
+
+        Deletes per-label so FalkorDB scans only the relevant label (and uses the
+        file_path index where one exists) instead of an all-node scan. Covers every
+        label carrying a file_path; the File node keys on ``path``.
+        """
+        for label in self._FILE_PATH_LABELS:
+            self.graph.execute(
+                f"MATCH (n:{label}) WHERE n.file_path = $fp DETACH DELETE n",
+                {"fp": file_path},
+            )
         self.graph.execute(
             "MATCH (n:File) WHERE n.path = $fp DETACH DELETE n",
             {"fp": file_path},

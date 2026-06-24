@@ -367,3 +367,42 @@ class TestPing:
         client, _ = _make_client()
         client._db.connection.ping.side_effect = ConnectionError("refused")
         assert client.ping() is False
+
+
+class TestRelationshipLabeling:
+    """Relationship writes label endpoints by id prefix so FalkorDB uses the
+    id index instead of an unlabeled Cartesian-product scan."""
+
+    def test_batch_create_labels_endpoints_from_prefix(self):
+        client, mock_graph = _make_client()
+        mock_graph.query.return_value = _empty_result(relationships_created=1)
+        client.batch_create_relationships("CONTAINS", [{"from_id": "file::a", "to_id": "func::b"}])
+        query = mock_graph.query.call_args[0][0]
+        assert "MATCH (a:File), (b:Function)" in query
+
+    def test_unknown_prefix_falls_back_to_unlabeled(self):
+        client, mock_graph = _make_client()
+        mock_graph.query.return_value = _empty_result()
+        client.batch_merge_relationships("CALLS", [{"from_id": "weird::x", "to_id": "y"}])
+        query = mock_graph.query.call_args[0][0]
+        assert "MATCH (a), (b)" in query
+
+    def test_mixed_endpoint_labels_split_into_separate_queries(self):
+        client, mock_graph = _make_client()
+        mock_graph.query.return_value = _empty_result(relationships_created=1)
+        result = client.batch_create_relationships(
+            "CALLS",
+            [
+                {"from_id": "func::a", "to_id": "func::b"},
+                {"from_id": "func::c", "to_id": "class::d"},
+            ],
+        )
+        assert mock_graph.query.call_count == 2  # one query per (from,to) label group
+        assert result == 2
+
+    def test_single_edge_create_is_labeled(self):
+        client, mock_graph = _make_client()
+        mock_graph.query.return_value = _empty_result()
+        client.create_relationship("class::a", "class::b", "INHERITS_FROM")
+        query = mock_graph.query.call_args[0][0]
+        assert "MATCH (a:Class), (b:Class)" in query
