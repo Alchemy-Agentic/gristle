@@ -89,6 +89,24 @@ class GraphClient:
         except Exception:
             return False
 
+    def graph_exists(self) -> bool:
+        """True if this repo's graph already exists on the server.
+
+        Lets the server rehydrate engines for previously-ingested repos after a
+        restart without a destructive re-ingest.
+        """
+        try:
+            return self._graph_name in self._db.list_graphs()
+        except Exception:
+            return False
+
+    def list_gristle_graphs(self) -> list[str]:
+        """Return all ``gristle_*`` graph names present on the server."""
+        try:
+            return [g for g in self._db.list_graphs() if g.startswith("gristle_")]
+        except Exception:
+            return []
+
     # ------------------------------------------------------------------
     # Query execution
     # ------------------------------------------------------------------

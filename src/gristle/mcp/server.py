@@ -251,8 +251,10 @@ async def gristle_ingest_github(
 ) -> dict:
     """Clone and index a GitHub repository into the Gristle code graph.
 
-    Clones the repository to a temporary directory, runs full ingestion,
-    then deletes the clone. The code graph persists in FalkorDB.
+    Clones the repository into local storage (GRISTLE_REPO_STORAGE_PATH), runs
+    full ingestion, and keeps the clone so source-loading tools (explore,
+    impact) work afterward. The code graph persists in FalkorDB; call
+    gristle_drop to remove both the graph and the stored clone.
 
     Args:
         repo_url: GitHub repository — either "owner/repo" or a full URL
@@ -263,7 +265,6 @@ async def gristle_ingest_github(
                  hash derived from the repo URL.
     """
     import shutil
-    import tempfile
 
     from git import Repo
 
@@ -282,8 +283,15 @@ async def gristle_ingest_github(
     clean_url = repo_url if not repo_url.startswith("http") else repo_url
     rid = repo_id or GraphClient.repo_id_from_path(clean_url)
 
-    tmp_dir = tempfile.mkdtemp(prefix="gristle_")
+    # Clone into persistent storage (not a temp dir) so source loading and
+    # engine rehydration keep working after ingestion / a server restart.
+    clone_path = (settings.repo_storage_path / rid).resolve()
+    clone_dir = str(clone_path)
     try:
+        if clone_path.exists():
+            shutil.rmtree(clone_path, ignore_errors=True)
+        clone_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Clone (shallow for speed) — run in thread to avoid blocking event loop
         clone_kwargs: dict = {"depth": 1}
         if ref:
@@ -291,8 +299,8 @@ async def gristle_ingest_github(
 
         def _clone() -> float:
             with Timer() as t:
-                logger.info("Cloning %s to %s", repo_url, tmp_dir)
-                Repo.clone_from(clone_url, tmp_dir, **clone_kwargs)
+                logger.info("Cloning %s to %s", repo_url, clone_dir)
+                Repo.clone_from(clone_url, clone_dir, **clone_kwargs)
             return t.ms
 
         clone_ms = await asyncio.to_thread(_clone)
@@ -313,12 +321,12 @@ async def gristle_ingest_github(
 
         def _ingest():
             with Timer() as t:
-                res = pipeline.ingest_repo(tmp_dir)
+                res = pipeline.ingest_repo(clone_dir)
             return res, t.ms
 
         result, ingest_ms = await asyncio.to_thread(_ingest)
 
-        engine = QueryEngine(graph, repo_path=tmp_dir)
+        engine = QueryEngine(graph, repo_path=clone_dir)
         _engines[rid] = engine
         _pipelines[rid] = pipeline
 
@@ -358,10 +366,10 @@ async def gristle_ingest_github(
         }
     except Exception as e:
         logger.error("Failed to ingest %s: %s", repo_url, e, exc_info=True)
+        # Clean up a partial/failed clone; a successful clone is kept on disk
+        # so source loading keeps working (removed by gristle_drop).
+        shutil.rmtree(clone_path, ignore_errors=True)
         return {"error": str(e)}
-    finally:
-        # Always clean up the clone
-        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @mcp.tool()
@@ -905,8 +913,13 @@ async def gristle_drop(
     _pipelines.pop(repo_id, None)
     _semantic_indexes.pop(repo_id, None)
 
+    # Remove any stored GitHub clone for this repo (kept by gristle_ingest_github).
+    import shutil
+
+    shutil.rmtree(settings.repo_storage_path / repo_id, ignore_errors=True)
+
     if engine is None:
-        # Still try to drop the graph directly
+        # Still try to drop the graph directly (e.g. ingested before a restart)
         graph = GraphClient(
             host=settings.falkordb_host,
             port=settings.falkordb_port,
@@ -1231,9 +1244,23 @@ async def gristle_model_detail(model_name: str, repo_id: str | None = None) -> d
     mime_type="application/json",
 )
 async def list_repos() -> str:
-    repos = []
+    repos: list[dict[str, Any]] = []
     for rid, engine in _engines.items():
-        repos.append({"repo_id": rid, "repo_path": engine.repo_path})
+        repos.append({"repo_id": rid, "repo_path": engine.repo_path, "loaded": True})
+    # Also surface graphs that exist in FalkorDB but aren't loaded in this
+    # process (e.g. ingested before a restart) so they're discoverable.
+    try:
+        loaded_graph_names = {e.graph.graph_name for e in _engines.values()}
+        probe = GraphClient(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            password=settings.falkordb_password,
+        )
+        for gname in probe.list_gristle_graphs():
+            if gname not in loaded_graph_names:
+                repos.append({"graph_name": gname, "loaded": False})
+    except Exception:
+        logger.debug("Could not enumerate FalkorDB graphs", exc_info=True)
     return json.dumps(repos, indent=2)
 
 
@@ -1244,7 +1271,7 @@ async def list_repos() -> str:
     mime_type="application/json",
 )
 async def repo_overview(repo_id: str) -> str:
-    engine = _engines.get(repo_id)
+    engine = _resolve_engine(repo_id)
     if engine is None:
         return json.dumps({"error": f"Repo '{repo_id}' not found."})
     return json.dumps(engine.get_repo_overview(), indent=2, default=str)
@@ -1256,13 +1283,46 @@ async def repo_overview(repo_id: str) -> str:
 
 
 def _resolve_engine(repo_id: str | None) -> QueryEngine | None:
-    """Resolve a repo_id to a QueryEngine, defaulting to the last ingested."""
+    """Resolve a repo_id to a QueryEngine, defaulting to the last ingested.
+
+    If the repo isn't loaded in this process but its graph still exists in
+    FalkorDB (e.g. after a server restart), rehydrate a read-only engine from it
+    instead of reporting "not ingested" and forcing a destructive re-ingest.
+    """
     if repo_id:
-        return _engines.get(repo_id)
+        engine = _engines.get(repo_id)
+        if engine is None:
+            engine = _rehydrate_engine(repo_id)
+        return engine
     if _engines:
         # Return the most recently added
         return list(_engines.values())[-1]
     return None
+
+
+def _rehydrate_engine(repo_id: str) -> QueryEngine | None:
+    """Rebuild a QueryEngine from an existing FalkorDB graph, or None if absent."""
+    graph = GraphClient(
+        host=settings.falkordb_host,
+        port=settings.falkordb_port,
+        repo_id=repo_id,
+        password=settings.falkordb_password,
+    )
+    if not graph.graph_exists():
+        return None
+    repo_path: str | None = None
+    try:
+        rows = graph.execute(
+            "MATCH (s:Snapshot) RETURN s.repo_path AS p ORDER BY s.captured_at DESC LIMIT 1"
+        ).records
+        if rows and rows[0].get("p"):
+            repo_path = rows[0]["p"]
+    except Exception:
+        logger.debug("Could not read repo_path from snapshot for %s", repo_id, exc_info=True)
+    engine = QueryEngine(graph, repo_path=repo_path)
+    _engines[repo_id] = engine
+    logger.info("Rehydrated engine for repo '%s' from existing FalkorDB graph", repo_id)
+    return engine
 
 
 # ======================================================================

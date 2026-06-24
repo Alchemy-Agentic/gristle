@@ -163,6 +163,7 @@ class IngestionPipeline:
         total_timer.__enter__()
 
         repo_path = str(Path(repo_path).resolve())
+        self._repo_path = repo_path  # recorded in snapshots for engine rehydration
         result = IngestionResult(
             repo_id=self.graph.repo_id,
             repo_path=repo_path,
@@ -2602,17 +2603,22 @@ class IngestionPipeline:
         return {
             "snapshot_id": str(uuid.uuid4()),
             "captured_at": datetime.now(UTC).isoformat(),
+            # repo_path lets the server rehydrate a QueryEngine (incl. source
+            # loading) from an existing graph after a restart.
+            "repo_path": getattr(self, "_repo_path", ""),
             **counts,
             "file_paths_json": json.dumps(file_paths),
         }
 
     def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
         """Write a Snapshot node to the graph and prune old ones."""
+        snapshot.setdefault("repo_path", "")
         self.graph.execute(
             """
             CREATE (s:Snapshot {
                 snapshot_id: $snapshot_id,
                 captured_at: $captured_at,
+                repo_path: $repo_path,
                 file_count: $file_count,
                 function_count: $function_count,
                 class_count: $class_count,

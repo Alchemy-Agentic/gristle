@@ -406,3 +406,20 @@ class TestRelationshipLabeling:
         client.create_relationship("class::a", "class::b", "INHERITS_FROM")
         query = mock_graph.query.call_args[0][0]
         assert "MATCH (a:Class), (b:Class)" in query
+
+
+class TestGraphDiscovery:
+    def test_graph_exists_true(self):
+        client, _ = _make_client("my-repo")
+        client._db.list_graphs.return_value = [client.graph_name, "gristle_other"]
+        assert client.graph_exists() is True
+
+    def test_graph_exists_false(self):
+        client, _ = _make_client("my-repo")
+        client._db.list_graphs.return_value = ["gristle_other"]
+        assert client.graph_exists() is False
+
+    def test_list_gristle_graphs_filters_prefix(self):
+        client, _ = _make_client()
+        client._db.list_graphs.return_value = ["gristle_a", "gristle_b", "ziggy", "telemetry"]
+        assert client.list_gristle_graphs() == ["gristle_a", "gristle_b"]

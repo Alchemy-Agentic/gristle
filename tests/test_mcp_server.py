@@ -929,9 +929,13 @@ class TestGristleSemanticSearch:
 class TestResources:
     @pytest.mark.asyncio
     async def test_list_repos_empty(self):
+        import gristle.mcp.server as srv
         from gristle.mcp.server import list_repos
 
-        result = json.loads(await list_repos())
+        srv._engines.clear()
+        with patch("gristle.mcp.server.GraphClient") as MockGC:
+            MockGC.return_value.list_gristle_graphs.return_value = []
+            result = json.loads(await list_repos())
         assert result == []
 
     @pytest.mark.asyncio
@@ -939,12 +943,17 @@ class TestResources:
         import gristle.mcp.server as srv
         from gristle.mcp.server import list_repos
 
+        srv._engines.clear()
         srv._engines["r1"] = _mock_engine("/tmp/repo1")
         srv._engines["r2"] = _mock_engine("/tmp/repo2")
-        result = json.loads(await list_repos())
+        with patch("gristle.mcp.server.GraphClient") as MockGC:
+            MockGC.return_value.list_gristle_graphs.return_value = []
+            result = json.loads(await list_repos())
         assert len(result) == 2
         assert result[0]["repo_id"] == "r1"
+        assert result[0]["loaded"] is True
         assert result[1]["repo_path"] == "/tmp/repo2"
+        srv._engines.clear()
 
     @pytest.mark.asyncio
     async def test_repo_overview_not_found(self):
@@ -1131,3 +1140,37 @@ class TestToolErrorBoundary:
 
         assert sample.__name__ == "sample"
         assert list(inspect.signature(sample).parameters) == ["a", "b"]
+
+
+class TestRehydration:
+    def test_rehydrate_returns_none_when_graph_absent(self):
+        import gristle.mcp.server as srv
+
+        srv._engines.clear()
+        with patch("gristle.mcp.server.GraphClient") as MockGC:
+            MockGC.return_value.graph_exists.return_value = False
+            assert srv._rehydrate_engine("ghost") is None
+        assert "ghost" not in srv._engines
+
+    def test_rehydrate_builds_engine_from_existing_graph(self):
+        import gristle.mcp.server as srv
+
+        srv._engines.clear()
+        with patch("gristle.mcp.server.GraphClient") as MockGC:
+            gc = MockGC.return_value
+            gc.graph_exists.return_value = True
+            gc.execute.return_value = QueryResult(records=[{"p": "/repo/path"}], summary={})
+            engine = srv._rehydrate_engine("myrepo")
+        assert engine is not None
+        assert engine.repo_path == "/repo/path"
+        assert srv._engines["myrepo"] is engine
+        srv._engines.clear()
+
+    def test_resolve_engine_falls_back_to_rehydrate(self):
+        import gristle.mcp.server as srv
+
+        srv._engines.clear()
+        sentinel = object()
+        with patch("gristle.mcp.server._rehydrate_engine", return_value=sentinel) as reh:
+            assert srv._resolve_engine("absent") is sentinel
+            reh.assert_called_once_with("absent")
