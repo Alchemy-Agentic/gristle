@@ -16,24 +16,20 @@
 
 ## Conversation Initialization
 
-**IMPORTANT: Read CONTEXT.md at the start of every conversation.**
+**IMPORTANT: Get oriented at the start of every conversation.**
 
-[CONTEXT.md](CONTEXT.md) tells you:
-- What's been built (parsers, pipeline, MCP tools)
-- Non-negotiable architecture rules
-- Current focus and upcoming work
-- How Gristle integrates with Ziggy
+To understand what's been built (parsers, pipeline, MCP tools), the
+non-negotiable architecture rules, and how the graph schema fits together:
+
+- Read [README.md](README.md) for the overview, value prop, and quickstart
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) before touching the ingestion pipeline or parsers
+- Read [docs/integration-guide.md](docs/integration-guide.md) for the MCP tool reference and graph schema
+- Check recent commits for latest changes (already in git context)
 
 This prevents:
 - Suggesting features that already exist
 - Violating architecture decisions
 - Wasting time rediscovering what's built
-
-**After reading CONTEXT.md:**
-- Check recent commits for latest changes (already in git context)
-- Read [ARCHITECTURE.md](ARCHITECTURE.md) before touching the ingestion pipeline or parsers
-- Read [docs/integration-guide.md](docs/integration-guide.md) for the MCP tool reference and graph schema
-- Read [docs/ziggy-integration.md](docs/ziggy-integration.md) before any change that affects the graph schema or MCP tools
 
 ---
 
@@ -211,13 +207,12 @@ For multi-file implementations (5+ files), split work between models.
 
 ### Graph Schema Changes
 
-**Critical:** Any change to Gristle's graph schema (new node types, new properties, new edge types) directly affects Ziggy's agents. Before modifying the schema:
+**Critical:** Any change to Gristle's graph schema (new node types, new properties, new edge types) directly affects downstream consumers that query the graph with Cypher. Before modifying the schema:
 
-1. Read [docs/ziggy-integration.md](docs/ziggy-integration.md) to understand what Ziggy queries
-2. New nodes/properties are additive (safe) - Ziggy agents can opt in
-3. Renaming or removing properties is **breaking** - Ziggy's Cypher queries will fail
-4. New edge types are additive (safe) - existing queries won't break
-5. Document all schema changes in ARCHITECTURE.md and docs/integration-guide.md
+1. New nodes/properties are additive (safe) - consumers can opt in
+2. Renaming or removing properties is **breaking** - existing Cypher queries will fail
+3. New edge types are additive (safe) - existing queries won't break
+4. Document all schema changes in ARCHITECTURE.md and docs/integration-guide.md
 
 ### Pipeline Invariants
 
@@ -231,7 +226,7 @@ Don't merge phases or reorder them. The `BatchCollector` flush at the end of eac
 ### Per-Repo Graph Isolation
 
 Each repository gets its own FalkorDB graph namespace: `gristle_{sanitized_repo_id}`. This is critical for:
-- Multi-tenant safety (Ziggy runs graphs for many apps)
+- Multi-tenant safety (one instance can serve graphs for many apps)
 - Clean lifecycle (drop one graph without affecting others)
 - Query scope (queries only scan the target repo's graph)
 
@@ -277,8 +272,8 @@ src/gristle/
     embeddings.py          # Optional semantic search
   logging.py               # Structured logging (JSON/text)
   mcp/
-    server.py              # MCP server (18 tools + 2 resources)
+    server.py              # MCP server (30 tools + 2 resources)
     auth.py                # Bearer token auth
 
-tests/                     # 520+ tests, mock graph clients
+tests/                     # 900+ tests, mock graph clients
 ```

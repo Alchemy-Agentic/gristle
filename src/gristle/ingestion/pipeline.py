@@ -391,12 +391,16 @@ class IngestionPipeline:
         # 4. Re-resolve cross-file edges for this file
         self._import_cache.pop(relative_path, None)  # invalidate cache
 
+        # Buffer CALLS/TESTS edges; INHERITS_FROM and IMPORTS below are written
+        # directly via the graph client (single-file incremental path, not bulk).
+        batch = BatchCollector(self.graph, self._batch_size)
+
         # CALLS: resolve calls in this file's functions
         for func in parsed.functions:
-            self._resolve_function_calls(func, parsed, result)
+            self._resolve_function_calls(func, parsed, batch)
         for cls in parsed.classes:
             for method in cls.methods:
-                self._resolve_function_calls(method, parsed, result)
+                self._resolve_function_calls(method, parsed, batch)
             # INHERITS_FROM
             class_id = f"class::{cls.qualified_name}"
             for base_name in cls.bases:
@@ -426,7 +430,12 @@ class IngestionPipeline:
 
         # TESTS: if this is a test file, create TESTS edges
         if parsed.is_test_file:
-            self._resolve_test_edges([parsed], result)
+            self._resolve_test_edges([parsed], result, batch)
+
+        # Flush buffered CALLS/TESTS edges for this file
+        counts = batch.flush()
+        result.nodes_created += counts["nodes_created"]
+        result.relationships_created += counts["relationships_created"]
 
         # Also re-resolve callers INTO this file from other files
         # (Other files may call functions defined here — those CALLS edges

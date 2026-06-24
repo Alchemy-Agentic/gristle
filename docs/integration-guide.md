@@ -485,15 +485,8 @@ Returns `total`, `outdated` (list with name, declared_version, latest_version, v
 
 ---
 
-### `gristle_stats()`
-
-Repository statistics — file counts, node counts, language breakdown. Quick way to verify ingestion worked.
-
----
-
-### `gristle_overview()`
-
-High-level codebase summary with key entry points, most-called functions, and relationship counts.
+> Repository statistics and the high-level codebase summary are served by the
+> `gristle://repos/{repo_id}/overview` resource (see **Resources**), not by a tool.
 
 ---
 
@@ -906,7 +899,7 @@ Gristle outputs structured JSON logs in production (HTTP transport) and coloured
 The `/health` endpoint returns server status without auth:
 
 ```bash
-curl https://gristle-production.up.railway.app/health
+curl https://your-gristle-host/health
 # {"status": "ok", "server": "gristle", "version": "0.1.0", "repos_loaded": 2, ...}
 ```
 
@@ -955,7 +948,6 @@ Gristle has been tested against these real-world repositories:
 | httpx | Python | 60 | -- | -- | 541 | 7 |
 | Flask | Python | 83 | -- | -- | 399 | 24 |
 | Django REST Framework | Python | 158 | -- | -- | 1,038 | 0 |
-| pig-knuckle | TypeScript | 365 | 28,791 | 49,814 | 0 | 0 |
 
 ---
 

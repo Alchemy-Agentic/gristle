@@ -1294,7 +1294,7 @@ class TypeScriptParser(LanguageParser):
         Returns list of path patterns (e.g. ``['/api/admin/*', '*']``).
         """
         router_objects = {"app", "router", "server", "route", "api", "blueprint"}
-        dynamic = getattr(self, "_dynamic_router_names", set())
+        dynamic: set[str] = getattr(self, "_dynamic_router_names", set())
         paths: list[str] = []
 
         for node in self._iter_descendants(root):
@@ -1402,7 +1402,7 @@ class TypeScriptParser(LanguageParser):
         # Only match router-like objects, not request/response objects
         router_objects = {"app", "router", "server", "route", "api", "blueprint"}
         # Include dynamically detected router variables (e.g. const chat = new Hono())
-        dynamic = getattr(self, "_dynamic_router_names", set())
+        dynamic: set[str] = getattr(self, "_dynamic_router_names", set())
         obj_base = obj_text.split(".")[-1] if "." in obj_text else obj_text
         if obj_base not in router_objects and obj_base not in dynamic:
             return None

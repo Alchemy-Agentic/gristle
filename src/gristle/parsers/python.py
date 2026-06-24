@@ -1,4 +1,4 @@
-"""Python parser using tree-sitter for structure and ast-grep for extraction."""
+"""Python parser using tree-sitter for structure and extraction."""
 
 from __future__ import annotations
 

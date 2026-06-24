@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import JSONResponse
@@ -32,13 +32,14 @@ _auth_settings = None
 
 if settings.api_key:
     from mcp.server.auth.settings import AuthSettings
+    from pydantic import AnyHttpUrl
 
     from gristle.mcp.auth import ApiKeyVerifier
 
     _token_verifier = ApiKeyVerifier(settings.api_key)
     _auth_settings = AuthSettings(
-        issuer_url="https://gristle.local",
-        resource_server_url="https://gristle.local",
+        issuer_url=AnyHttpUrl("https://gristle.local"),
+        resource_server_url=AnyHttpUrl("https://gristle.local"),
     )
 
 # ------------------------------------------------------------------
@@ -59,7 +60,7 @@ mcp = FastMCP(
 # These are initialised lazily per-repo via gristle_ingest.
 _engines: dict[str, QueryEngine] = {}
 _pipelines: dict[str, IngestionPipeline] = {}
-_semantic_indexes: dict[str, object] = {}  # repo_id -> SemanticIndex (if available)
+_semantic_indexes: dict[str, Any] = {}  # repo_id -> SemanticIndex (if available)
 _registry = ParserRegistry().build_default()
 
 
@@ -324,6 +325,8 @@ async def gristle_watch(
         engine = _engines.get(rid)
         if not pipeline or not engine:
             return {"error": f"Repo '{rid}' not found. Call gristle_ingest first."}
+        if not engine.repo_path:
+            return {"error": f"Repo '{rid}' has no source path on record. Re-ingest first."}
         started = start_watching(rid, engine.repo_path, pipeline)
         return {
             "repo_id": rid,
@@ -1203,7 +1206,7 @@ def main():
 
     configure_logging(transport)
     logger.info("Starting Gristle MCP server (transport=%s)", transport)
-    mcp.run(transport=transport)
+    mcp.run(transport=cast("Literal['stdio', 'streamable-http']", transport))
 
 
 if __name__ == "__main__":

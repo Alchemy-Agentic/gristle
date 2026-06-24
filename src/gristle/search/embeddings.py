@@ -36,7 +36,7 @@ class CodeEmbedder:
                 "sentence-transformers is required for semantic search. Install it with: pip install gristle[search]"
             ) from err
         self._model = SentenceTransformer(model_name)
-        self._dim = self._model.get_sentence_embedding_dimension()
+        self._dim: int = self._model.get_sentence_embedding_dimension()
 
     @property
     def dimension(self) -> int:
@@ -44,7 +44,8 @@ class CodeEmbedder:
 
     def embed_text(self, text: str) -> list[float]:
         """Embed a single text string."""
-        return self._model.encode(text, convert_to_tensor=False).tolist()
+        vector: list[float] = self._model.encode(text, convert_to_tensor=False).tolist()
+        return vector
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts (more efficient than one-by-one)."""

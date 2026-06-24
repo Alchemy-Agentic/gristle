@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from packaging.version import InvalidVersion, Version
@@ -102,7 +103,8 @@ def _fetch_npm_latest(client: httpx.Client, name: str) -> str | None:
         resp.raise_for_status()
         data = resp.json()
         dist_tags = data.get("dist-tags", {})
-        return dist_tags.get("latest")
+        latest = dist_tags.get("latest")
+        return latest if isinstance(latest, str) else None
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.debug("npm fetch failed for %s: %s", name, exc)
         return None
@@ -208,7 +210,7 @@ def check_dependencies(
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             with ThreadPoolExecutor(max_workers=min(max_workers, len(uncached))) as executor:
-                futures = {}
+                futures: dict[Any, tuple[str, str]] = {}
                 for name, _version, ecosystem in uncached:
                     if ecosystem == "npm":
                         futures[executor.submit(_fetch_npm_latest, client, name)] = (name, ecosystem)

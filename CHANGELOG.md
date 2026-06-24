@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Gristle are documented here. This file is intended for consuming applications (like Ziggy) to track what's new, what changed, and what might break.
+All notable changes to Gristle are documented here. This file is intended for consuming applications to track what's new, what changed, and what might break.
 
 ---
 
@@ -14,25 +14,27 @@ Initial release.
 - **TypeScript** (`.ts`, `.tsx`) — full support including React/Next.js, Express/Hono/Fastify routes
 - **JavaScript** (`.js`, `.jsx`) — full support including React, Express/Hono/Fastify routes
 - **Markdown** (`.md`, `.mdx`) — documentation parsing and code reference extraction
+- **ORM schemas** — Prisma (`.prisma`) and Drizzle (`.ts`/`.js`) model/field extraction
 
 ### Graph Schema
 
-- **10 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar
-- **17 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES
-- **24 property indexes + 2 full-text indexes** (Function.docstring, Class.docstring)
+- **14 node types:** File, Function, Class, Import, Route, TestCase, Document, DocumentSection, Dependency, EnvVar, TypeField, Model, ModelField, Snapshot
+- **23 edge types:** CONTAINS, DEFINED_IN, EXPORTS, CALLS, PASSED_TO, USES_HOOK, INHERITS_FROM, IMPORTS, TESTS, TESTS_FUNCTION, USES_FIXTURE, USES_DEPENDENCY, DEPENDS_ON, USES_ENV, REFERENCES, HAS_SECTION, HANDLES, HAS_FIELD, RETURNS, ACCEPTS, HAS_MODEL_FIELD, RELATED_TO, PROMOTED_FROM
+- **33 property indexes + 2 full-text indexes** (Function.docstring, Class.docstring)
 
-### MCP Tools (23)
+### MCP Tools (30)
 
 | Category | Tools |
 |----------|-------|
 | Ingestion | `gristle_ingest`, `gristle_ingest_github` |
-| Exploration | `gristle_explore`, `gristle_search`, `gristle_conventions`, `gristle_overview`, `gristle_stats` |
-| Analysis | `gristle_impact`, `gristle_impact_score`, `gristle_trace`, `gristle_tests` |
-| API surface | `gristle_routes`, `gristle_components`, `gristle_deps`, `gristle_docs` |
-| Code quality | `gristle_dead_exports`, `gristle_cycles`, `gristle_public_api` |
-| Config | `gristle_config` |
+| Exploration | `gristle_explore`, `gristle_search`, `gristle_conventions`, `gristle_semantic_search`, `gristle_embed` |
+| Analysis | `gristle_impact`, `gristle_impact_score`, `gristle_trace`, `gristle_tests`, `gristle_type_usage`, `gristle_data_contract` |
+| API surface | `gristle_routes`, `gristle_components`, `gristle_deps`, `gristle_docs`, `gristle_public_api`, `gristle_models`, `gristle_model_detail` |
+| Code quality | `gristle_dead_exports`, `gristle_cycles` |
+| Security | `gristle_security`, `gristle_unauthenticated_routes` |
+| Dependencies & services | `gristle_dependency_health`, `gristle_services` |
+| Config & history | `gristle_config`, `gristle_changelog` |
 | Lifecycle | `gristle_drop`, `gristle_watch` |
-| Semantic search | `gristle_embed`, `gristle_semantic_search` |
 
 ### MCP Resources (2)
 
@@ -56,6 +58,11 @@ Initial release.
 - Callback/handler detection (`PASSED_TO` edges with context)
 - Config file parsing and env var extraction (`EnvVar` nodes, `USES_ENV` edges)
 - Dead export detection, import cycle detection, public API surface mapping
+- Type/data-contract flow (`RETURNS`/`ACCEPTS`/`HAS_FIELD` edges, `TypeField` nodes)
+- Security pattern detection and unauthenticated-route flagging
+- External service mapping and dependency staleness/CVE checks (npm/PyPI/OSV)
+- ORM schema extraction (Prisma, Drizzle) into `Model`/`ModelField` nodes
+- Graph snapshots with cross-run changelog diffing
 - Per-repo graph isolation (`gristle_{repo_id}`)
 - Optional semantic search via sentence-transformers
 - Incremental file watching

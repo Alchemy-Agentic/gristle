@@ -20,14 +20,16 @@ Vector search over chunked code loses structure. "Function A calls function B wh
 
 ## Quick start
 
+**Prerequisites:** Python 3.11+ and Docker (with Docker Compose). FalkorDB runs in Docker; everything else is pip-installed.
+
 ### Local (stdio transport)
 
 Start FalkorDB, then run Gristle as a local MCP server:
 
 ```bash
-docker compose up -d          # start FalkorDB
-pip install -e ".[dev]"       # install Gristle
-gristle                       # start MCP server (stdio)
+docker compose up -d falkordb   # start FalkorDB (exposes localhost:6390)
+pip install -e ".[dev]"         # install Gristle
+gristle                         # start MCP server (stdio)
 ```
 
 Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`):
@@ -46,6 +48,28 @@ Add to your MCP client config (e.g. Claude Desktop `claude_desktop_config.json`)
 }
 ```
 
+### Try it: index your first repo
+
+With FalkorDB running and Gristle installed, index a repository and query the graph directly from Python:
+
+```python
+from gristle.graph.client import GraphClient
+from gristle.ingestion.pipeline import IngestionPipeline
+from gristle.parsers.registry import ParserRegistry
+
+graph = GraphClient(host="localhost", port=6390, repo_id="myrepo")
+pipeline = IngestionPipeline(graph, ParserRegistry().build_default())
+
+result = pipeline.ingest_repo("/path/to/your/repo")
+print(f"Indexed {result.files_processed} files, {result.nodes_created} nodes")
+
+# The graph is now queryable with Cypher:
+rows = graph.execute("MATCH (f:Function) RETURN count(f) AS functions").records
+print(rows)  # e.g. [{'functions': 1234}]
+```
+
+The same indexing is exposed as the `gristle_ingest` MCP tool once Gristle is wired into a client (above) — point your agent at a repo, then ask it to explore the code, trace calls, or run an impact analysis.
+
 ### Remote (HTTP transport)
 
 Run as an HTTP server for shared or cloud deployments:
@@ -62,7 +86,7 @@ Connect from your MCP client:
 {
   "mcpServers": {
     "gristle": {
-      "url": "https://gristle-production.up.railway.app/mcp",
+      "url": "https://your-gristle-host/mcp",
       "headers": {
         "Authorization": "Bearer your-secret-key"
       }
@@ -86,7 +110,7 @@ Railway auto-injects `PORT` which Gristle picks up. The transport defaults to `s
 
 ## MCP tools
 
-Gristle exposes 28 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips.
+Gristle exposes 30 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips.
 
 Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_trace`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`.
 
@@ -116,6 +140,15 @@ This starts FalkorDB on port 6390 and Gristle on port 8080 with streamable-http 
 |----------|----------|---------|
 | [Integration Guide](docs/integration-guide.md) | AI agents, consuming apps | Graph schema, tool reference, configuration, deployment, workflows |
 | [Architecture](ARCHITECTURE.md) | Contributors | Data models, parsers, ingestion pipeline, call resolution, design decisions |
-| [Ziggy Integration](docs/ziggy-integration.md) | Ziggy developers | Cypher query patterns, property dependencies, deployment checklist |
 | [Changelog](CHANGELOG.md) | Everyone | Version history, what's new, breaking changes |
 | [Roadmap](docs/future-improvements.md) | Product planning | Upcoming features, prioritization |
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and the pull-request checklist. To report a security issue, see [SECURITY.md](SECURITY.md).
+
+## License
+
+Gristle is released under the [MIT License](LICENSE).
+
+Gristle connects to — but does not bundle — [FalkorDB](https://www.falkordb.com/), which is distributed under its own license.

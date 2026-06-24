@@ -137,7 +137,7 @@ class GraphClient:
         set_clauses = ", ".join(f"{k}: item.{k}" for k in keys)
         query = f"UNWIND $items AS item CREATE (n:{label} {{{set_clauses}}})"
         result = self.execute(query, {"items": items})
-        return result.summary["nodes_created"]
+        return int(result.summary["nodes_created"])
 
     def batch_create_relationships(self, rel_type: str, items: list[dict[str, Any]]) -> int:
         """Create multiple relationships of the same type via UNWIND.
@@ -159,7 +159,7 @@ class GraphClient:
             f"CREATE (a)-[:{rel_type}{props_clause}]->(b)"
         )
         result = self.execute(query, {"rels": items})
-        return result.summary["relationships_created"]
+        return int(result.summary["relationships_created"])
 
     def batch_merge_relationships(self, rel_type: str, items: list[dict[str, Any]]) -> int:
         """Merge (upsert) multiple relationships of the same type via UNWIND.
@@ -180,7 +180,7 @@ class GraphClient:
             f"MERGE (a)-[:{rel_type}{props_clause}]->(b)"
         )
         result = self.execute(query, {"rels": items})
-        return result.summary["relationships_created"]
+        return int(result.summary["relationships_created"])
 
     # ------------------------------------------------------------------
     # Lifecycle

@@ -53,10 +53,12 @@ class TestCodeEmbedder:
         """CodeEmbedder.__init__ raises ImportError if sentence-transformers is missing."""
         from gristle.search.embeddings import CodeEmbedder
 
-        with patch.dict("sys.modules", {"sentence_transformers": None}):
-            with patch("builtins.__import__", side_effect=ImportError("No module")):
-                with pytest.raises(ImportError, match="sentence-transformers is required"):
-                    CodeEmbedder()
+        with (
+            patch.dict("sys.modules", {"sentence_transformers": None}),
+            patch("builtins.__import__", side_effect=ImportError("No module")),
+            pytest.raises(ImportError, match="sentence-transformers is required"),
+        ):
+            CodeEmbedder()
 
 
 class TestCodeEmbedderStaticMethods:

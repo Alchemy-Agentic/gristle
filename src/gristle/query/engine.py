@@ -527,8 +527,10 @@ class QueryEngine:
         }
 
         # Optionally include source code
-        if include_source and base.get("target_file"):
-            source = self._load_source(base["target_file"], base.get("start_line"), base.get("end_line"))
+        start_line = base.get("start_line")
+        end_line = base.get("end_line")
+        if include_source and base.get("target_file") and start_line is not None and end_line is not None:
+            source = self._load_source(base["target_file"], int(start_line), int(end_line))
             if source:
                 result["source"] = source
 

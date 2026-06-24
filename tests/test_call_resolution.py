@@ -764,6 +764,28 @@ class TestIncrementalUpdate:
         pipeline._purge_maps_for_file("src/api.ts")
         assert "src/api.ts" not in pipeline._import_cache
 
+    def test_update_file_resolves_calls_without_error(self, tmp_path):
+        """Regression: update_file must hand a BatchCollector (not the
+        IngestionResult) to call resolution. Before the fix, re-indexing any
+        file containing a resolvable call raised AttributeError because
+        IngestionResult has no add_merge_relationship method (watcher path)."""
+        from gristle.graph.client import QueryResult
+
+        rel = "mod.ts"
+        (tmp_path / rel).write_text(
+            "export function helper() { return 1; }\nexport function main() { return helper(); }\n"
+        )
+
+        pipeline = _setup_pipeline([])
+        pipeline.graph.execute.return_value = QueryResult(records=[], summary={})
+
+        # Must not raise — the original bug raised AttributeError here.
+        result = pipeline.update_file(str(tmp_path), rel)
+
+        assert isinstance(result, IngestionResult)
+        calls_edges = [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "CALLS"]
+        assert any(to_id.endswith("::helper") for _from, to_id, _ in calls_edges)
+
 
 def _setup_pipeline_with_resolution(
     parsed_files: list[ParsedFile],
@@ -2252,7 +2274,7 @@ class TestSnapshotCapture:
         pipeline = IngestionPipeline(graph, registry)
 
         # Mock the count queries: File, Function, Class, Route, TestCase, Dependency,
-        # component count, edge count
+        # component count, edge count, file paths (file-level changelog diffs)
         graph.execute.side_effect = [
             QueryResult(records=[{"c": 10}], summary={}),  # File
             QueryResult(records=[{"c": 30}], summary={}),  # Function
@@ -2262,6 +2284,7 @@ class TestSnapshotCapture:
             QueryResult(records=[{"c": 15}], summary={}),  # Dependency
             QueryResult(records=[{"c": 6}], summary={}),  # components
             QueryResult(records=[{"c": 100}], summary={}),  # edges
+            QueryResult(records=[{"path": "a.py"}, {"path": "b.py"}], summary={}),  # file paths
         ]
 
         snapshot = pipeline._capture_snapshot()
@@ -2273,6 +2296,7 @@ class TestSnapshotCapture:
         assert snapshot["dependency_count"] == 15
         assert snapshot["component_count"] == 6
         assert snapshot["edge_count"] == 100
+        assert "file_paths_json" in snapshot
         assert "snapshot_id" in snapshot
         assert "captured_at" in snapshot
 

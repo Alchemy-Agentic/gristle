@@ -1,6 +1,6 @@
 # Gristle Future Improvements
 
-This document outlines potential enhancements to Gristle based on how Ziggy's AI agents use the code graph. Ideas are prioritized by impact vs. effort.
+This document outlines potential enhancements to Gristle based on how AI agents use the code graph. Ideas are prioritized by impact vs. effort.
 
 **Status Legend:**
 - ✅ **COMPLETED** - Implemented and tested
@@ -75,7 +75,7 @@ async def gristle_dead_exports(repo_id: str) -> list[types.TextContent]:
 **Impact:** High (Pathfinder)
 **Completed:** Phase D implementation
 
-**Problem:** Import cycles exist but Gristle doesn't explicitly detect or visualize them. Ziggy has to manually traverse IMPORTS edges to find cycles.
+**Problem:** Import cycles exist but Gristle doesn't explicitly detect or visualize them. Consuming agents have to manually traverse IMPORTS edges to find cycles.
 
 **Solution:** Add `detect_import_cycles()` query that returns cycle paths, not just presence.
 
@@ -121,7 +121,7 @@ def detect_import_cycles(self, max_length: int = 10) -> dict:
 **Impact:** High (Cartographer)
 **Completed:** Phase D implementation
 
-**Problem:** For libraries/SDKs, Ziggy needs to document the public API surface, but Gristle doesn't distinguish "public API" from "internal implementation."
+**Problem:** For libraries/SDKs, consuming agents need to document the public API surface, but Gristle doesn't distinguish "public API" from "internal implementation."
 
 **Solution:** Classify exported entities by visibility and create a dedicated query.
 
@@ -288,7 +288,7 @@ def score_change_impact(self, entity_id: str) -> dict:
 **Effort:** ~5-7 days
 **Impact:** Very High (Architect)
 
-**Problem:** Ziggy's Architect agent needs to understand data contracts between services/modules, but currently has no visibility into what data shapes flow through the system.
+**Problem:** Agents reasoning about architecture need to understand data contracts between services/modules, but currently have no visibility into what data shapes flow through the system.
 
 **Solution:** Track TypeScript interfaces/types and Python type hints as first-class nodes, then create `RETURNS` and `ACCEPTS` edges.
 
@@ -571,11 +571,11 @@ def suggest_test_mocks(self, func_id: str) -> list[str]:
 
 ### ✅ Phase 3: Graph Depth Improvements (Completed)
 
-Improvements to graph accuracy and depth, verified against live FalkorDB with both Gristle (Python) and Ziggy (TypeScript) repos:
+Improvements to graph accuracy and depth, verified against live FalkorDB with both Python and TypeScript repositories:
 
 - **Route `has_auth` detection** — checks per-route middleware, handler decorators, and app-level auth middleware (`app.use('/path', authMiddleware)`)
 - **Import `resolved` property** — tracks whether each import resolves to an internal file
-- **Import-based test edges (JS/TS)** — depth-3 `TESTS_FUNCTION` fallback for test functions that import production files but lack direct call coverage (Ziggy: 104→368 TESTS_FUNCTION edges)
+- **Import-based test edges (JS/TS)** — depth-3 `TESTS_FUNCTION` fallback for test functions that import production files but lack direct call coverage (on a large TypeScript repo: 104→368 TESTS_FUNCTION edges)
 - **Python `__all__` export detection** — functions/classes in `__all__` get `is_exported=True`, creating EXPORTS edges
 - **App-level auth middleware** — TS parser detects `app.use('/path', authMiddleware)` patterns, pipeline matches route paths against auth middleware path patterns
 - **JSX prop callback detection** — React `on*` event handler props (onClick, onChange, etc.) create PASSED_TO edges with `jsx_callback` context
@@ -584,9 +584,9 @@ Improvements to graph accuracy and depth, verified against live FalkorDB with bo
 
 **Results:**
 - 821 tests passing
-- Ziggy test coverage: 3.1% → 6.7% (via import-based test linking)
+- Test coverage on a large TypeScript repo: 3.1% → 6.7% (via import-based test linking)
 - Route `has_auth` populated for all routes (was `None`)
-- Import resolved: 67.9% for Ziggy, 39.2% for Gristle
+- Import resolved: 67.9% (large TypeScript repo), 39.2% (this repo)
 
 ---
 
