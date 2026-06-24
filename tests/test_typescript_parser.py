@@ -1237,3 +1237,40 @@ class TestReactDirective:
         code = "'use client';\n\nexport function Button() {\n  return <button>Click</button>;\n}\n"
         result = parser.parse_file("app/Button.jsx", code)
         assert result.react_directive == "use client"
+
+
+_NEST_CONTROLLER = (
+    "@Controller('users')\n"
+    "export class UsersController {\n"
+    "  @Get(':id')\n"
+    "  findOne(id: string) { return id; }\n"
+    "  @Post()\n"
+    "  create() { return 1; }\n"
+    "}\n"
+)
+
+
+class TestDecorators:
+    def test_class_and_method_decorators_extracted(self):
+        result = TypeScriptParser().parse_file("users.controller.ts", _NEST_CONTROLLER)
+        cls = result.classes[0]
+        assert cls.decorators == ["Controller('users')"]
+        assert cls.methods[0].decorators == ["Get(':id')"]
+        assert cls.methods[1].decorators == ["Post()"]
+
+    def test_undecorated_class_has_no_decorators(self):
+        result = TypeScriptParser().parse_file("svc.ts", "export class Plain {\n  do() { return 1; }\n}\n")
+        assert result.classes[0].decorators == []
+
+
+class TestNestJSRoutes:
+    def test_controller_methods_become_routes(self):
+        routes = {
+            (r.method, r.path, r.handler_name) for r in TypeScriptParser().parse_file("u.ts", _NEST_CONTROLLER).routes
+        }
+        assert ("GET", "/users/:id", "findOne") in routes
+        assert ("POST", "/users", "create") in routes
+
+    def test_non_controller_class_yields_no_routes(self):
+        result = TypeScriptParser().parse_file("svc.ts", "export class PlainService {\n  doThing() { return 1; }\n}\n")
+        assert result.routes == []

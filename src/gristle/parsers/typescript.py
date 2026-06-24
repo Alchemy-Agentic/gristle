@@ -54,6 +54,9 @@ _SUPABASE_FUNC_RE = re.compile(r"(?:^|/)supabase/functions/([^/]+)/index\.[tj]sx
 # Storybook story files
 _STORYBOOK_RE = re.compile(r"\.stories\.[tj]sx?$")
 
+# First quoted argument of a decorator call, e.g. Get(':id') -> ':id'
+_DECORATOR_ARG_RE = re.compile(r"""\(\s*['"]([^'"]*)['"]""")
+
 # Serverless handler export patterns (AWS Lambda convention)
 _SERVERLESS_HANDLER_NAMES = frozenset({"handler"})
 
@@ -367,6 +370,26 @@ class TypeScriptParser(LanguageParser):
                     classes.append(cls)
         return classes
 
+    def _extract_decorators(self, node: Node, src: bytes) -> list[str]:
+        """Collect decorator expressions attached to a class or method.
+
+        tree-sitter places ``decorator`` nodes as siblings immediately preceding
+        the decorated node (before any ``export``/``abstract``/``default``
+        keyword). Stored as the text after ``@`` to match the Python parser
+        (e.g. ``Controller('users')``, ``Get(':id')``).
+        """
+        decorators: list[str] = []
+        sib = node.prev_sibling
+        while sib is not None:
+            if sib.type == "decorator":
+                decorators.insert(0, self._text(sib, src).lstrip("@").strip())
+            elif sib.type in ("export", "default", "abstract", "comment"):
+                pass  # keywords/comments may sit between decorators and the node
+            else:
+                break
+            sib = sib.prev_sibling
+        return decorators
+
     def _parse_class(self, node: Node, src: bytes, file_path: str) -> ParsedClass:
         name = self._text(node.child_by_field_name("name"), src)
         body = node.child_by_field_name("body")
@@ -391,6 +414,7 @@ class TypeScriptParser(LanguageParser):
             bases=bases,
             methods=methods,
             fields=class_fields,
+            decorators=self._extract_decorators(node, src),
         )
 
     def _parse_interface(self, node: Node, src: bytes, file_path: str) -> ParsedClass:
@@ -576,6 +600,7 @@ class TypeScriptParser(LanguageParser):
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
             typed_parameters=typed_params,
+            decorators=self._extract_decorators(node, src),
         )
 
     # ------------------------------------------------------------------
@@ -1258,6 +1283,56 @@ class TypeScriptParser(LanguageParser):
         # Supabase edge function convention: path derived from directory name
         routes.extend(self._extract_supabase_routes(root, src, file_path))
 
+        # NestJS: @Controller(base) classes with @Get/@Post/... decorated methods
+        routes.extend(self._extract_nestjs_routes(root, src, file_path))
+
+        return routes
+
+    _HTTP_VERB_DECORATORS = frozenset({"Get", "Post", "Put", "Delete", "Patch", "All", "Options", "Head"})
+
+    @staticmethod
+    def _join_route(base: str, sub: str) -> str:
+        parts = [p.strip("/") for p in (base, sub) if p and p.strip("/")]
+        return "/" + "/".join(parts) if parts else "/"
+
+    def _extract_nestjs_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
+        """Synthesize routes from NestJS @Controller classes + @Get/@Post methods."""
+        routes: list[ParsedRoute] = []
+        for node in self._iter_descendants(root):
+            if node.type not in ("class_declaration", "abstract_class_declaration"):
+                continue
+            base: str | None = None
+            for deco in self._extract_decorators(node, src):
+                if deco.split("(", 1)[0].strip() == "Controller":
+                    arg = _DECORATOR_ARG_RE.search(deco)
+                    base = arg.group(1) if arg else ""
+                    break
+            if base is None:
+                continue  # not a NestJS controller
+            body = node.child_by_field_name("body")
+            if body is None:
+                continue
+            for child in body.children:
+                if child.type != "method_definition":
+                    continue
+                for deco in self._extract_decorators(child, src):
+                    verb = deco.split("(", 1)[0].strip()
+                    if verb not in self._HTTP_VERB_DECORATORS:
+                        continue
+                    arg = _DECORATOR_ARG_RE.search(deco)
+                    sub = arg.group(1) if arg else ""
+                    name_node = child.child_by_field_name("name")
+                    routes.append(
+                        ParsedRoute(
+                            method="ALL" if verb == "All" else verb.upper(),
+                            path=self._join_route(base, sub),
+                            handler_name=self._text(name_node, src) if name_node else "",
+                            file_path=file_path,
+                            line=child.start_point[0] + 1,
+                            end_line=child.end_point[0] + 1,
+                        )
+                    )
+                    break  # one HTTP verb per method
         return routes
 
     # Auth keywords for detecting auth middleware in .use() calls
