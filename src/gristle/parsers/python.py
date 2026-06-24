@@ -74,7 +74,11 @@ class PythonParser(LanguageParser):
         classes = self._extract_classes(root, src, file_path)
         routes: list[ParsedRoute] = []
 
-        # Mark exports from __all__
+        # Mark exports. If __all__ is declared it is authoritative; otherwise fall
+        # back to the Python convention that module-level public (non-underscore)
+        # names are the public API. Without this, EXPORTS edges and public-API /
+        # coverage queries are empty for the majority of Python repos (which don't
+        # declare __all__). Methods are unaffected (only top-level defs/classes).
         dunder_all = self._extract_dunder_all(root, src)
         if dunder_all:
             for func in functions:
@@ -82,6 +86,13 @@ class PythonParser(LanguageParser):
                     func.is_exported = True
             for cls in classes:
                 if cls.name in dunder_all:
+                    cls.is_exported = True
+        else:
+            for func in functions:
+                if not func.name.startswith("_"):
+                    func.is_exported = True
+            for cls in classes:
+                if not cls.name.startswith("_"):
                     cls.is_exported = True
 
         # Post-process functions

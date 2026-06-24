@@ -536,12 +536,20 @@ class TestPythonDunderAll:
         assert by_name["MyClass"].is_exported is True
         assert by_name["_Private"].is_exported is False
 
-    def test_no_all_means_no_exports(self):
+    def test_no_all_means_public_names_exported(self):
+        """Without __all__, Python's convention is that public (non-underscore)
+        module-level names are the public API, so they are exported."""
         parser = PythonParser()
-        code = "def foo():\n    pass\n\nclass Bar:\n    pass\n"
+        code = (
+            "def foo():\n    pass\n\ndef _hidden():\n    pass\n\nclass Bar:\n    pass\n\nclass _Internal:\n    pass\n"
+        )
         result = parser.parse_file("module.py", code)
-        assert result.functions[0].is_exported is False
-        assert result.classes[0].is_exported is False
+        funcs = {f.name: f for f in result.functions}
+        classes = {c.name: c for c in result.classes}
+        assert funcs["foo"].is_exported is True
+        assert funcs["_hidden"].is_exported is False
+        assert classes["Bar"].is_exported is True
+        assert classes["_Internal"].is_exported is False
 
     def test_tuple_style_all(self):
         parser = PythonParser()

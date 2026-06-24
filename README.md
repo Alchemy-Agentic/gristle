@@ -1,14 +1,24 @@
 # Gristle
 
-Graph-based code intelligence for AI agents. Gristle parses repositories into a [FalkorDB](https://www.falkordb.com/) graph database, preserving structural relationships — function calls, imports, inheritance, data flow — so AI agents can query code the way humans think about it.
+Graph-based code intelligence for AI agents. Gristle parses repositories into a [FalkorDB](https://www.falkordb.com/) graph database, preserving structural relationships — function calls, imports, inheritance, routes, and data models — so AI agents can query code the way humans think about it.
 
 ## Why graphs instead of vectors?
 
 Vector search over chunked code loses structure. "Function A calls function B which inherits from class C" becomes three unrelated text chunks. Gristle keeps these relationships as first-class edges in a graph, enabling queries like:
 
 - **Impact analysis** — "What breaks if I change this function?"
-- **Call tracing** — "How does data flow from the API handler to the database?"
+- **Call tracing** — "How does a request flow from the API handler toward the database?"
 - **Convention inference** — "What patterns does this project follow?"
+
+## Scope (and what it isn't)
+
+Gristle is a **fast, build-free, framework-aware *structural* graph** built with tree-sitter — multiple languages in one queryable graph, exposed natively over MCP for agents. That's its niche, and it's worth being clear about the boundary:
+
+- **Call/import resolution is name- and heuristic-based**, not type-resolved. It's high-coverage and great for navigation and architecture, but it can miss or mis-link edges that a type-aware indexer (SCIP/LSIF, Sourcegraph) would get exactly. Edges are best-effort, not proofs.
+- **It is not a dataflow/taint engine** (CodeQL/Glean). It models structural and framework relationships (calls, routes→handlers, code→model, tests→code, deps), not value-level data flow.
+- Coverage is strongest on the supported frameworks below; constructs outside them (and languages without a parser) are simply not represented.
+
+In short: deeper than ctags/tree-sitter-only tools, lighter and broader than type-resolved indexers — and designed to be queried by an agent, not a human IDE.
 
 ## Supported languages
 

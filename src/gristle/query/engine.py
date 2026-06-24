@@ -320,10 +320,11 @@ class QueryEngine:
             f"""
             MATCH path = (caller:Function)-[:CALLS*1..{max_depth}]->(target:Function)
             WHERE target.name = $name OR target.qualified_name = $name
-            RETURN DISTINCT caller.qualified_name AS caller,
+            WITH caller, min(length(path)) AS depth
+            RETURN caller.qualified_name AS caller,
                    caller.file_path AS file_path,
                    caller.start_line AS line,
-                   length(path) AS depth
+                   depth
             ORDER BY depth, caller
             """,
             {"name": name},
@@ -340,10 +341,11 @@ class QueryEngine:
             f"""
             MATCH path = (source:Function)-[:CALLS*1..{max_depth}]->(callee:Function)
             WHERE source.name = $name OR source.qualified_name = $name
-            RETURN DISTINCT callee.qualified_name AS callee,
+            WITH callee, min(length(path)) AS depth
+            RETURN callee.qualified_name AS callee,
                    callee.file_path AS file_path,
                    callee.start_line AS line,
-                   length(path) AS depth
+                   depth
             ORDER BY depth, callee
             """,
             {"name": name},
@@ -2076,17 +2078,25 @@ class QueryEngine:
         Uses heuristics: checks for common auth-related decorator names
         and middleware presence. Routes without any auth indicator are flagged.
         """
+        # A route counts as authenticated if it has an auth decorator/middleware,
+        # OR its handler body calls an auth/session helper (fn.calls_auth — e.g.
+        # Next.js inline `auth()`), OR a function it calls (<=2 hops) does.
         result = self.graph.execute(
             """
             MATCH (r:Route)-[:HANDLES]->(fn:Function)
             MATCH (fn)-[:DEFINED_IN]->(file:File)
-            WHERE NOT ANY(d IN fn.decorators WHERE
+            OPTIONAL MATCH (fn)-[:CALLS*1..2]->(ac:Function)
+            WHERE coalesce(ac.calls_auth, false) = true OR toLower(ac.name) CONTAINS 'auth'
+            WITH r, fn, file, count(ac) AS auth_callees
+            WHERE size(r.middleware) = 0
+              AND coalesce(fn.calls_auth, false) = false
+              AND auth_callees = 0
+              AND NOT ANY(d IN fn.decorators WHERE
                 d CONTAINS 'auth' OR d CONTAINS 'login_required' OR
                 d CONTAINS 'permission' OR d CONTAINS 'protect' OR
                 d CONTAINS 'jwt' OR d CONTAINS 'token' OR
                 d CONTAINS 'requires_auth' OR d CONTAINS 'authenticated' OR
                 d CONTAINS 'verify')
-            AND size(r.middleware) = 0
             RETURN r.method AS method,
                    r.path AS path,
                    fn.name AS handler,

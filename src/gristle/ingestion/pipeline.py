@@ -879,6 +879,15 @@ class IngestionPipeline:
         if func.decorators:
             self._func_decorators[func_id] = func.decorators
 
+        # Whether the body calls an auth/session helper (Next.js `auth()`,
+        # NextAuth `getServerSession`, Clerk `currentUser`, ...). Captured from
+        # raw call names so it works even when the callee import doesn't resolve.
+        calls_auth = any(
+            "auth" in c.lower()
+            or c.lower() in ("getserversession", "getsession", "currentuser", "getcurrentuser", "requireuser")
+            for c in func.calls
+        )
+
         batch.add_node(
             "Function",
             {
@@ -886,6 +895,7 @@ class IngestionPipeline:
                 "name": func.name,
                 "qualified_name": func.qualified_name,
                 "file_path": func.file_path,
+                "calls_auth": calls_auth,
                 "start_line": func.start_line,
                 "end_line": func.end_line,
                 "signature": func.signature,
