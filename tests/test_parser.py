@@ -195,6 +195,29 @@ class TestErrorFlow:
         assert h.catches == []  # no named exception, but error handling is present
 
 
+class TestPermissionClasses:
+    def test_tuple_permission_classes(self):
+        parser = PythonParser()
+        code = (
+            "class ArticleViewSet(viewsets.ModelViewSet):\n"
+            "    permission_classes = (IsAuthenticatedOrReadOnly,)\n"
+            "    def list(self): pass\n"
+        )
+        cls = parser.parse_file("views.py", code).classes[0]
+        assert cls.permission_classes == ["IsAuthenticatedOrReadOnly"]
+
+    def test_list_and_dotted_permission_classes(self):
+        parser = PythonParser()
+        code = "class ProfileView(APIView):\n    permission_classes = [permissions.IsAuthenticated, AllowAny]\n"
+        cls = parser.parse_file("views.py", code).classes[0]
+        assert cls.permission_classes == ["IsAuthenticated", "AllowAny"]
+
+    def test_no_permission_classes(self):
+        parser = PythonParser()
+        cls = parser.parse_file("views.py", "class Plain:\n    x = 1\n").classes[0]
+        assert cls.permission_classes == []
+
+
 class TestDjangoRoutes:
     def test_path_with_class_based_view(self):
         parser = PythonParser()

@@ -860,6 +860,7 @@ class IngestionPipeline:
                 "bases": cls.bases,
                 "kind": cls.kind,
                 "is_exported": cls.is_exported,
+                "permission_classes": cls.permission_classes,
             },
         )
 

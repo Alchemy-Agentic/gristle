@@ -320,6 +320,7 @@ class PythonParser(LanguageParser):
         docstring = self._extract_docstring(body, src) if body else None
         methods = self._extract_methods(body, src, file_path, name) if body else []
         class_fields = self._extract_class_fields(body, src, file_path, decorators, bases) if body else []
+        permission_classes = self._extract_permission_classes(body, src) if body else []
 
         # Build signature line
         bases_str = f"({', '.join(bases)})" if bases else ""
@@ -339,7 +340,41 @@ class PythonParser(LanguageParser):
             bases=bases,
             methods=methods,
             fields=class_fields,
+            permission_classes=permission_classes,
         )
+
+    def _extract_permission_classes(self, body: Node, src: bytes) -> list[str]:
+        """Capture a DRF ``permission_classes = (IsAuthenticated, ...)`` class
+        attribute as the list of permission class names. Empty if absent."""
+        for stmt in body.children:
+            if stmt.type != "expression_statement" or not stmt.children:
+                continue
+            assign = stmt.children[0]
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            if left is None or left.type != "identifier" or self._text(left, src) != "permission_classes":
+                continue
+            right = assign.child_by_field_name("right")
+            if right is None:
+                return []
+            targets = right.named_children if right.type in ("tuple", "list", "set") else [right]
+            names = [n for t in targets if (n := self._permission_name(t, src))]
+            return names
+        return []
+
+    def _permission_name(self, node: Node, src: bytes) -> str | None:
+        """Resolve a permission entry to its class name (``IsAuthenticated``,
+        ``perms.IsAdmin`` -> ``IsAdmin``)."""
+        if node.type == "call":  # e.g. a parameterized permission factory
+            fn = node.child_by_field_name("function")
+            node = fn if fn is not None else node
+        if node.type == "identifier":
+            return self._text(node, src)
+        if node.type == "attribute":
+            attr = node.child_by_field_name("attribute")
+            return self._text(attr, src) if attr is not None else None
+        return None
 
     def _extract_bases(self, class_node: Node, src: bytes) -> list[str]:
         bases: list[str] = []

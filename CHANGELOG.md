@@ -66,6 +66,14 @@ All notable changes to Gristle are documented here. This file is intended for co
   `throw new X()`). Re-raised variables (`raise exc`) are excluded — only
   PascalCase types are recorded. On real repos: rw-fastapi 51 RAISES + 19 CATCHES
   edges to custom exceptions; builtins (`ValueError`, …) stay in the property.
+- **DRF `permission_classes` on classes** — Django REST Framework class-based
+  views now record their `permission_classes = (IsAuthenticated, ...)` attribute
+  as a `permission_classes` list on the `Class` node. Class-based-view routes link
+  `(:Route)-[:HANDLES]->(:Class)`, so joining through it surfaces a CBV route's auth
+  posture (e.g. `AllowAny` vs `IsAuthenticated`) — previously invisible. On a real
+  Django REST app: all 11 view classes annotated. Additive data only; it does **not**
+  change unauthenticated-route flagging (DRF global defaults are invisible to static
+  analysis, so flagging CBVs would risk false positives).
 - **`has_error_handling` on functions** — a boolean Function property, true when
   the body contains a `try`/`except` (Python) or `try`/`catch` (JS/TS). Unlike the
   `catches` list it covers bare `except:`, `try`/`finally`, and **all** JS/TS catch

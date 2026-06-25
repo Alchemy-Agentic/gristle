@@ -73,6 +73,10 @@ class ParsedClass:
     methods: list[ParsedFunction] = field(default_factory=list)
     kind: str = "class"  # class / interface / type / enum
     fields: list[ParsedTypeField] = field(default_factory=list)
+    # DRF class-based view `permission_classes = (IsAuthenticated, ...)` — the
+    # permission class names. Lets consumers read a CBV route's auth posture by
+    # joining Route-[:HANDLES]->Class. Empty for non-DRF classes.
+    permission_classes: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
