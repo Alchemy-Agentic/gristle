@@ -54,7 +54,7 @@ This clones the repo and runs full ingestion in one step.
 | `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase | Container relationship |
 | `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
 | `EXPORTS` | File | Function, Class | Module exports |
-| `CALLS` | Function | Function | Function call (with `depth` property) |
+| `CALLS` | Function | Function | Function call. Carries a `resolution` property recording how the callee was resolved, by confidence: `exact` / `file_scoped` / `import` / `typed_receiver` / `dotted` / `same_file` / `unique_global` — lets consumers weight or filter by reliability |
 | `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument, jsx_callback) |
 | `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
 | `INHERITS_FROM` | Class | Class | Class inheritance |

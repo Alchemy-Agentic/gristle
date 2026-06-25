@@ -42,6 +42,14 @@ All notable changes to Gristle are documented here. This file is intended for co
   version (hatch dynamic), and `examples/sample-app`.
 
 ### Changed
+- **CALLS edges carry a `resolution` confidence property** — `exact`,
+  `file_scoped`, `import`, `typed_receiver`, `dotted`, `same_file`, or
+  `unique_global` — so consumers can weight/filter call edges by how reliably the
+  callee was resolved (e.g. ai-chatbot is ~94% exact/import; heuristic-heavy repos
+  are dominated by `dotted`). Multi-site edges keep their highest-confidence label.
+- Dotted calls `obj.method()` now also resolve via the receiver's type annotation
+  (`def h(svc: UserService): svc.create()` → `UserService.create`) when the bare
+  method name is ambiguous — precise (annotation-driven, single known class only).
 - Relationship writes are label-scoped so FalkorDB uses the id index instead of
   a full-scan Cartesian product (~2× faster ingest on large repos).
 - GitHub ingests keep the clone under `GRISTLE_REPO_STORAGE_PATH` so source

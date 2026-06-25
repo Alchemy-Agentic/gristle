@@ -61,6 +61,7 @@ def _make_func(
     is_test: bool = False,
     is_fixture: bool = False,
     parameters: list[str] | None = None,
+    typed_parameters: list[tuple[str, str | None]] | None = None,
 ) -> ParsedFunction:
     qn = qualified_name or f"{file_path}::{name}"
     return ParsedFunction(
@@ -75,6 +76,7 @@ def _make_func(
         is_test=is_test,
         is_fixture=is_fixture,
         parameters=parameters or [],
+        typed_parameters=typed_parameters or [],
     )
 
 
@@ -165,7 +167,7 @@ class TestSameFileResolution:
         pipeline = _setup_pipeline([pf])
         result = pipeline._find_callee("helper", caller, pf)
 
-        assert result == "func::src/utils.ts::helper"
+        assert result[0] == "func::src/utils.ts::helper"
 
     def test_same_file_preferred_over_other_files(self):
         """When a name exists in both the same file and another, prefer same file."""
@@ -179,7 +181,7 @@ class TestSameFileResolution:
         pipeline = _setup_pipeline([file_a, file_b])
         result = pipeline._find_callee("query", caller, file_a)
 
-        assert result == "func::src/routes/api.ts::query"
+        assert result[0] == "func::src/routes/api.ts::query"
 
 
 class TestImportAwareResolution:
@@ -201,7 +203,7 @@ class TestImportAwareResolution:
         pipeline = _setup_pipeline([client_file, api_file])
         result = pipeline._find_callee("query", caller, api_file)
 
-        assert result == "func::src/graph/client.ts::query"
+        assert result[0] == "func::src/graph/client.ts::query"
 
     def test_disambiguates_via_imports(self):
         """Two files export 'query'; import decides which one."""
@@ -223,7 +225,7 @@ class TestImportAwareResolution:
         pipeline = _setup_pipeline([file_a, file_b, caller_file])
         result = pipeline._find_callee("query", caller, caller_file)
 
-        assert result == "func::src/db/postgres.ts::query"
+        assert result[0] == "func::src/db/postgres.ts::query"
 
     def test_resolves_with_js_extension_convention(self):
         """TypeScript imports with .js extension resolve to .ts files."""
@@ -242,7 +244,7 @@ class TestImportAwareResolution:
         pipeline = _setup_pipeline([client_file, api_file])
         result = pipeline._find_callee("query", caller, api_file)
 
-        assert result == "func::src/graph/client.ts::query"
+        assert result[0] == "func::src/graph/client.ts::query"
 
     def test_aliased_import_resolves(self):
         """import { query as q } from '../graph/client' -> q() resolves."""
@@ -264,7 +266,7 @@ class TestImportAwareResolution:
         pipeline = _setup_pipeline([client_file, api_file])
         result = pipeline._find_callee("q", caller, api_file)
 
-        assert result == "func::src/graph/client.ts::query"
+        assert result[0] == "func::src/graph/client.ts::query"
 
 
 class TestDottedCallResolution:
@@ -293,7 +295,7 @@ class TestDottedCallResolution:
         pipeline = _setup_pipeline([pf])
         result = pipeline._find_callee("this.getUser", caller, pf)
 
-        assert result == "func::src/services/user.ts::UserService.getUser"
+        assert result[0] == "func::src/services/user.ts::UserService.getUser"
 
     def test_self_method_resolves_in_python(self):
         """self.validate() inside User resolves to User.validate."""
@@ -314,7 +316,7 @@ class TestDottedCallResolution:
         pipeline = _setup_pipeline([pf])
         result = pipeline._find_callee("self.validate", caller, pf)
 
-        assert result == "func::models/user.py::User.validate"
+        assert result[0] == "func::models/user.py::User.validate"
 
     def test_class_method_call_in_same_file(self):
         """ClassName.staticMethod() resolves via file-scoped qualified name."""
@@ -338,7 +340,7 @@ class TestDottedCallResolution:
         pipeline = _setup_pipeline([pf])
         result = pipeline._find_callee("UserFactory.create", caller, pf)
 
-        assert result == "func::src/models/user.ts::UserFactory.create"
+        assert result[0] == "func::src/models/user.ts::UserFactory.create"
 
     def test_imported_object_method_resolves(self):
         """import { client } from './db'; client.query() resolves to db's query."""
@@ -356,7 +358,7 @@ class TestDottedCallResolution:
         pipeline = _setup_pipeline([db_file, api_file])
         result = pipeline._find_callee("client.query", caller, api_file)
 
-        assert result == "func::src/db.ts::query"
+        assert result[0] == "func::src/db.ts::query"
 
 
 class TestSingleCandidateFallback:
@@ -373,7 +375,7 @@ class TestSingleCandidateFallback:
         pipeline = _setup_pipeline([bootstrap, index])
         result = pipeline._find_callee("initializeApp", caller, index)
 
-        assert result == "func::src/bootstrap.ts::initializeApp"
+        assert result[0] == "func::src/bootstrap.ts::initializeApp"
 
     def test_ambiguous_name_without_import_returns_none(self):
         """A name with multiple candidates and no import context returns None."""
@@ -406,7 +408,7 @@ class TestQualifiedNameResolution:
         pipeline._build_file_graph(test_file, MagicMock())
 
         result = pipeline._find_callee("src/graph/client.ts::query", caller, test_file)
-        assert result == "func::src/graph/client.ts::query"
+        assert result[0] == "func::src/graph/client.ts::query"
 
 
 class TestTestCoverageEdges:
@@ -541,7 +543,7 @@ class TestExportAwareFiltering:
         pipeline = _setup_pipeline([utils_file, api_file])
 
         # publicHelper is exported -> should resolve
-        assert pipeline._find_callee("publicHelper", caller, api_file) == "func::src/utils.ts::publicHelper"
+        assert pipeline._find_callee("publicHelper", caller, api_file)[0] == "func::src/utils.ts::publicHelper"
         # _internal is NOT exported -> wildcard should NOT include it
         # (falls through to single-candidate which would match, but the
         #  import-aware step should not provide it)
@@ -562,7 +564,7 @@ class TestExportAwareFiltering:
 
         # Named import: trust the import statement
         result = pipeline._find_callee("helper", caller, app_file)
-        assert result == "func::src/utils.ts::helper"
+        assert result[0] == "func::src/utils.ts::helper"
 
     def test_python_wildcard_includes_all(self):
         """Python wildcard import should include all entities (no export keyword)."""
@@ -596,7 +598,7 @@ class TestExportAwareFiltering:
 
         # db.query should resolve (exported)
         result = pipeline._find_callee("db.query", caller, api_file)
-        assert result == "func::src/db.ts::query"
+        assert result[0] == "func::src/db.ts::query"
 
     def test_dotted_call_falls_back_to_all_entities(self):
         """If no exported entities match, fall back to all entities."""
@@ -612,7 +614,7 @@ class TestExportAwareFiltering:
 
         # Should still resolve via fallback
         result = pipeline._find_callee("db.query", caller, api_file)
-        assert result == "func::src/db.ts::query"
+        assert result[0] == "func::src/db.ts::query"
 
 
 class TestDependencyUsageEdges:
@@ -799,6 +801,73 @@ def _setup_pipeline_with_resolution(
     result.nodes_created = 0
     pipeline._resolve_calls(parsed_files, result)
     return pipeline
+
+
+class TestTypedReceiverResolution:
+    """obj.method() resolves to the right class via the receiver's type annotation
+    when the bare method name is ambiguous (two classes define `create`)."""
+
+    def _files(self, type_expr: str | None):
+        # Two classes each define create() -> the bare-name fallback can't pick one.
+        u_create = _make_func("create", "src/svc.ts", qualified_name="src/svc.ts::UserService.create")
+        o_create = _make_func("create", "src/svc.ts", qualified_name="src/svc.ts::OrderService.create")
+        svc_file = _make_file(
+            "src/svc.ts",
+            classes=[
+                _make_class("UserService", "src/svc.ts", methods=[u_create]),
+                _make_class("OrderService", "src/svc.ts", methods=[o_create]),
+            ],
+        )
+        caller = _make_func(
+            "handle",
+            "src/api.ts",
+            calls=["svc.create"],
+            typed_parameters=[("svc", type_expr)] if type_expr else [],
+        )
+        api_file = _make_file("src/api.ts", functions=[caller])
+        return _setup_pipeline([svc_file, api_file]), caller, api_file
+
+    def test_param_typed_receiver_disambiguates(self):
+        pipeline, caller, api_file = self._files("UserService")
+        result = pipeline._find_callee("svc.create", caller, api_file)
+        assert result == ("func::src/svc.ts::UserService.create", "typed_receiver")
+
+    def test_wrapped_type_resolves(self):
+        """A class wrapped in a container/optional still resolves."""
+        pipeline, caller, api_file = self._files("Promise<OrderService>")
+        result = pipeline._find_callee("svc.create", caller, api_file)
+        assert result == ("func::src/svc.ts::OrderService.create", "typed_receiver")
+
+    def test_ambiguous_type_not_resolved(self):
+        """An annotation naming two known classes stays unresolved (precise)."""
+        pipeline, caller, api_file = self._files("UserService | OrderService")
+        assert pipeline._find_callee("svc.create", caller, api_file) is None
+
+    def test_untyped_ambiguous_receiver_not_resolved(self):
+        """No annotation + ambiguous bare name -> no guess."""
+        pipeline, caller, api_file = self._files(None)
+        assert pipeline._find_callee("svc.create", caller, api_file) is None
+
+
+class TestCallsResolutionProperty:
+    """CALLS edges carry a `resolution` property recording how they were resolved."""
+
+    def test_calls_edge_has_resolution_property(self):
+        helper = _make_func("helper", "src/utils.ts", is_exported=True)
+        utils = _make_file("src/utils.ts", functions=[helper])
+        imp = _make_import("./utils", imported_names=["helper"])
+        caller = _make_func("main", "src/api.ts", calls=["helper"])
+        api = _make_file("src/api.ts", functions=[caller], imports=[imp])
+
+        pipeline = _setup_pipeline_with_resolution([utils, api])
+        calls_items = [
+            item
+            for call in pipeline.graph.batch_merge_relationships.call_args_list
+            if call[0][0] == "CALLS"
+            for item in call[0][1]
+        ]
+        edge = next(i for i in calls_items if i["to_id"] == "func::src/utils.ts::helper")
+        assert edge["resolution"] == "import"
 
 
 class TestPythonSourceRoots:
@@ -1010,8 +1079,8 @@ class TestPythonSourceRoots:
         )
         pipeline = _setup_pipeline([fields_mod, init, consumer])
         # fields.Nested should resolve to Nested class
-        assert pipeline._find_callee("fields.Nested", caller, consumer) == "class::src/pkg/fields.py::Nested"
-        assert pipeline._find_callee("fields.String", caller, consumer) == "class::src/pkg/fields.py::String"
+        assert pipeline._find_callee("fields.Nested", caller, consumer)[0] == "class::src/pkg/fields.py::Nested"
+        assert pipeline._find_callee("fields.String", caller, consumer)[0] == "class::src/pkg/fields.py::String"
 
     def test_dotted_call_alias_match_with_parens(self):
         """Operator precedence bug: aliased import dotted call should match."""
@@ -1028,7 +1097,7 @@ class TestPythonSourceRoots:
 
         pipeline = _setup_pipeline([db_file, api_file])
         result = pipeline._find_callee("database.query", caller, api_file)
-        assert result == "func::src/db.ts::query"
+        assert result[0] == "func::src/db.ts::query"
 
 
 class TestInheritanceAwareResolution:
@@ -1066,7 +1135,7 @@ class TestInheritanceAwareResolution:
         pipeline = _setup_pipeline_with_resolution([pf])
         # MySchema.dump should resolve to Schema.dump via inheritance
         result = pipeline._find_callee("MySchema.dump", caller, pf)
-        assert result == "func::src/schema.py::Schema.dump"
+        assert result[0] == "func::src/schema.py::Schema.dump"
 
     def test_self_method_prefers_own_class(self):
         """If MySchema defines dump(), don't walk to base class."""
@@ -1104,7 +1173,7 @@ class TestInheritanceAwareResolution:
         pipeline = _setup_pipeline_with_resolution([pf])
         result = pipeline._find_callee("MySchema.dump", caller, pf)
         # Should resolve to MySchema's own dump (file-scoped match wins)
-        assert result == "func::src/schema.py::MySchema.dump"
+        assert result[0] == "func::src/schema.py::MySchema.dump"
 
     def test_multi_level_inheritance(self):
         """Grandparent method resolves through multiple levels."""
@@ -1135,7 +1204,7 @@ class TestInheritanceAwareResolution:
 
         pipeline = _setup_pipeline_with_resolution([base_file, mid_file, child_file])
         result = pipeline._find_callee("Child.validate", caller, child_file)
-        assert result == "func::src/base.py::Base.validate"
+        assert result[0] == "func::src/base.py::Base.validate"
 
     def test_self_call_walks_inheritance(self):
         """self.method -> ClassName.method -> walks to base when not found on self."""
@@ -1165,7 +1234,7 @@ class TestInheritanceAwareResolution:
 
         pipeline = _setup_pipeline_with_resolution([base_file, child_file])
         result = pipeline._find_callee("UserSerializer.serialize", caller, child_file)
-        assert result == "func::src/base.py::BaseSerializer.serialize"
+        assert result[0] == "func::src/base.py::BaseSerializer.serialize"
 
 
 class TestFixtureEdges:
@@ -1294,7 +1363,7 @@ class TestBarrelFileReexportResolution:
 
         pipeline = _setup_pipeline([button_file, index_file, consumer_file])
         result = pipeline._find_callee("Button", caller, consumer_file)
-        assert result == "func::src/components/Button.ts::Button"
+        assert result[0] == "func::src/components/Button.ts::Button"
 
     def test_wildcard_reexport_resolves_through_barrel(self):
         """export * from './spacing' makes spacing's exports available."""
@@ -1320,7 +1389,7 @@ class TestBarrelFileReexportResolution:
 
         pipeline = _setup_pipeline([spacing_file, index_file, consumer_file])
         result = pipeline._find_callee("sm", caller, consumer_file)
-        assert result == "func::src/theme/spacing.ts::sm"
+        assert result[0] == "func::src/theme/spacing.ts::sm"
 
     def test_aliased_default_reexport_resolves(self):
         """export { default as ModeCard } from './ModeCard' resolves."""
@@ -1347,7 +1416,7 @@ class TestBarrelFileReexportResolution:
 
         pipeline = _setup_pipeline([mode_file, index_file, consumer_file])
         result = pipeline._find_callee("ModeCard", caller, consumer_file)
-        assert result == "func::src/components/ModeCard.ts::default"
+        assert result[0] == "func::src/components/ModeCard.ts::default"
 
     def test_hook_through_barrel_resolves(self):
         """Custom hook imported through barrel file should resolve."""
@@ -1367,7 +1436,7 @@ class TestBarrelFileReexportResolution:
 
         pipeline = _setup_pipeline([auth_file, index_file, consumer_file])
         result = pipeline._find_callee("useAuth", caller, consumer_file)
-        assert result == "func::src/contexts/AuthContext.ts::useAuth"
+        assert result[0] == "func::src/contexts/AuthContext.ts::useAuth"
 
 
 class TestMultiLevelBarrelReexports:
@@ -1393,7 +1462,7 @@ class TestMultiLevelBarrelReexports:
 
         pipeline = _setup_pipeline([button_file, b_index, a_index, consumer])
         result = pipeline._find_callee("Button", caller, consumer)
-        assert result == "func::src/b/Button.tsx::Button"
+        assert result[0] == "func::src/b/Button.tsx::Button"
 
     def test_two_level_wildcard_chain(self):
         """export * through two barrel files should resolve."""
@@ -1415,7 +1484,7 @@ class TestMultiLevelBarrelReexports:
 
         pipeline = _setup_pipeline([date_file, utils_index, lib_index, consumer])
         result = pipeline._find_callee("formatDate", caller, consumer)
-        assert result == "func::src/utils/date.ts::formatDate"
+        assert result[0] == "func::src/utils/date.ts::formatDate"
 
 
 class TestTestsFunctionEdges:

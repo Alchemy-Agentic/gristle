@@ -1348,27 +1348,50 @@ class IngestionPipeline:
                 if class_id:
                     batch.add_merge_relationship("ACCEPTS", func_id, class_id, {"param_name": param_name})
 
+    # How a CALLS edge was resolved, ranked by confidence (higher = more reliable).
+    # Recorded as the edge's `resolution` property so consumers can weight/filter.
+    _RESOLUTION_RANK = {
+        "exact": 6,  # exact qualified name — always unique
+        "file_scoped": 5,  # qualified within the calling file
+        "typed_receiver": 5,  # obj.method() where obj's type annotation names a class
+        "import": 4,  # name/method imported from a resolved file
+        "dotted": 4,  # self/this, ClassName.method, imported-module method
+        "same_file": 3,  # bare name defined in the same file
+        "unique_global": 2,  # only one function with that name repo-wide (weakest)
+    }
+
     def _resolve_function_calls(self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector) -> None:
         caller_id = f"func::{func.qualified_name}"
         # Track test function IDs for TESTS_FUNCTION resolution
         if func.is_test:
             self._test_func_ids.add(caller_id)
+
+        # Aggregate per callee: an edge may be reached from several call sites; keep
+        # the highest-confidence resolution so the `resolution` property is stable.
+        best: dict[str, str] = {}
         for call_name in func.calls:
-            callee_id = self._find_callee(call_name, func, pf)
-            if callee_id:
-                batch.add_merge_relationship("CALLS", caller_id, callee_id)
-                # Build in-memory call adjacency for TESTS_FUNCTION traversal
-                self._calls_adjacency.setdefault(caller_id, []).append(callee_id)
+            match = self._find_callee(call_name, func, pf)
+            if match is None:
+                continue
+            callee_id, method = match
+            if callee_id not in best or self._RESOLUTION_RANK[method] > self._RESOLUTION_RANK[best[callee_id]]:
+                best[callee_id] = method
+            # Build in-memory call adjacency for TESTS_FUNCTION traversal
+            self._calls_adjacency.setdefault(caller_id, []).append(callee_id)
 
             # Create USES_HOOK edge for React hook calls (use* convention)
             bare_name = call_name.split(".")[-1] if "." in call_name else call_name
-            if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper() and callee_id:
+            if bare_name.startswith("use") and len(bare_name) > 3 and bare_name[3].isupper():
                 batch.add_merge_relationship("USES_HOOK", caller_id, callee_id)
+
+        for callee_id, method in best.items():
+            batch.add_merge_relationship("CALLS", caller_id, callee_id, {"resolution": method})
 
         # Resolve callback/handler references -> PASSED_TO edges
         for ref_name, context in func.callback_refs:
-            callee_id = self._find_callee(ref_name, func, pf)
-            if callee_id:
+            match = self._find_callee(ref_name, func, pf)
+            if match:
+                callee_id, _ = match
                 batch.add_merge_relationship(
                     "PASSED_TO",
                     caller_id,
@@ -1382,46 +1405,52 @@ class IngestionPipeline:
         call_name: str,
         caller: ParsedFunction,
         context_file: ParsedFile,
-    ) -> str | None:
-        """Resolve a call name to a known function node ID.
+    ) -> tuple[str, str] | None:
+        """Resolve a call name to ``(function_node_id, resolution_method)``.
 
-        Resolution strategy (priority order):
+        The resolution method (one of :attr:`_RESOLUTION_RANK`) becomes the CALLS
+        edge's ``resolution`` property. Strategy, in priority order:
         1. Exact qualified name
         2. File-scoped qualified name
-        3. Dotted calls (self/this, ClassName.method, obj.method)
+        3. Dotted calls (self/this, ClassName.method, imported obj.method)
+        3b. Typed receiver: obj.method() where obj's annotation names a class
         4. Import-aware: match against entities from imported files
         5. Same-file entity match
         6. Single-candidate short name (unambiguous global)
         """
         # 1. Exact qualified name (always unique)
         if call_name in self._qualified_map:
-            return self._qualified_map[call_name]
+            return self._qualified_map[call_name], "exact"
 
         # 2. File-scoped qualified name
         scoped = f"{context_file.path}::{call_name}"
         if scoped in self._qualified_map:
-            return self._qualified_map[scoped]
+            return self._qualified_map[scoped], "file_scoped"
 
         # 3. Dotted calls: self.method, ClassName.method, obj.method
         if "." in call_name:
             result = self._resolve_dotted_call(call_name, caller, context_file)
             if result:
-                return result
+                return result, "dotted"
+            # 3b. Typed receiver: obj is a parameter annotated with a class type
+            typed = self._resolve_typed_receiver_call(call_name, caller, context_file)
+            if typed:
+                return typed, "typed_receiver"
 
         # 4. Import-aware: check if this name was imported from a known file
         imported = self._get_imported_entities(context_file)
         if call_name in imported:
-            return imported[call_name]
+            return imported[call_name], "import"
 
         # 5. Same-file entity
         file_entities = self._file_entities.get(context_file.path, {})
         if call_name in file_entities:
-            return file_entities[call_name]
+            return file_entities[call_name], "same_file"
 
         # 6. Single-candidate short name (only if unambiguous)
         candidates = self._short_to_candidates.get(call_name)
         if candidates and len(candidates) == 1:
-            return candidates[0]
+            return candidates[0], "unique_global"
 
         return None
 
@@ -1522,6 +1551,87 @@ class IngestionPipeline:
             return candidates[0]
 
         return None
+
+    # Tokens that appear in type expressions but never name a user-defined class.
+    _TYPE_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+    _TYPE_NOISE = frozenset(
+        {
+            "Optional",
+            "Union",
+            "List",
+            "list",
+            "Dict",
+            "dict",
+            "Set",
+            "set",
+            "Tuple",
+            "tuple",
+            "Sequence",
+            "Iterable",
+            "Iterator",
+            "Mapping",
+            "Awaitable",
+            "Coroutine",
+            "Promise",
+            "Array",
+            "ReadonlyArray",
+            "Record",
+            "Map",
+            "Any",
+            "None",
+            "null",
+            "undefined",
+            "void",
+            "str",
+            "int",
+            "float",
+            "bool",
+            "bytes",
+            "object",
+            "string",
+            "number",
+            "boolean",
+        }
+    )
+
+    def _resolve_typed_receiver_call(
+        self,
+        call_name: str,
+        caller: ParsedFunction,
+        context_file: ParsedFile,
+    ) -> str | None:
+        """Resolve ``obj.method()`` when ``obj`` is a parameter annotated with a class.
+
+        e.g. ``def handle(svc: UserService): svc.create(...)`` resolves
+        ``svc.create`` to ``UserService.create``. Precise by design: driven by the
+        explicit annotation, and only when the annotation names exactly one known
+        class (ambiguous/untyped receivers are left unresolved rather than guessed).
+        """
+        parts = call_name.split(".")
+        if len(parts) != 2:  # only single-level obj.method
+            return None
+        obj, method = parts
+
+        type_expr = next((ptype for pname, ptype in caller.typed_parameters if pname == obj and ptype), None)
+        if not type_expr:
+            return None
+
+        # Pick the single known class named in the annotation (ignoring containers).
+        class_ids: list[str] = []
+        for tok in self._TYPE_IDENT_RE.findall(type_expr):
+            if tok in self._TYPE_NOISE:
+                continue
+            cid = self._id_map.get(tok)
+            if cid and cid.startswith("class::") and cid not in class_ids:
+                class_ids.append(cid)
+        if len(class_ids) != 1:
+            return None  # zero or ambiguous -> stay precise
+
+        class_id = class_ids[0]
+        method_qn = f"{class_id[len('class::') :]}.{method}"  # "file::ClassName.method"
+        if method_qn in self._qualified_map:
+            return self._qualified_map[method_qn]
+        return self._resolve_inherited_method(class_id, method)
 
     def _resolve_inherited_method(
         self, class_id: str, method_name: str, _visited: set[str] | None = None
