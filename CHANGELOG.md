@@ -22,6 +22,11 @@ All notable changes to Gristle are documented here. This file is intended for co
   `db.select().from(chat)` and SQLAlchemy `session.query(User)` / `select(User)`.
   Precise by design: an edge requires a read/write verb in the call's method name
   (never from an argument), so incidental name reuse doesn't create false edges.
+- **Inline route handlers** — Express/Hono routes whose handler is an inline
+  arrow/function (`app.get('/x', (c) => …)`) now synthesize an entry-point
+  Function node, so the route gets a `HANDLES` edge and route→handler→callee/
+  model tracing works (previously the callback was anonymous and unlinked).
+  On a real Hono repo: routes with a handler went from ~0.5% to 93.8%.
 - **Packaging** — tag-triggered PyPI + GHCR release workflow, single-source
   version (hatch dynamic), and `examples/sample-app`.
 

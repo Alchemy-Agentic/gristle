@@ -116,6 +116,8 @@ class TypeScriptParser(LanguageParser):
         file_todos = self._extract_todos(root, src)
         # Extract routes and auth middleware paths
         routes = self._extract_routes(root, src, file_path)
+        # Inline arrow/function route handlers become real Function nodes.
+        functions.extend(self._synth_route_handlers)
         auth_mw_paths = self._extract_auth_middleware_paths(root, src)
         # Extract test cases (describe/it/test blocks) from test files
         test_cases = self._extract_test_cases(root, src, file_path) if is_test_file else []
@@ -1314,6 +1316,9 @@ class TypeScriptParser(LanguageParser):
         # Detect router-like variable names by scanning for framework constructors
         # e.g. const health = new Hono<AppEnv>()  →  "health" is a router object
         self._dynamic_router_names = self._detect_router_variables(root, src)
+        # Inline arrow/function handlers synthesized during this call; drained by
+        # parse_file into ParsedFile.functions so they become Function nodes.
+        self._synth_route_handlers: list[ParsedFunction] = []
 
         # Next.js app router convention: file path IS the route
         if _NEXTJS_PAGE_RE.search(file_path):
@@ -1568,8 +1573,8 @@ class TypeScriptParser(LanguageParser):
 
         # First argument should be the route path (string starting with /)
         path_arg = None
-        handler_name = None
         middleware: list[str] = []
+        callback_nodes: list[Node] = []
         arg_index = 0
 
         for child in args.children:
@@ -1581,20 +1586,29 @@ class TypeScriptParser(LanguageParser):
                     val = self._text(child, src).strip("'\"`")
                     if val.startswith("/"):
                         path_arg = val
-                arg_index += 1
             else:
-                # Handler or middleware
-                name = self._resolve_call_name(child, src)
-                if name:
-                    if handler_name is None:
-                        handler_name = name
-                    else:
-                        middleware.append(handler_name)
-                        handler_name = name
-                arg_index += 1
+                callback_nodes.append(child)
+            arg_index += 1
 
         if not path_arg:
             return None
+
+        # The last callback argument is the route handler; earlier callbacks are
+        # middleware. An inline arrow/function handler is synthesized into a
+        # Function node (the callback is otherwise anonymous and never linked).
+        handler_name = None
+        if callback_nodes:
+            *middleware_nodes, handler_node = callback_nodes
+            for mw in middleware_nodes:
+                mw_name = self._resolve_call_name(mw, src)
+                if mw_name:
+                    middleware.append(mw_name)
+            if handler_node.type in ("arrow_function", "function_expression", "function"):
+                synth = self._synthesize_arrow_handler(handler_node, src, method_name, path_arg, file_path)
+                handler_name = synth.name
+                self._synth_route_handlers.append(synth)
+            else:
+                handler_name = self._resolve_call_name(handler_node, src)
 
         return ParsedRoute(
             method=method_name.upper(),
@@ -1604,6 +1618,34 @@ class TypeScriptParser(LanguageParser):
             line=node.start_point[0] + 1,
             end_line=node.end_point[0] + 1,
             middleware=middleware,
+        )
+
+    def _synthesize_arrow_handler(
+        self, node: Node, src: bytes, method: str, path: str, file_path: str
+    ) -> ParsedFunction:
+        """Create a Function for an inline route-handler callback.
+
+        Express/Hono handlers are usually inline arrows — ``app.get('/x', (c) => …)``
+        — that never become Function nodes, so route→handler→callee/model tracing
+        dead-ends. This synthesizes a named entry-point Function for the callback,
+        capturing the calls it makes, so the route HANDLES a real, traceable node.
+        """
+        body = node.child_by_field_name("body")
+        name = f"{method.upper()} {path}"
+        return ParsedFunction(
+            name=name,
+            qualified_name=f"{file_path}::{name}",
+            file_path=file_path,
+            start_line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            signature=f"{name} (inline handler)",
+            is_async=self._text(node, src).lstrip().startswith("async"),
+            is_entry_point=True,
+            entry_point_reason="route_handler",
+            visibility="public",
+            complexity=self._cyclomatic_complexity(body) if body else 1,
+            calls=self._extract_calls(body, src) if body else [],
+            calls_with_args=self._extract_call_arg_refs(body, src) if body else [],
         )
 
     def _try_get_exported_func_name(self, node: Node, src: bytes) -> str | None:
@@ -1842,6 +1884,10 @@ class JavaScriptParser(LanguageParser):
 
         classes = self._ts_parser._extract_classes(root, src, file_path)
         functions = self._ts_parser._extract_module_functions(root, src, file_path)
+        # Extract routes now so inline arrow/function handlers can be drained into
+        # `functions` (becoming Function nodes) before the security scan below.
+        routes = self._ts_parser._extract_routes(root, src, file_path)
+        functions.extend(self._ts_parser._synth_route_handlers)
 
         file_security = (
             detect_hardcoded_secrets(content, "javascript") + detect_sql_injection(content, "javascript")
@@ -1870,7 +1916,7 @@ class JavaScriptParser(LanguageParser):
             imports=self._ts_parser._extract_imports(root, src)
             + self._ts_parser._extract_reexports(root, src)
             + self._ts_parser._extract_dynamic_imports(root, src),
-            routes=self._ts_parser._extract_routes(root, src, file_path),
+            routes=routes,
             test_cases=self._ts_parser._extract_test_cases(root, src, file_path) if is_test_file else [],
             module_docstring=self._ts_parser._extract_module_docstring(root, src),
             line_count=content.count("\n") + 1,

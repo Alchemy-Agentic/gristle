@@ -668,6 +668,52 @@ class TestRouteExtraction:
         result = parser.parse_file("routes.ts", code)
         assert len(result.routes) == 2
 
+    def test_inline_arrow_handler_becomes_function(self):
+        """An inline arrow handler is synthesized into an entry-point Function so
+        the route links to a real node instead of '<anonymous>'."""
+        parser = TypeScriptParser()
+        code = "const app = new Hono();\napp.get('/health', (c) => c.json({ ok: true }));\n"
+        result = parser.parse_file("server.ts", code)
+        route = result.routes[0]
+        assert route.handler_name == "GET /health"
+        handler = next(f for f in result.functions if f.qualified_name == f"server.ts::{route.handler_name}")
+        assert handler.is_entry_point is True
+        assert handler.entry_point_reason == "route_handler"
+        assert "c.json" in handler.calls
+
+    def test_inline_handler_captures_db_calls(self):
+        """The synthesized handler records the model/table calls in its body so
+        route -> handler -> USES_MODEL tracing works."""
+        parser = TypeScriptParser()
+        code = (
+            "const app = new Hono();\n"
+            "app.post('/chat', async (c) => {\n"
+            "  await db.insert(chat).values({ id: 1 });\n"
+            "  return c.json({ ok: true });\n"
+            "});\n"
+        )
+        result = parser.parse_file("server.ts", code)
+        handler = next(f for f in result.functions if f.entry_point_reason == "route_handler")
+        assert handler.is_async is True
+        assert "db.insert(chat)" in handler.calls_with_args
+
+    def test_named_handler_adds_no_synthetic_function(self):
+        """A named handler reference links directly; no synthetic Function is added."""
+        parser = TypeScriptParser()
+        code = "const router = express.Router();\nrouter.get('/users', getUsers);\n"
+        result = parser.parse_file("routes.ts", code)
+        assert result.routes[0].handler_name == "getUsers"
+        assert all(f.entry_point_reason != "route_handler" for f in result.functions)
+
+    def test_middleware_before_inline_handler(self):
+        """Earlier callbacks are middleware; the last (arrow) is the handler."""
+        parser = TypeScriptParser()
+        code = "app.get('/admin', requireAuth, (c) => c.json({ ok: true }));\n"
+        result = parser.parse_file("routes.ts", code)
+        route = result.routes[0]
+        assert route.middleware == ["requireAuth"]
+        assert route.handler_name == "GET /admin"
+
 
 class TestComplexity:
     def test_simple_function(self):
