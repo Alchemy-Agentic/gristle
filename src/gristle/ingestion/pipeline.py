@@ -123,6 +123,9 @@ class IngestionPipeline:
         self._class_bases: dict[str, list[str]] = {}
         # class_id -> {method_name -> func_id} for MRO-aware method resolution
         self._class_methods: dict[str, dict[str, str]] = {}
+        # class_qualified_name -> {field_name -> type_expr} for field-receiver
+        # call resolution (this.svc.method() via the field's declared type)
+        self._class_field_types: dict[str, dict[str, str]] = {}
         # Fixture map: fixture_name -> func_id (for USES_FIXTURE edges)
         self._fixture_map: dict[str, str] = {}
         # Dependency version map: package_name -> version_string
@@ -200,6 +203,7 @@ class IngestionPipeline:
         self._parsed_files_by_path.clear()
         self._class_bases.clear()
         self._class_methods.clear()
+        self._class_field_types.clear()
         self._fixture_map.clear()
         self._dependency_versions.clear()
         self._dependency_ecosystems.clear()
@@ -843,6 +847,16 @@ class IngestionPipeline:
             method_map[method.name] = func_id
         self._class_methods[class_id] = method_map
 
+        # Record field types (constructor param-properties + declared fields) so
+        # field-receiver calls (`this.svc.method()`) resolve via the field's class.
+        field_types: dict[str, str] = {}
+        for method in cls.methods:
+            if method.name in ("constructor", "__init__"):
+                field_types.update({n: t for n, t in method.typed_parameters if t})
+        field_types.update({tf.name: tf.type_annotation for tf in cls.fields if tf.type_annotation})
+        if field_types:
+            self._class_field_types[cls.qualified_name] = field_types
+
         # Methods
         for method in cls.methods:
             self._build_function(file_id, class_id, method, batch)
@@ -1429,13 +1443,19 @@ class IngestionPipeline:
 
         # 3. Dotted calls: self.method, ClassName.method, obj.method
         if "." in call_name:
-            result = self._resolve_dotted_call(call_name, caller, context_file)
+            # Strong dotted resolution first (self/this, ClassName.method, imports)
+            result = self._resolve_dotted_call(call_name, caller, context_file, allow_method_fallback=False)
             if result:
                 return result, "dotted"
-            # 3b. Typed receiver: obj is a parameter annotated with a class type
+            # 3b. Typed receiver: obj is a parameter/field annotated with a class —
+            # precise, so it runs before the weak bare-method-name fallbacks.
             typed = self._resolve_typed_receiver_call(call_name, caller, context_file)
             if typed:
                 return typed, "typed_receiver"
+            # Weak dotted fallbacks (bare method name in same file / unique global)
+            result = self._resolve_dotted_call(call_name, caller, context_file, allow_method_fallback=True)
+            if result:
+                return result, "dotted"
 
         # 4. Import-aware: check if this name was imported from a known file
         imported = self._get_imported_entities(context_file)
@@ -1459,8 +1479,15 @@ class IngestionPipeline:
         call_name: str,
         caller: ParsedFunction,
         context_file: ParsedFile,
+        allow_method_fallback: bool = True,
     ) -> str | None:
-        """Resolve dotted calls: self.method, this.method, ClassName.method, obj.method."""
+        """Resolve dotted calls: self.method, this.method, ClassName.method, obj.method.
+
+        When ``allow_method_fallback`` is False, the weak last-resort heuristics
+        (bare method name matched in the same file or as a unique global) are
+        skipped — used to let precise typed-receiver resolution run first, so
+        ``svc.findAll()`` doesn't wrongly bind to a same-named local method.
+        """
         parts = call_name.split(".")
         obj = parts[0]
         method = parts[-1]
@@ -1540,6 +1567,9 @@ class IngestionPipeline:
                                 return sub_entities[method]
                             break
 
+        if not allow_method_fallback:
+            return None
+
         # Last resort: method name in same file
         file_entities = self._file_entities.get(context_file.path, {})
         if method in file_entities:
@@ -1600,23 +1630,39 @@ class IngestionPipeline:
         caller: ParsedFunction,
         context_file: ParsedFile,
     ) -> str | None:
-        """Resolve ``obj.method()`` when ``obj`` is a parameter annotated with a class.
+        """Resolve ``obj.method()`` via ``obj``'s class type annotation.
 
-        e.g. ``def handle(svc: UserService): svc.create(...)`` resolves
-        ``svc.create`` to ``UserService.create``. Precise by design: driven by the
-        explicit annotation, and only when the annotation names exactly one known
-        class (ambiguous/untyped receivers are left unresolved rather than guessed).
+        ``obj`` may be a parameter (``def handle(svc: UserService): svc.create()``)
+        or a field of the calling method's class (``this.userService.create()``,
+        where ``userService`` is a constructor-injected ``UserService``). Both
+        resolve to ``UserService.create``. Precise by design: driven by the explicit
+        annotation, and only when it names exactly one known class — ambiguous or
+        untyped receivers are left unresolved rather than guessed.
         """
         parts = call_name.split(".")
-        if len(parts) != 2:  # only single-level obj.method
+        if len(parts) != 2:  # only single-level obj.method (this. is stripped by parsers)
             return None
         obj, method = parts
 
+        # Receiver type: a parameter annotation, else a field of the caller's class.
         type_expr = next((ptype for pname, ptype in caller.typed_parameters if pname == obj and ptype), None)
+        if not type_expr:
+            type_expr = self._caller_field_type(caller, context_file, obj)
         if not type_expr:
             return None
 
-        # Pick the single known class named in the annotation (ignoring containers).
+        return self._resolve_method_on_type(type_expr, method)
+
+    def _caller_field_type(self, caller: ParsedFunction, context_file: ParsedFile, field: str) -> str | None:
+        """The declared type of ``field`` on the class enclosing ``caller`` (if any)."""
+        local = caller.qualified_name.split("::")[-1]  # "ClassName.method" for a method
+        if "." not in local:
+            return None
+        class_qn = f"{context_file.path}::{local.split('.')[0]}"
+        return self._class_field_types.get(class_qn, {}).get(field)
+
+    def _resolve_method_on_type(self, type_expr: str, method: str) -> str | None:
+        """Resolve ``method`` on the single known class named in ``type_expr``."""
         class_ids: list[str] = []
         for tok in self._TYPE_IDENT_RE.findall(type_expr):
             if tok in self._TYPE_NOISE:

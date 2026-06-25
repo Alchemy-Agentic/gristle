@@ -52,9 +52,15 @@ All notable changes to Gristle are documented here. This file is intended for co
   `unique_global` — so consumers can weight/filter call edges by how reliably the
   callee was resolved (e.g. ai-chatbot is ~94% exact/import; heuristic-heavy repos
   are dominated by `dotted`). Multi-site edges keep their highest-confidence label.
-- Dotted calls `obj.method()` now also resolve via the receiver's type annotation
-  (`def h(svc: UserService): svc.create()` → `UserService.create`) when the bare
-  method name is ambiguous — precise (annotation-driven, single known class only).
+- Dotted calls `obj.method()` resolve via the receiver's type annotation —
+  whether `obj` is a parameter (`def h(svc: UserService): svc.create()`) or a
+  field of the calling method's class (`this.userService.create()`, where
+  `userService` is constructor-injected). This precise, annotation-driven step
+  runs *before* the weak bare-method-name fallback, fixing a mis-resolution where
+  `this.articleService.findAll()` bound to a same-named method on the caller's own
+  class (a false self-edge) instead of the service. On a real NestJS app this
+  connects controller → service correctly, enabling route → controller → service
+  → entity tracing end-to-end.
 - Relationship writes are label-scoped so FalkorDB uses the id index instead of
   a full-scan Cartesian product (~2× faster ingest on large repos).
 - GitHub ingests keep the clone under `GRISTLE_REPO_STORAGE_PATH` so source

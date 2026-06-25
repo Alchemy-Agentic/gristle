@@ -848,6 +848,31 @@ class TestTypedReceiverResolution:
         pipeline, caller, api_file = self._files(None)
         assert pipeline._find_callee("svc.create", caller, api_file) is None
 
+    def test_field_receiver_resolves_over_same_named_local_method(self):
+        """this.articleService.findAll() resolves to the injected service's method,
+        not a same-named method on the caller's own class (the weak same-file
+        fallback must not win over the precise field type)."""
+        svc_find = _make_func("findAll", "svc.ts", qualified_name="svc.ts::ArticleService.findAll")
+        svc_file = _make_file("svc.ts", classes=[_make_class("ArticleService", "svc.ts", methods=[svc_find])])
+
+        ctor = _make_func(
+            "constructor",
+            "ctrl.ts",
+            qualified_name="ctrl.ts::ArticleController.constructor",
+            typed_parameters=[("articleService", "ArticleService")],
+        )
+        # The controller has its OWN findAll, which delegates to the service.
+        ctrl_find = _make_func(
+            "findAll", "ctrl.ts", qualified_name="ctrl.ts::ArticleController.findAll", calls=["articleService.findAll"]
+        )
+        ctrl_file = _make_file(
+            "ctrl.ts", classes=[_make_class("ArticleController", "ctrl.ts", methods=[ctor, ctrl_find])]
+        )
+
+        pipeline = _setup_pipeline([svc_file, ctrl_file])
+        result = pipeline._find_callee("articleService.findAll", ctrl_find, ctrl_file)
+        assert result == ("func::svc.ts::ArticleService.findAll", "typed_receiver")
+
 
 class TestCallsResolutionProperty:
     """CALLS edges carry a `resolution` property recording how they were resolved."""
