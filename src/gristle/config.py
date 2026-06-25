@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     # Bearer token auth — set GRISTLE_API_KEY to enable, leave unset for no auth
     api_key: str | None = None
 
+    # Graph visualization subgraphs (read-only; see docs/graph-visualization-spec.md)
+    viz_max_nodes: int = 300  # cap nodes per subgraph; over -> drop lowest-degree
+    viz_default_depth: int = 2  # default traversal depth for subgraph views
+    viz_output_path: Path = Path("./gristle-graph.html")  # default HTML export path (CLI, P1)
+
     @field_validator("falkordb_port", "http_port")
     @classmethod
     def _port_in_range(cls, v: int) -> int:

@@ -680,6 +680,61 @@ gristle_model_detail(model_name="User")
 ```
 
 ---
+### `gristle_subgraph(view, center?, depth?, edge_types?, repo_id?)`
+
+**When to use:** You want to *see* a region of the graph as connected nodes+edges
+(to render or reason over structure), not a flat list. Read-only over existing
+node/edge types — no schema impact.
+
+```
+gristle_subgraph(view="request_trace")                       # every route -> handler -> ... -> model
+gristle_subgraph(view="request_trace", center="/articles")   # one route's trace
+gristle_subgraph(view="call_hierarchy", center="create_order", depth=2)
+gristle_subgraph(view="blast_radius", center="UserService.save")
+```
+
+**Views:**
+
+| `view` | Answers | Traverses |
+|--------|---------|-----------|
+| `call_hierarchy` | Who calls X, and what X calls (transitively)? | `CALLS` |
+| `blast_radius` | What breaks if X changes? (callers + covering tests + routes) | `CALLS`, `TESTS_FUNCTION`, `HANDLES` |
+| `request_trace` | How does a request flow route → handler → functions → DB model? | `HANDLES`, `CALLS`, `USES_MODEL` |
+
+`center` accepts a business `id` (`func::…`) or a `qualified_name` (a route `path`
+or `id` for `request_trace`; omit it to get all routes). `depth` is clamped to
+`1..4`. `edge_types` overrides which edge types appear in the output (defaults to
+the view's set above).
+
+**Return contract** (stable `{meta, nodes, edges}`):
+
+```json
+{
+  "meta": {
+    "view": "request_trace", "kind": "node_link", "repo_id": "myrepo",
+    "center": null, "depth": 2, "edge_types": ["HANDLES", "CALLS", "USES_MODEL"],
+    "node_count": 68, "edge_count": 70, "truncated": false, "limit": 300,
+    "layout_hint": "dagre-lr", "generated_with": "gristle 0.x"
+  },
+  "nodes": [
+    { "id": "func::src/x.ts::getUser", "label": "Function",
+      "props": { "name": "getUser", "file_path": "src/x.ts", "start_line": 12 } }
+  ],
+  "edges": [
+    { "source": "route::…", "target": "func::…getUser", "type": "HANDLES" },
+    { "source": "func::…getUser", "target": "model::User", "type": "USES_MODEL", "access": "read" }
+  ]
+}
+```
+
+Invariants: node `id` is the business id (never FalkorDB's internal id); `label`
+is the node's real label; no dangling edges (every edge's endpoints are present);
+node props are trimmed to a per-label allowlist. When the result exceeds `limit`
+(`GRISTLE_VIZ_MAX_NODES`, default 300) the lowest-degree nodes are dropped and
+`meta.truncated` is `true`. Edge metadata is included where it applies — CALLS
+carries a `resolution` confidence, USES_MODEL a read/write `access`.
+
+---
 ## MCP Resources
 
 | Resource URI | Description |

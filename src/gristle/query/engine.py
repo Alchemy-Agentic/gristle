@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from gristle.config import settings
+
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
 
@@ -1415,6 +1417,239 @@ class QueryEngine:
         uncategorized = [{"name": name, "version": version} for name, version in dep_list if name not in matched_names]
 
         return {"categories": categories, "uncategorized": uncategorized}
+
+    # ------------------------------------------------------------------
+    # Graph visualization subgraphs (read-only; see docs/graph-visualization-spec.md)
+    # ------------------------------------------------------------------
+
+    # Var-length traversal bounds CANNOT be query parameters in FalkorDB, so `depth`
+    # is validated as an int and string-interpolated. Clamp it hard. NEVER interpolate
+    # `center` or any other user input — those stay query parameters.
+    _VIZ_MAX_DEPTH = 4
+
+    # Relationships each node-link view returns (the tail's edge whitelist). The
+    # traversal relationships in the heads are fixed per view; this only filters
+    # which edges appear in the output. P1/P2 add more views (see the spec).
+    _VIZ_VIEW_EDGE_TYPES: dict[str, list[str]] = {
+        "call_hierarchy": ["CALLS"],
+        "blast_radius": ["CALLS", "TESTS_FUNCTION", "HANDLES"],
+        "request_trace": ["HANDLES", "CALLS", "USES_MODEL"],
+    }
+
+    _VIZ_LAYOUT_HINT: dict[str, str] = {
+        "call_hierarchy": "dagre-tb",
+        "blast_radius": "dagre-tb",
+        "request_trace": "dagre-lr",
+    }
+
+    # Per-label display-prop allowlist — keeps the payload lean. A node keeps only
+    # these property keys (those that exist); unlisted labels keep all properties.
+    _VIZ_PROP_ALLOWLIST: dict[str, list[str]] = {
+        "Function": [
+            "name",
+            "qualified_name",
+            "file_path",
+            "start_line",
+            "end_line",
+            "signature",
+            "complexity",
+            "is_async",
+            "is_entry_point",
+            "entry_point_reason",
+            "is_component",
+            "is_test",
+            "visibility",
+            "return_type",
+            "tested_by_count",
+            "security_finding_count",
+            "calls_auth",
+            "has_error_handling",
+        ],
+        "Class": [
+            "name",
+            "qualified_name",
+            "file_path",
+            "start_line",
+            "end_line",
+            "kind",
+            "bases",
+            "is_abstract",
+            "is_exported",
+        ],
+        "File": [
+            "path",
+            "language",
+            "line_count",
+            "is_test_file",
+            "is_documentation",
+            "config_type",
+            "react_directive",
+        ],
+        "Route": ["method", "path", "handler_name", "has_auth", "middleware", "file_path", "line"],
+        "Model": ["name", "orm", "table_name", "is_junction", "is_enum", "field_count", "file_path"],
+        "Variable": ["name", "kind", "value_kind", "is_exported", "file_path"],
+    }
+
+    # View-specific binding heads. Each binds a DISTINCT node set `ns` (always
+    # including the center, when found) and is followed by the shared tail. `{depth}`
+    # and `{route_cap}` are int-interpolated; `$center`/`$edge_types` are parameters.
+    # NOTE: the center is seeded via `collect(DISTINCT f)` (same node every row ->
+    # `[f]`), NOT `[f] + collect(...)`. FalkorDB raises "_AR_EXP_UpdateEntityIdx:
+    # Unable to locate a value with alias f" on a bare node in a list literal mixed
+    # with aggregations — keep every term an aggregation.
+    _VIZ_VIEW_HEADS: dict[str, str] = {
+        "call_hierarchy": """
+            MATCH (f:Function) WHERE f.id = $center OR f.qualified_name = $center
+            OPTIONAL MATCH (caller:Function)-[:CALLS*1..{depth}]->(f)
+            OPTIONAL MATCH (f)-[:CALLS*1..{depth}]->(callee:Function)
+            WITH collect(DISTINCT f) + collect(DISTINCT caller) + collect(DISTINCT callee) AS seeds
+            UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
+        """,
+        "blast_radius": """
+            MATCH (target:Function) WHERE target.id = $center OR target.qualified_name = $center
+            OPTIONAL MATCH (caller:Function)-[:CALLS*1..{depth}]->(target)
+            OPTIONAL MATCH (tf:Function)-[:TESTS_FUNCTION]->(target)
+            OPTIONAL MATCH (rt:Route)-[:HANDLES]->(target)
+            WITH collect(DISTINCT target) + collect(DISTINCT caller) + collect(DISTINCT tf) + collect(DISTINCT rt) AS seeds
+            UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
+        """,
+        "request_trace": """
+            MATCH (rt:Route)-[:HANDLES]->(h:Function)
+            WHERE ($center IS NULL OR rt.path = $center OR rt.id = $center)
+            WITH rt, h LIMIT {route_cap}
+            OPTIONAL MATCH (h)-[:CALLS*0..{depth}]->(fn:Function)
+            OPTIONAL MATCH (fn)-[:USES_MODEL]->(m:Model)
+            WITH collect(DISTINCT rt) + collect(DISTINCT h) + collect(DISTINCT fn) + collect(DISTINCT m) AS seeds
+            UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
+        """,
+    }
+
+    # Shared tail: collect edges only between bound nodes (no dangling), label via
+    # labels(n)[0] (never id-prefix decoding), id = the business id property.
+    _VIZ_TAIL = """
+        WITH ns, [x IN ns | x.id] AS ids
+        UNWIND ns AS a
+        OPTIONAL MATCH (a)-[r]->(b)
+        WHERE b.id IN ids AND type(r) IN $edge_types
+        WITH ns, collect(DISTINCT {
+               source: a.id, target: b.id, type: type(r),
+               resolution: r.resolution, access: r.access, context: r.context
+             }) AS raw_edges
+        RETURN [x IN ns | {id: x.id, label: labels(x)[0], props: properties(x)}] AS nodes,
+               [e IN raw_edges WHERE e.target IS NOT NULL] AS edges
+    """
+
+    def get_subgraph(
+        self,
+        view: str,
+        center: str | None = None,
+        depth: int = 2,
+        edge_types: list[str] | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return a ``{meta, nodes, edges}`` subgraph for a code-visualization VIEW.
+
+        Read-only over existing node/edge types. ``center`` accepts a business id
+        (``func::…``) or a ``qualified_name``/``path``. The payload is capped at
+        ``limit`` (default ``GRISTLE_VIZ_MAX_NODES``); over the cap the lowest-degree
+        nodes are dropped and ``meta.truncated`` is set.
+        """
+        if not isinstance(depth, int) or isinstance(depth, bool):
+            return {"error": "depth must be an integer"}
+        if view not in self._VIZ_VIEW_HEADS:
+            return {"error": f"Unknown or unsupported view '{view}'. Available: {sorted(self._VIZ_VIEW_HEADS)}"}
+
+        node_limit = limit if limit is not None else settings.viz_max_nodes
+        depth = max(1, min(depth, self._VIZ_MAX_DEPTH))
+        et = edge_types if edge_types is not None else self._VIZ_VIEW_EDGE_TYPES[view]
+
+        head = self._VIZ_VIEW_HEADS[view].format(depth=depth, route_cap=node_limit)
+        result = self.graph.execute(head + self._VIZ_TAIL, {"center": center, "edge_types": et})
+
+        if not result.records:
+            nodes: list[dict[str, Any]] = []
+            edges: list[dict[str, Any]] = []
+        else:
+            rec = result.records[0]
+            nodes = list(rec.get("nodes") or [])
+            edges = list(rec.get("edges") or [])
+
+        return self._viz_finalize(view, center, depth, et, node_limit, nodes, edges)
+
+    def _viz_finalize(
+        self,
+        view: str,
+        center: str | None,
+        depth: int,
+        edge_types: list[str],
+        limit: int,
+        nodes: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Trim props to the allowlist, truncate to ``limit`` by degree, build meta."""
+        from gristle import __version__
+
+        # Trim each node's props to its label's allowlist (unlisted labels untouched).
+        for n in nodes:
+            allow = self._VIZ_PROP_ALLOWLIST.get(n.get("label", ""))
+            if allow is not None and isinstance(n.get("props"), dict):
+                n["props"] = {k: v for k, v in n["props"].items() if k in allow}
+
+        truncated = False
+        if len(nodes) > limit:
+            truncated = True
+            degree: dict[str, int] = {n["id"]: 0 for n in nodes}
+            for e in edges:
+                if e.get("source") in degree:
+                    degree[e["source"]] += 1
+                if e.get("target") in degree:
+                    degree[e["target"]] += 1
+            keep: set[str] = set()
+            center_id = self._viz_center_id(center, nodes)
+            if center_id is not None:
+                keep.add(center_id)
+            for n in sorted(nodes, key=lambda nd: degree.get(nd["id"], 0), reverse=True):
+                if len(keep) >= limit:
+                    break
+                keep.add(n["id"])
+            nodes = [n for n in nodes if n["id"] in keep]
+            edges = [e for e in edges if e.get("source") in keep and e.get("target") in keep]
+
+        # Drop null edge-metadata keys so the payload only carries what applies.
+        for e in edges:
+            for k in ("resolution", "access", "context"):
+                if e.get(k) is None:
+                    e.pop(k, None)
+
+        return {
+            "meta": {
+                "view": view,
+                "kind": "node_link",
+                "repo_id": self.graph.repo_id,
+                "center": center,
+                "depth": depth,
+                "edge_types": edge_types,
+                "node_count": len(nodes),
+                "edge_count": len(edges),
+                "truncated": truncated,
+                "limit": limit,
+                "layout_hint": self._VIZ_LAYOUT_HINT[view],
+                "generated_with": f"gristle {__version__}",
+            },
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    @staticmethod
+    def _viz_center_id(center: str | None, nodes: list[dict[str, Any]]) -> str | None:
+        """Find the node id matching the requested center (by id, qualified_name, or path)."""
+        if center is None:
+            return None
+        for n in nodes:
+            props = n.get("props") or {}
+            if n.get("id") == center or props.get("qualified_name") == center or props.get("path") == center:
+                return str(n["id"])
+        return None
 
     # ------------------------------------------------------------------
     # Layer violation detection

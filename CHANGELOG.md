@@ -7,6 +7,19 @@ All notable changes to Gristle are documented here. This file is intended for co
 ## [Unreleased]
 
 ### Added
+- **`gristle_subgraph` MCP tool** — returns a `{nodes, edges, meta}` subgraph for a
+  code-visualization *view*, so consumers can SEE relationships, not just list
+  them. Three views: `call_hierarchy` (who calls X / what X calls), `blast_radius`
+  (what breaks if X changes — callers + covering tests + routes), and
+  `request_trace` (HTTP route → handler → functions → DB model, end to end). The
+  JSON is directly renderable. Read-only over existing node/edge types — **no
+  schema change**. Node `id` is the business id and `label` is the real node label
+  (never id-prefix-decoded); edges never dangle; node props are trimmed to a
+  per-label allowlist; results cap at `GRISTLE_VIZ_MAX_NODES` (default 300) with
+  `meta.truncated`. On a real Express+Prisma app, `request_trace` returns the whole
+  surface in one shot: 20 routes + 45 functions + 3 models, 70 edges
+  (HANDLES/CALLS/USES_MODEL), zero dangling. New `GRISTLE_VIZ_MAX_NODES` /
+  `GRISTLE_VIZ_DEFAULT_DEPTH` / `GRISTLE_VIZ_OUTPUT_PATH` settings.
 - **`gristle` CLI** — `ingest`, `overview`, `explore`, `query`, `doctor`, and
   `serve` subcommands (bare `gristle` still starts the MCP server).
 - **Engine rehydration** — tools work against previously-ingested repos after a

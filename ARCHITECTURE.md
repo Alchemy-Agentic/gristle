@@ -625,6 +625,16 @@ Errors are logged with context (file path, operation, error message) via the str
 | `get_security_overview()` | Combined security overview: code findings + unauthenticated routes + vulnerable deps |
 | `get_outdated_dependencies(severity)` | Outdated dependencies with optional vulnerability filtering |
 | `find_path(from, to, hops)` | Call paths between two entities |
+| `get_subgraph(view, center?, depth?, edge_types?, limit?)` | `{nodes, edges, meta}` subgraph for a visualization *view* (`call_hierarchy`, `blast_radius`, `request_trace`) — exposed via the `gristle_subgraph` MCP tool |
+
+`get_subgraph` is the one method that returns a connected node-link subgraph
+rather than flattened scalar arrays. It is **read-only over existing node/edge
+types** (no schema change): the node-link `id` is always the business id, the
+`label` comes from `labels(n)[0]` (never id-prefix decoding), edges are scoped so
+none dangle, and the payload is capped at `GRISTLE_VIZ_MAX_NODES`. Variable-length
+traversal bounds (`depth`) are int-validated and string-interpolated because
+FalkorDB cannot parameterize them; `center` and all other inputs stay query
+parameters. See [docs/graph-visualization-spec.md](docs/graph-visualization-spec.md).
 
 ---
 
