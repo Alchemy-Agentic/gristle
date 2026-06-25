@@ -66,14 +66,14 @@ This clones the repo and runs full ingestion in one step.
 | `DEPENDS_ON` | File | Dependency | File-level external dependency |
 | `REFERENCES` | DocumentSection | Function, Class, File | Doc references code |
 | `HAS_SECTION` | Document | DocumentSection | Doc contains section |
-| `HANDLES` | Route | Function | Route handler |
+| `HANDLES` | Route | Function, Class | Route handler. Targets a `Function` for function/arrow handlers; targets a `Class` for class-based views (Django CBV / DRF `ViewSet`, where the class's methods do the work) |
 | `DEFINED_IN` | EnvVar | File | Env var defined in config file |
 | `USES_ENV` | File | EnvVar | Source file references env var |
 | `HAS_MODEL_FIELD` | Model | ModelField | Model's column/field |
 | `REFERENCES` | ModelField | Model | FK relationship (when `is_foreign_key: true`) |
 | `RELATED_TO` | Model | Model | High-level relationship (with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint` properties) |
 | `PROMOTED_FROM` | Model | Class | Link to source Class node (ORM class promoter) |
-| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches Django/SQLAlchemy/Prisma method-chain access; arg-style ORM calls (Drizzle `db.insert(x)`) not yet captured |
+| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma) and model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`) |
 
 ### Indexes
 

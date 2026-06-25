@@ -27,6 +27,17 @@ All notable changes to Gristle are documented here. This file is intended for co
   Function node, so the route gets a `HANDLES` edge and route→handler→callee/
   model tracing works (previously the callback was anonymous and unlinked).
   On a real Hono repo: routes with a handler went from ~0.5% to 93.8%.
+- **Django support** — two fixes that take Gristle from nearly-blind to fully
+  connected on Django apps:
+  - *URLconf routes*: `urls.py` `path()`/`re_path()`/`url()` and DRF
+    `router.register()` now become `Route` nodes (method `ALL`; `include()` and
+    `admin.site.urls` mounts are skipped). For class-based views the `HANDLES`
+    edge targets the view `Class`.
+  - *Transitive model bases*: ORM models are detected even when they subclass a
+    custom base (`class Article(TimestampedModel)`) defined in another file;
+    abstract Django bases (`class Meta: abstract = True`) are excluded.
+    On a real Django REST app: routes 0→11, models 1→5, USES_MODEL 0→26, with
+    route→view→model tracing end-to-end.
 - **Packaging** — tag-triggered PyPI + GHCR release workflow, single-source
   version (hatch dynamic), and `examples/sample-app`.
 

@@ -135,6 +135,69 @@ class TestCallExtraction:
         assert "session.query" in load.calls
 
 
+class TestDjangoRoutes:
+    def test_path_with_class_based_view(self):
+        parser = PythonParser()
+        code = (
+            "from django.urls import path\n"
+            "from .views import ArticleList\n"
+            "urlpatterns = [\n"
+            "    path('articles/', ArticleList.as_view()),\n"
+            "]\n"
+        )
+        result = parser.parse_file("urls.py", code)
+        assert len(result.routes) == 1
+        route = result.routes[0]
+        assert route.method == "ALL"
+        assert route.path == "/articles/"
+        assert route.handler_name == "ArticleList"
+
+    def test_re_path_named_groups_normalized(self):
+        parser = PythonParser()
+        code = (
+            "from django.urls import re_path\n"
+            "urlpatterns = [\n"
+            "    re_path(r'^articles/(?P<slug>[-\\w]+)/$', ArticleDetail.as_view()),\n"
+            "]\n"
+        )
+        result = parser.parse_file("urls.py", code)
+        assert result.routes[0].path == "/articles/:slug/"
+        assert result.routes[0].handler_name == "ArticleDetail"
+
+    def test_drf_router_register(self):
+        parser = PythonParser()
+        code = (
+            "from rest_framework import routers\n"
+            "router = routers.DefaultRouter()\n"
+            "router.register(r'articles', ArticleViewSet)\n"
+            "urlpatterns = router.urls\n"
+        )
+        result = parser.parse_file("urls.py", code)
+        regs = [r for r in result.routes if r.handler_name == "ArticleViewSet"]
+        assert len(regs) == 1
+        assert regs[0].path == "/articles"
+
+    def test_include_and_admin_mounts_skipped(self):
+        parser = PythonParser()
+        code = (
+            "from django.urls import path, include\n"
+            "from django.contrib import admin\n"
+            "urlpatterns = [\n"
+            "    path('admin/', admin.site.urls),\n"
+            "    path('api/', include('api.urls')),\n"
+            "]\n"
+        )
+        result = parser.parse_file("urls.py", code)
+        assert result.routes == []  # both are mounts, not leaf routes
+
+    def test_no_django_routes_without_urlpatterns(self):
+        parser = PythonParser()
+        # path() from pathlib must not be mistaken for a Django route
+        code = "from pathlib import Path\nfor p in path('.'):\n    print(p)\n"
+        result = parser.parse_file("helper.py", code)
+        assert result.routes == []
+
+
 class TestDecoratorExtraction:
     def test_extracts_decorators(self):
         parser = PythonParser()

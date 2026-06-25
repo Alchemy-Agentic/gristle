@@ -18,8 +18,17 @@ from gristle.models import ParsedModel, ParsedModelField, ParsedModelRelation
 
 _parser = Parser(Language(tspython.language()))
 
-# Cheap pre-filter: only parse files that plausibly contain ORM models.
-_ORM_HINTS = ("__tablename__", "DeclarativeBase", "declarative_base", "mapped_column", "Column(", "models.Model")
+# Cheap pre-filter: only parse files that plausibly contain ORM models or their
+# base classes. "models." catches Django field usage (models.CharField, ...) in
+# files that subclass a custom base and never mention models.Model literally.
+_ORM_HINTS = (
+    "__tablename__",
+    "DeclarativeBase",
+    "declarative_base",
+    "mapped_column",
+    "Column(",
+    "models.",
+)
 
 _PK_RE = re.compile(r"primary_key\s*=\s*True")
 _UNIQUE_RE = re.compile(r"unique\s*=\s*True")
@@ -40,14 +49,61 @@ _DJ_RELATION_FIELDS = {
 
 
 def extract_python_orm_models(file_path: str, content: str) -> list[ParsedModel]:
-    """Return SQLAlchemy/Django models found in a Python file (empty if none)."""
-    if not any(hint in content for hint in _ORM_HINTS):
-        return []
-    src = content.encode("utf-8")
-    root = _parser.parse(src).root_node
+    """Return SQLAlchemy/Django models found in a single Python file."""
+    return extract_python_orm_models_from_files([(file_path, content)])
+
+
+def extract_python_orm_models_from_files(files: list[tuple[str, str]]) -> list[ParsedModel]:
+    """Return SQLAlchemy/Django models across many files, resolving model base
+    classes transitively.
+
+    A model is rarely a *direct* subclass of ``models.Model`` / a SQLAlchemy
+    ``Base`` — projects define a shared base (``class TimestampedModel(models.Model)``)
+    in one file and subclass it elsewhere. A single-file pass misses those, so
+    this collects every class first, seeds the ORM kind from the base-name
+    heuristic, then propagates it to subclasses of any known model base until a
+    fixpoint — across file boundaries.
+    """
+    # Pass 1: collect every class definition (name, node, bases) across all files.
+    entries: list[tuple[str, str, Node, bytes, list[str]]] = []
+    for file_path, content in files:
+        if not any(hint in content for hint in _ORM_HINTS):
+            continue
+        src = content.encode("utf-8")
+        root = _parser.parse(src).root_node
+        for node in _iter_class_definitions(root):
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                continue
+            entries.append((file_path, _text(name_node, src), node, src, _bases(node, src)))
+
+    # Classify ORM kind per class name: seed from the base-name heuristic, then
+    # propagate transitively to subclasses of any class already classified.
+    orm_of: dict[str, str] = {}
+    for _, name, _, _, bases in entries:
+        kind = _detect_orm(bases)
+        if kind:
+            orm_of[name] = kind
+    changed = True
+    while changed:
+        changed = False
+        for _, name, _, _, bases in entries:
+            if name in orm_of:
+                continue
+            for b in bases:
+                base_kind = orm_of.get(b) or orm_of.get(b.rsplit(".", 1)[-1])
+                if base_kind:
+                    orm_of[name] = base_kind
+                    changed = True
+                    break
+
+    # Pass 2: parse fields for every class classified as a model.
     models: list[ParsedModel] = []
-    for node in _iter_class_definitions(root):
-        model = _parse_class_model(node, src, file_path)
+    for file_path, name, node, src, _ in entries:
+        orm = orm_of.get(name)
+        if orm is None:
+            continue
+        model = _parse_class_model(node, src, file_path, orm)
         if model is not None:
             models.append(model)
     return models
@@ -79,13 +135,33 @@ def _detect_orm(bases: list[str]) -> str | None:
     return None
 
 
-def _parse_class_model(class_node: Node, src: bytes, file_path: str) -> ParsedModel | None:
+def _is_abstract_django(body: Node, src: bytes) -> bool:
+    """True if the class has a nested ``class Meta`` with ``abstract = True``.
+
+    Abstract Django bases (e.g. a shared ``TimestampedModel``) define no table,
+    so they should not become Model nodes — only their concrete subclasses do.
+    """
+    for stmt in body.named_children:
+        if stmt.type != "class_definition":
+            continue
+        meta_name = stmt.child_by_field_name("name")
+        meta_body = stmt.child_by_field_name("body")
+        if (
+            meta_name is not None
+            and meta_body is not None
+            and _text(meta_name, src) == "Meta"
+            and re.search(r"\babstract\s*=\s*True\b", _text(meta_body, src))
+        ):
+            return True
+    return False
+
+
+def _parse_class_model(class_node: Node, src: bytes, file_path: str, orm: str) -> ParsedModel | None:
     name_node = class_node.child_by_field_name("name")
     body = class_node.child_by_field_name("body")
     if name_node is None or body is None:
         return None
-    orm = _detect_orm(_bases(class_node, src))
-    if orm is None:
+    if orm == "django" and _is_abstract_django(body, src):
         return None
 
     name = _text(name_node, src)

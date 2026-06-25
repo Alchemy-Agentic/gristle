@@ -120,6 +120,10 @@ class PythonParser(LanguageParser):
                     method.is_entry_point = True
                     method.entry_point_reason = reason
 
+        # Django URLconf routes (urls.py: path()/re_path()/url()/router.register)
+        if "urlpatterns" in content:
+            routes.extend(self._extract_django_routes(root, src, file_path))
+
         # Extract nested classes (classes defined inside functions, common in pytest)
         nested_classes = self._extract_nested_classes(root, src, file_path)
         classes.extend(nested_classes)
@@ -951,6 +955,104 @@ class PythonParser(LanguageParser):
                 line=func.start_line,
             )
         return None
+
+    # ------------------------------------------------------------------
+    # Django URLconf routes (urls.py)
+    # ------------------------------------------------------------------
+
+    _DJ_PATH_FUNCS = frozenset({"path", "re_path", "url"})
+    _DJ_NAMED_GROUP_RE = re.compile(r"\(\?P<(\w+)>[^)]*\)")
+
+    def _extract_django_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
+        """Extract routes from a Django URLconf: ``path('x/', View.as_view())``,
+        ``re_path(r'^x$', view)``, ``url(...)``, and DRF ``router.register(...)``.
+
+        Django dispatches HTTP methods inside the view, so the method is ``ALL``;
+        the handler is the view class/function (or the ViewSet for ``register``).
+        """
+        routes: list[ParsedRoute] = []
+        for node in self._iter_descendants(root):
+            if node.type != "call":
+                continue
+            func = node.child_by_field_name("function")
+            args = node.child_by_field_name("arguments")
+            if func is None or args is None:
+                continue
+            name = self._resolve_call_name(func, src)
+            if name is None:
+                continue
+            short = name.rsplit(".", 1)[-1]
+            positional = [c for c in args.named_children if c.type not in ("keyword_argument", "comment")]
+            if not positional or positional[0].type not in ("string", "concatenated_string"):
+                continue
+
+            if short in self._DJ_PATH_FUNCS:
+                handler = self._django_handler_name(positional[1], src) if len(positional) > 1 else None
+                if handler is None:
+                    continue  # include(...) mount or unrecognized — not a leaf route
+            elif short == "register":  # DRF router.register('prefix', ViewSet)
+                handler = self._resolve_call_name(positional[1], src) if len(positional) > 1 else None
+                if handler is None:
+                    continue
+            else:
+                continue
+
+            routes.append(
+                ParsedRoute(
+                    method="ALL",
+                    path=self._normalize_django_path(self._string_literal_value(positional[0], src)),
+                    handler_name=handler,
+                    file_path=file_path,
+                    line=node.start_point[0] + 1,
+                )
+            )
+        return routes
+
+    def _django_handler_name(self, arg: Node, src: bytes) -> str | None:
+        """Resolve the view from a path() handler argument.
+
+        ``View.as_view()`` → ``View``; ``include(...)`` → None (a mount, not a
+        leaf route); a bare function/attribute → its name.
+        """
+        if arg.type == "call":
+            inner = arg.child_by_field_name("function")
+            if inner is None:
+                return None
+            if inner.type == "attribute":
+                attr = inner.child_by_field_name("attribute")
+                obj = inner.child_by_field_name("object")
+                if attr is not None and self._text(attr, src) == "as_view" and obj is not None:
+                    return self._resolve_call_name(obj, src)
+            if inner.type == "identifier" and self._text(inner, src) == "include":
+                return None
+            return self._resolve_call_name(inner, src)
+        if arg.type in ("identifier", "attribute"):
+            name = self._resolve_call_name(arg, src)
+            if name is not None and name.endswith(".urls"):
+                return None  # an included URLconf mount (e.g. admin.site.urls), not a view
+            return name
+        return None
+
+    @staticmethod
+    def _string_literal_value(node: Node, src: bytes) -> str:
+        """Unwrap a string literal node, stripping any prefix (r/b/f/u) and quotes."""
+        txt = src[node.start_byte : node.end_byte].decode("utf-8", "replace")
+        i = 0
+        while i < len(txt) and txt[i] in "rRbBfFuU":
+            i += 1
+        return txt[i:].strip("'\"")
+
+    @classmethod
+    def _normalize_django_path(cls, raw: str) -> str:
+        """Normalize a Django route string to a readable path.
+
+        ``^articles/(?P<slug>[-\\w]+)/?$`` → ``/articles/:slug``.
+        """
+        p = cls._DJ_NAMED_GROUP_RE.sub(lambda m: ":" + m.group(1), raw)
+        p = p.lstrip("^").rstrip("$").replace("/?", "/")
+        if not p.startswith("/"):
+            p = "/" + p
+        return p
 
     def _extract_todos(self, root: Node, src: bytes) -> list[str]:
         """Extract TODO/FIXME/HACK comments from the AST."""

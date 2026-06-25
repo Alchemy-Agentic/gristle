@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from gristle.parsers.orm_python import extract_python_orm_models
+from gristle.parsers.orm_python import (
+    extract_python_orm_models,
+    extract_python_orm_models_from_files,
+)
 
 _SQLALCHEMY = """
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -61,3 +64,48 @@ def test_non_orm_class_is_ignored():
 
 def test_no_orm_hints_skips_parsing():
     assert extract_python_orm_models("a.py", "def f():\n    return 1\n") == []
+
+
+def test_transitive_django_base_across_files():
+    """A model subclassing a custom base defined in another file is detected;
+    the abstract base itself is excluded."""
+    base = (
+        "core/models.py",
+        "from django.db import models\n"
+        "class TimestampedModel(models.Model):\n"
+        "    created_at = models.DateTimeField(auto_now_add=True)\n"
+        "    class Meta:\n"
+        "        abstract = True\n",
+    )
+    app = (
+        "articles/models.py",
+        "from core.models import TimestampedModel\n"
+        "from django.db import models\n"
+        "class Article(TimestampedModel):\n"
+        "    title = models.CharField(max_length=200)\n",
+    )
+    by_name = {m.name: m for m in extract_python_orm_models_from_files([base, app])}
+    assert "Article" in by_name
+    assert by_name["Article"].orm == "django"
+    assert "TimestampedModel" not in by_name  # abstract base -> not a table
+
+
+def test_transitive_sqlalchemy_custom_intermediate_base():
+    """A model classified only via propagation through a non-`*Base`-named custom
+    intermediate (``AuditMixin``) is still detected as SQLAlchemy."""
+    base = (
+        "db.py",
+        "from sqlalchemy.orm import DeclarativeBase\nclass Base(DeclarativeBase):\n    pass\n",
+    )
+    model = (
+        "user.py",
+        "from db import Base\n"
+        "from sqlalchemy.orm import Mapped, mapped_column\n"
+        "class AuditMixin(Base):\n"
+        "    pass\n"
+        "class User(AuditMixin):\n"  # base name doesn't match any heuristic -> needs propagation
+        '    __tablename__ = "users"\n'
+        "    id: Mapped[int] = mapped_column(primary_key=True)\n",
+    )
+    names = {m.name for m in extract_python_orm_models_from_files([base, model])}
+    assert "User" in names  # resolved via AuditMixin -> Base -> DeclarativeBase

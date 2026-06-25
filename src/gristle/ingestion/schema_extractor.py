@@ -71,14 +71,19 @@ class SchemaExtractor:
 
                     models.extend(extract_typeorm_models(wf.relative_path, content))
 
-        # 3. Python ORM detection (SQLAlchemy declarative + Django models)
+        # 3. Python ORM detection (SQLAlchemy declarative + Django models).
+        # Collected across all files so model base classes resolve transitively
+        # (a model subclassing a custom base defined in another file).
+        py_files: list[tuple[str, str]] = []
         for wf in walked_files:
             if wf.extension in ("py", "pyi"):
                 content = self._read_file(wf)
                 if content is not None:
-                    from gristle.parsers.orm_python import extract_python_orm_models
+                    py_files.append((wf.relative_path, content))
+        if py_files:
+            from gristle.parsers.orm_python import extract_python_orm_models_from_files
 
-                    models.extend(extract_python_orm_models(wf.relative_path, content))
+            models.extend(extract_python_orm_models_from_files(py_files))
 
         # 4. Write to graph
         return self._write_models(models, parsed_files)
