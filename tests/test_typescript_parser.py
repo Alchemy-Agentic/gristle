@@ -289,6 +289,36 @@ class TestCallExtraction:
         assert all(not c.startswith("select.from") for c in result.functions[0].calls_with_args)
 
 
+class TestVariableExtraction:
+    def test_extracts_exported_const_object(self):
+        parser = TypeScriptParser()
+        result = parser.parse_file("config.ts", "export const config = { port: 3000 };\n")
+        v = next(v for v in result.variables if v.name == "config")
+        assert v.kind == "const"
+        assert v.is_exported is True
+        assert v.value_kind == "object"
+
+    def test_extracts_call_value_schema(self):
+        parser = TypeScriptParser()
+        result = parser.parse_file("schema.ts", "export const userSchema = z.object({ id: z.string() });\n")
+        v = next(v for v in result.variables if v.name == "userSchema")
+        assert v.value_kind == "call"
+        assert v.is_exported is True
+
+    def test_arrow_const_is_function_not_variable(self):
+        parser = TypeScriptParser()
+        result = parser.parse_file("h.ts", "export const handler = () => {};\n")
+        assert all(v.name != "handler" for v in result.variables)
+        assert any(f.name == "handler" for f in result.functions)
+
+    def test_non_exported_const(self):
+        parser = TypeScriptParser()
+        result = parser.parse_file("c.ts", "const MAX = 3;\n")
+        v = next(v for v in result.variables if v.name == "MAX")
+        assert v.is_exported is False
+        assert v.value_kind == "literal"
+
+
 class TestComponentDetection:
     def test_detects_function_component(self):
         parser = TypeScriptParser()

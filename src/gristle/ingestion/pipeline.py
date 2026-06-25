@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         ParsedImport,
         ParsedRoute,
         ParsedTestCase,
+        ParsedVariable,
     )
 
 logger = logging.getLogger(__name__)
@@ -650,6 +651,10 @@ class IngestionPipeline:
         for func in parsed.functions:
             self._build_function(file_id, None, func, batch)
 
+        # Module-level variables/constants (config, schemas, registries, consts)
+        for var in parsed.variables:
+            self._build_variable(file_id, var, batch)
+
         # Collect app-level auth middleware paths (e.g. app.use('/api/admin/*', auth))
         for path_pattern in parsed.auth_middleware_paths:
             self._auth_middleware_paths.append((path_pattern, parsed.path))
@@ -767,6 +772,35 @@ class IngestionPipeline:
         elif route.handler_name and route.handler_name != "<serve>":
             # Track for Phase 2 import-aware resolution
             self._unlinked_routes.append((route_id, route.handler_name, route.file_path))
+
+    def _build_variable(self, file_id: str, var: ParsedVariable, batch: BatchCollector) -> None:
+        var_id = f"var::{var.qualified_name}"
+        # Register as a resolvable entity (for imports/references) without clobbering
+        # a function/class of the same module-level name (those are built first).
+        self._id_map.setdefault(var.qualified_name, var_id)
+        self._id_map.setdefault(var.name, var_id)
+        self._qualified_map.setdefault(var.qualified_name, var_id)
+        self._file_entities.setdefault(var.file_path, {}).setdefault(var.name, var_id)
+        if var.is_exported:
+            self._exported_file_entities.setdefault(var.file_path, {}).setdefault(var.name, var_id)
+
+        batch.add_node(
+            "Variable",
+            {
+                "id": var_id,
+                "name": var.name,
+                "qualified_name": var.qualified_name,
+                "file_path": var.file_path,
+                "start_line": var.start_line,
+                "end_line": var.end_line,
+                "kind": var.kind,
+                "value_kind": var.value_kind,
+                "is_exported": var.is_exported,
+            },
+        )
+        batch.add_relationship("CONTAINS", file_id, var_id)
+        if var.is_exported:
+            batch.add_relationship("EXPORTS", file_id, var_id)
 
     def _build_test_case(self, file_id: str, tc: ParsedTestCase, batch: BatchCollector) -> None:
         tc_id = f"testcase::{tc.file_path}::L{tc.start_line}"

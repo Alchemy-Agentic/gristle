@@ -15,6 +15,7 @@ from gristle.models import (
     ParsedRoute,
     ParsedTestCase,
     ParsedTypeField,
+    ParsedVariable,
 )
 from gristle.parsers.base import LanguageParser
 
@@ -72,6 +73,7 @@ class PythonParser(LanguageParser):
         is_test_file = bool(_TEST_FILE_RE.search(file_path))
         functions = self._extract_module_functions(root, src, file_path)
         classes = self._extract_classes(root, src, file_path)
+        variables = self._extract_module_variables(root, src, file_path)
         routes: list[ParsedRoute] = []
 
         # Mark exports. If __all__ is declared it is authoritative; otherwise fall
@@ -87,6 +89,9 @@ class PythonParser(LanguageParser):
             for cls in classes:
                 if cls.name in dunder_all:
                     cls.is_exported = True
+            for var in variables:
+                if var.name in dunder_all:
+                    var.is_exported = True
         else:
             for func in functions:
                 if not func.name.startswith("_"):
@@ -94,6 +99,9 @@ class PythonParser(LanguageParser):
             for cls in classes:
                 if not cls.name.startswith("_"):
                     cls.is_exported = True
+            for var in variables:
+                if not var.name.startswith("_"):
+                    var.is_exported = True
 
         # Post-process functions
         for func in functions:
@@ -179,6 +187,7 @@ class PythonParser(LanguageParser):
             imports=self._extract_imports(root, src),
             routes=routes,
             test_cases=test_cases,
+            variables=variables,
             module_docstring=self._extract_module_docstring(root, src),
             line_count=content.count("\n") + 1,
             is_test_file=is_test_file,
@@ -356,6 +365,53 @@ class PythonParser(LanguageParser):
                 if inner and inner.type == "function_definition":
                     functions.append(self._parse_function(inner, src, file_path, decorator_node=node))
         return functions
+
+    _PY_VALUE_KIND_MAP = {
+        "dictionary": "object",
+        "list": "array",
+        "set": "array",
+        "tuple": "array",
+        "list_comprehension": "array",
+        "call": "call",
+        "string": "literal",
+        "concatenated_string": "literal",
+        "integer": "literal",
+        "float": "literal",
+        "true": "literal",
+        "false": "literal",
+        "none": "literal",
+        "identifier": "reference",
+        "attribute": "reference",
+    }
+
+    def _extract_module_variables(self, root: Node, src: bytes, file_path: str) -> list[ParsedVariable]:
+        """Extract module-level assignments (``app = FastAPI()``, ``SETTINGS = {...}``,
+        ``schema = Schema()``) as Variable bindings. Skips tuple/attribute targets
+        and ``lambda`` values."""
+        variables: list[ParsedVariable] = []
+        for node in root.children:
+            if node.type != "expression_statement" or not node.children:
+                continue
+            assign = node.children[0]
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            right = assign.child_by_field_name("right")
+            if left is None or left.type != "identifier" or right is None or right.type == "lambda":
+                continue
+            name = self._text(left, src)
+            variables.append(
+                ParsedVariable(
+                    name=name,
+                    qualified_name=f"{file_path}::{name}",
+                    file_path=file_path,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    kind="assignment",
+                    value_kind=self._PY_VALUE_KIND_MAP.get(right.type, "other"),
+                )
+            )
+        return variables
 
     def _extract_methods(self, body: Node, src: bytes, file_path: str, class_name: str) -> list[ParsedFunction]:
         methods: list[ParsedFunction] = []

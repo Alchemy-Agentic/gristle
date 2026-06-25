@@ -109,6 +109,26 @@ class ParsedRoute:
 
 
 @dataclass(slots=True)
+class ParsedVariable:
+    """A module-level variable/constant binding that is not a function or class —
+    a TS/JS ``const``/``let``/``var`` or a Python module-level assignment.
+
+    Captures config objects, Zod/validation schemas, handler/route registries, and
+    plain constants that are otherwise dropped (and unresolvable as import targets).
+    """
+
+    name: str
+    qualified_name: str
+    file_path: str
+    start_line: int
+    end_line: int
+    kind: str = "const"  # const / let / var / assignment
+    is_exported: bool = False
+    # RHS shape hint: object / array / call / new / literal / reference / function
+    value_kind: str = ""
+
+
+@dataclass(slots=True)
 class ParsedEnvVar:
     """An environment variable reference found in source or config."""
 
@@ -148,6 +168,7 @@ class ParsedFile:
     imports: list[ParsedImport] = field(default_factory=list)
     routes: list[ParsedRoute] = field(default_factory=list)
     test_cases: list[ParsedTestCase] = field(default_factory=list)
+    variables: list[ParsedVariable] = field(default_factory=list)
     module_docstring: str | None = None
     line_count: int = 0
     is_test_file: bool = False

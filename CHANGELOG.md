@@ -43,6 +43,12 @@ All notable changes to Gristle are documented here. This file is intended for co
     abstract Django bases (`class Meta: abstract = True`) are excluded.
     On a real Django REST app: routes 0→11, models 1→5, USES_MODEL 0→26, with
     route→view→model tracing end-to-end.
+- **`Variable` node type** — module-level `const`/`let`/`var` (TS/JS) and module
+  assignments (Python) that aren't functions or classes — config objects,
+  validation schemas (Zod), handler/route registries, React contexts, constants —
+  are now nodes (`kind`, `value_kind`, `is_exported`) with `CONTAINS`/`EXPORTS`
+  edges, instead of being dropped. They register as resolvable entities so imports
+  can point at them. (Additive: existing queries are unaffected.)
 - **Packaging** — tag-triggered PyPI + GHCR release workflow, single-source
   version (hatch dynamic), and `examples/sample-app`.
 

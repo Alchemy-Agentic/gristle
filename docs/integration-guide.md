@@ -46,14 +46,15 @@ This clones the repo and runs full ingestion in one step.
 | `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
 | `Model` | `id`, `name`, `qualified_name`, `file_path`, `line_start`, `line_end`, `orm`, `table_name`, `is_junction`, `is_enum`, `primary_key`, `field_count`, `docstring` | Database model/table definition (Prisma, Drizzle, ORM class) |
 | `ModelField` | `id`, `name`, `field_type`, `db_type`, `is_primary_key`, `is_nullable`, `is_unique`, `is_indexed`, `has_default`, `default_value`, `is_foreign_key`, `references_model`, `references_field`, `line` | Column/field in a database model |
+| `Variable` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `end_line`, `kind`, `value_kind`, `is_exported` | Module-level const/let/var (TS/JS) or module assignment (Python) that isn't a function or class — config objects, validation schemas, registries, constants. `kind`: `const`/`let`/`var`/`assignment`; `value_kind`: `object`/`array`/`call`/`new`/`literal`/`reference` |
 
 ### Edge Types
 
 | Type | From | To | Description |
 |------|------|----|-------------|
-| `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase | Container relationship |
+| `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase, Variable, Model | Container relationship |
 | `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
-| `EXPORTS` | File | Function, Class | Module exports |
+| `EXPORTS` | File | Function, Class, Variable | Module exports |
 | `CALLS` | Function | Function | Function call. Carries a `resolution` property recording how the callee was resolved, by confidence: `exact` / `file_scoped` / `import` / `typed_receiver` / `dotted` / `same_file` / `unique_global` — lets consumers weight or filter by reliability |
 | `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument, jsx_callback) |
 | `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |

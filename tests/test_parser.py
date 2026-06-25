@@ -135,6 +135,30 @@ class TestCallExtraction:
         assert "session.query" in load.calls
 
 
+class TestVariableExtraction:
+    def test_extracts_module_assignments(self):
+        parser = PythonParser()
+        result = parser.parse_file("settings.py", "SETTINGS = {'debug': True}\napp = FastAPI()\nrouter = APIRouter()\n")
+        by = {v.name: v for v in result.variables}
+        assert by["SETTINGS"].value_kind == "object"
+        assert by["SETTINGS"].is_exported is True  # public, non-underscore
+        assert by["app"].value_kind == "call"
+        assert by["router"].value_kind == "call"
+
+    def test_function_is_not_a_variable(self):
+        parser = PythonParser()
+        result = parser.parse_file("m.py", "def f():\n    return 1\n\nMAX = 5\n")
+        names = {v.name for v in result.variables}
+        assert "f" not in names
+        assert "MAX" in names
+
+    def test_underscore_name_not_exported(self):
+        parser = PythonParser()
+        result = parser.parse_file("m.py", "_private = 1\n")
+        v = next(v for v in result.variables if v.name == "_private")
+        assert v.is_exported is False
+
+
 class TestDjangoRoutes:
     def test_path_with_class_based_view(self):
         parser = PythonParser()

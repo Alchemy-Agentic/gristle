@@ -16,6 +16,7 @@ from gristle.models import (
     ParsedRoute,
     ParsedTestCase,
     ParsedTypeField,
+    ParsedVariable,
 )
 from gristle.parsers.base import LanguageParser
 
@@ -164,6 +165,7 @@ class TypeScriptParser(LanguageParser):
             + self._extract_dynamic_imports(root, src),
             routes=routes,
             test_cases=test_cases,
+            variables=self._extract_module_variables(root, src, file_path),
             module_docstring=self._extract_module_docstring(root, src),
             line_count=content.count("\n") + 1,
             is_test_file=is_test_file,
@@ -728,6 +730,71 @@ class TypeScriptParser(LanguageParser):
                     typed_parameters=typed_params,
                 )
         return None
+
+    # ------------------------------------------------------------------
+    # Module-level variables / constants
+    # ------------------------------------------------------------------
+
+    _VALUE_KIND_MAP = {
+        "object": "object",
+        "array": "array",
+        "call_expression": "call",
+        "new_expression": "new",
+        "string": "literal",
+        "template_string": "literal",
+        "number": "literal",
+        "true": "literal",
+        "false": "literal",
+        "null": "literal",
+        "identifier": "reference",
+        "member_expression": "reference",
+    }
+    _FUNCTION_VALUE_TYPES = ("arrow_function", "function_expression", "function")
+
+    def _extract_module_variables(self, root: Node, src: bytes, file_path: str) -> list[ParsedVariable]:
+        """Extract module-level const/let/var bindings that aren't functions.
+
+        Functions (``const f = () => …``) are handled by
+        :meth:`_extract_module_functions`; this captures the rest — config
+        objects, Zod schemas, registries, constants.
+        """
+        variables: list[ParsedVariable] = []
+        for node in root.children:
+            if node.type in ("lexical_declaration", "variable_declaration"):
+                variables.extend(self._vars_from_declaration(node, src, file_path, is_exported=False))
+            elif node.type == "export_statement":
+                decl = node.child_by_field_name("declaration")
+                if decl is not None and decl.type in ("lexical_declaration", "variable_declaration"):
+                    variables.extend(self._vars_from_declaration(decl, src, file_path, is_exported=True))
+        return variables
+
+    def _vars_from_declaration(self, node: Node, src: bytes, file_path: str, is_exported: bool) -> list[ParsedVariable]:
+        keyword = self._text(node.children[0], src) if node.children else "const"
+        kind = keyword if keyword in ("const", "let", "var") else "const"
+        out: list[ParsedVariable] = []
+        for child in node.children:
+            if child.type != "variable_declarator":
+                continue
+            name_node = child.child_by_field_name("name")
+            value_node = child.child_by_field_name("value")
+            if name_node is None or name_node.type != "identifier":
+                continue  # skip destructuring patterns
+            if value_node is not None and value_node.type in self._FUNCTION_VALUE_TYPES:
+                continue  # a function — handled elsewhere
+            name = self._text(name_node, src)
+            out.append(
+                ParsedVariable(
+                    name=name,
+                    qualified_name=f"{file_path}::{name}",
+                    file_path=file_path,
+                    start_line=child.start_point[0] + 1,
+                    end_line=child.end_point[0] + 1,
+                    kind=kind,
+                    is_exported=is_exported,
+                    value_kind=self._VALUE_KIND_MAP.get(value_node.type, "other") if value_node else "",
+                )
+            )
+        return out
 
     # ------------------------------------------------------------------
     # Call extraction
@@ -1918,6 +1985,7 @@ class JavaScriptParser(LanguageParser):
             + self._ts_parser._extract_dynamic_imports(root, src),
             routes=routes,
             test_cases=self._ts_parser._extract_test_cases(root, src, file_path) if is_test_file else [],
+            variables=self._ts_parser._extract_module_variables(root, src, file_path),
             module_docstring=self._ts_parser._extract_module_docstring(root, src),
             line_count=content.count("\n") + 1,
             is_test_file=is_test_file,
