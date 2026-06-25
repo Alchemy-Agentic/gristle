@@ -53,6 +53,12 @@ All notable changes to Gristle are documented here. This file is intended for co
   `throw new X()`). Re-raised variables (`raise exc`) are excluded — only
   PascalCase types are recorded. On real repos: rw-fastapi 51 RAISES + 19 CATCHES
   edges to custom exceptions; builtins (`ValueError`, …) stay in the property.
+- **`has_error_handling` on functions** — a boolean Function property, true when
+  the body contains a `try`/`except` (Python) or `try`/`catch` (JS/TS). Unlike the
+  `catches` list it covers bare `except:`, `try`/`finally`, and **all** JS/TS catch
+  clauses (which can't name a type), so it's the only error-handling signal for
+  TypeScript. On real repos: rw-fastapi 75/659 functions (8 with no named catch),
+  ai-chatbot 45/520 (all 45 invisible to `catches`). (Additive boolean property.)
 - **`Variable` node type** — module-level `const`/`let`/`var` (TS/JS) and module
   assignments (Python) that aren't functions or classes — config objects,
   validation schemas (Zod), handler/route registries, React contexts, constants —

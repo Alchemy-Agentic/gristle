@@ -35,7 +35,7 @@ This clones the repo and runs full ingestion in one step.
 | Label | Key Properties | Purpose |
 |-------|---------------|---------|
 | `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
-| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback`, `raises`, `catches` | Function or method (`raises`/`catches` are exception type-name lists; see `RAISES`/`CATCHES` edges for locally-defined ones) |
+| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback`, `raises`, `catches`, `has_error_handling` | Function or method (`raises`/`catches` are exception type-name lists; see `RAISES`/`CATCHES` edges for locally-defined ones. `has_error_handling` is a boolean — true if the body has a `try`/`except` or `try`/`catch`, including bare `except:`/`finally` and all JS/TS catches that name no type) |
 | `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
 | `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative`, `resolved` | Import statement |
 | `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware`, `has_auth` | HTTP endpoint |

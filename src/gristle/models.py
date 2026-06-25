@@ -53,6 +53,7 @@ class ParsedFunction:
         default_factory=list
     )  # Exception type names raised/thrown (Python raise, JS/TS throw new)
     catches: list[str] = field(default_factory=list)  # Exception type names caught (Python except <Type>)
+    has_error_handling: bool = False  # Body contains a try/except (Python) or try/catch (JS/TS)
 
 
 @dataclass(slots=True)

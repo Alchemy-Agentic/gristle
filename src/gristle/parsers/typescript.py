@@ -588,6 +588,7 @@ class TypeScriptParser(LanguageParser):
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
         raises, catches = self._extract_error_flow(body, src) if body else ([], [])
+        has_error_handling = self._has_try(body) if body else False
 
         return ParsedFunction(
             name=name,
@@ -609,6 +610,7 @@ class TypeScriptParser(LanguageParser):
             typed_parameters=typed_params,
             raises=raises,
             catches=catches,
+            has_error_handling=has_error_handling,
             decorators=self._extract_decorators(node, src),
         )
 
@@ -664,6 +666,7 @@ class TypeScriptParser(LanguageParser):
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
         raises, catches = self._extract_error_flow(body, src) if body else ([], [])
+        has_error_handling = self._has_try(body) if body else False
 
         return ParsedFunction(
             name=name,
@@ -684,6 +687,7 @@ class TypeScriptParser(LanguageParser):
             typed_parameters=typed_params,
             raises=raises,
             catches=catches,
+            has_error_handling=has_error_handling,
         )
 
     def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
@@ -717,6 +721,7 @@ class TypeScriptParser(LanguageParser):
                 calls_with_args = self._extract_call_arg_refs(body, src) if body else []
                 callback_refs = self._extract_callback_refs(body, src) if body else []
                 raises, catches = self._extract_error_flow(body, src) if body else ([], [])
+                has_error_handling = self._has_try(body) if body else False
 
                 return ParsedFunction(
                     name=name,
@@ -737,6 +742,7 @@ class TypeScriptParser(LanguageParser):
                     typed_parameters=typed_params,
                     raises=raises,
                     catches=catches,
+                    has_error_handling=has_error_handling,
                 )
         return None
 
@@ -1079,6 +1085,12 @@ class TypeScriptParser(LanguageParser):
             prop = node.child_by_field_name("property")
             return self._text(prop, src) if prop is not None else None
         return None
+
+    def _has_try(self, node: Node) -> bool:
+        """True if the subtree contains a ``try`` statement (any error handling)."""
+        if node.type == "try_statement":
+            return True
+        return any(self._has_try(child) for child in node.children)
 
     # ------------------------------------------------------------------
     # JSDoc extraction

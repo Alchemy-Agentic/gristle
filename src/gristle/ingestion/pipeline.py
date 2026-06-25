@@ -980,6 +980,7 @@ class IngestionPipeline:
                 "security_findings": func.security_findings,
                 "raises": func.raises,
                 "catches": func.catches,
+                "has_error_handling": func.has_error_handling,
                 "tested_by_count": 0,
             },
         )

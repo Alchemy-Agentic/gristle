@@ -301,6 +301,15 @@ class TestErrorFlow:
         assert result.functions[0].raises == []  # re-throwing a variable names no type
         assert result.functions[0].catches == []  # JS/TS catch clauses can't name a type
 
+    def test_has_error_handling(self):
+        parser = TypeScriptParser()
+        with_try = parser.parse_file("t.ts", "function f() { try { g(); } catch (e) { handle(e); } }\n")
+        without = parser.parse_file("t.ts", "function h() { return g(); }\n")
+        # catches is always empty for TS, so has_error_handling is the only error signal
+        assert with_try.functions[0].has_error_handling is True
+        assert with_try.functions[0].catches == []
+        assert without.functions[0].has_error_handling is False
+
 
 class TestVariableExtraction:
     def test_extracts_exported_const_object(self):

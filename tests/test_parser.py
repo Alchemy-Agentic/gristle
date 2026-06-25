@@ -182,6 +182,18 @@ class TestErrorFlow:
         assert fn.raises == []  # bare re-raise has no type
         assert fn.catches == ["Exception"]  # the `as e` alias is not captured
 
+    def test_has_error_handling(self):
+        parser = PythonParser()
+        with_try = "def f():\n    try:\n        do()\n    except Exception:\n        pass\n"
+        without = "def g():\n    do()\n"
+        # try/finally with no named exception still counts (catches stays empty)
+        finally_only = "def h():\n    try:\n        do()\n    finally:\n        cleanup()\n"
+        assert parser.parse_file("m.py", with_try).functions[0].has_error_handling is True
+        assert parser.parse_file("m.py", without).functions[0].has_error_handling is False
+        h = parser.parse_file("m.py", finally_only).functions[0]
+        assert h.has_error_handling is True
+        assert h.catches == []  # no named exception, but error handling is present
+
 
 class TestDjangoRoutes:
     def test_path_with_class_based_view(self):
