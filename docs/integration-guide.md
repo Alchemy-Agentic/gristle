@@ -66,6 +66,7 @@ This clones the repo and runs full ingestion in one step.
 | `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper, 3=import-based JS/TS fallback) |
 | `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |
 | `USES_DEPENDENCY` | Function | Dependency | Uses external package |
+| `USES_VARIABLE` | Function | Variable | Function calls a method on an **imported** module-level `Variable` (`config.get()`, `schema.parse()`, `logger.info()`). Import-resolved and parameter-excluded for precision (same-named params/locals don't link); same-file variable use is intentionally not linked |
 | `DEPENDS_ON` | File | Dependency | File-level external dependency |
 | `REFERENCES` | DocumentSection | Function, Class, File | Doc references code |
 | `HAS_SECTION` | Document | DocumentSection | Doc contains section |

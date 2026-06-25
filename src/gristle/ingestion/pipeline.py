@@ -1508,6 +1508,25 @@ class IngestionPipeline:
             if class_id:
                 batch.add_merge_relationship("CATCHES", caller_id, class_id)
 
+        # USES_VARIABLE: a method call on an IMPORTED module-level Variable
+        # (`config.get()`, `schema.parse()`, `logger.info()`) links the function to
+        # that Variable. Restricted to imported names (resolved via the file's import
+        # map) and excludes the function's own parameters, so same-named params/locals
+        # — the dominant false-positive risk for variable references — don't resolve.
+        imported = self._get_imported_entities(pf)
+        params = set(func.parameters)
+        linked_vars: set[str] = set()
+        for call_name in func.calls:
+            if "." not in call_name:
+                continue
+            base = call_name.split(".", 1)[0]
+            if base in params or base in linked_vars or base in ("self", "cls"):
+                continue
+            var_id = imported.get(base)
+            if var_id and var_id.startswith("var::"):
+                linked_vars.add(base)
+                batch.add_merge_relationship("USES_VARIABLE", caller_id, var_id)
+
     def _resolve_exception_class(self, name: str, pf: ParsedFile) -> str | None:
         """Resolve an exception type name to a locally-defined Class node, if any."""
         class_id = self._file_entities.get(pf.path, {}).get(name) or self._id_map.get(name)

@@ -2531,3 +2531,59 @@ class TestTsconfigPathAliases:
         p = IngestionPipeline(graph=MagicMock())
         p._collect_ts_path_aliases(str(tmp_path))
         assert ("~/*", ["app/*"]) in p._ts_path_aliases
+
+
+class TestUsesVariable:
+    """A function calling a method on an IMPORTED module Variable gets USES_VARIABLE.
+
+    Restricted to imported names + excludes parameters, so same-named params/locals
+    (the dominant false-positive risk for variable references) don't resolve.
+    """
+
+    def _files(self, caller_calls, caller_params=None):
+        from gristle.models import ParsedVariable
+
+        cfg = ParsedVariable(
+            name="appConfig",
+            qualified_name="src/config.ts::appConfig",
+            file_path="src/config.ts",
+            start_line=1,
+            end_line=1,
+            kind="const",
+            is_exported=True,
+            value_kind="object",
+        )
+        config_file = _make_file("src/config.ts")
+        config_file.variables = [cfg]
+        caller = _make_func("handler", "src/api.ts", calls=caller_calls, parameters=caller_params or [])
+        api_file = _make_file(
+            "src/api.ts",
+            functions=[caller],
+            imports=[_make_import("./config", imported_names=["appConfig"])],
+        )
+        return [config_file, api_file]
+
+    def test_method_call_on_imported_variable(self):
+        pipeline = _setup_pipeline_with_resolution(self._files(["appConfig.get"]))
+        uses = [(f, t) for f, t, r in _extract_batch_merge_rels(pipeline.graph) if r == "USES_VARIABLE"]
+        assert ("func::src/api.ts::handler", "var::src/config.ts::appConfig") in uses
+
+    def test_param_shadowing_excluded(self):
+        # The receiver is the function's own parameter, not the module variable.
+        pipeline = _setup_pipeline_with_resolution(self._files(["appConfig.get"], caller_params=["appConfig"]))
+        uses = [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "USES_VARIABLE"]
+        assert uses == []
+
+    def test_bare_call_not_linked(self):
+        # A non-dotted call (no receiver) is never a variable reference.
+        pipeline = _setup_pipeline_with_resolution(self._files(["appConfig"]))
+        uses = [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "USES_VARIABLE"]
+        assert uses == []
+
+    def test_unimported_receiver_not_linked(self):
+        # A dotted call whose base isn't an imported Variable -> no edge.
+        caller = _make_func("h", "src/api.ts", calls=["something.run"])
+        api_file = _make_file("src/api.ts", functions=[caller])
+        pipeline = _setup_pipeline_with_resolution([api_file])
+        uses = [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "USES_VARIABLE"]
+        assert uses == []

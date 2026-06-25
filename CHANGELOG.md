@@ -66,6 +66,18 @@ All notable changes to Gristle are documented here. This file is intended for co
   `throw new X()`). Re-raised variables (`raise exc`) are excluded — only
   PascalCase types are recorded. On real repos: rw-fastapi 51 RAISES + 19 CATCHES
   edges to custom exceptions; builtins (`ValueError`, …) stay in the property.
+- **`USES_VARIABLE` edge** — links a function to an **imported** module-level
+  `Variable` it calls a method on (`config.get()`, `schema.parse()`,
+  `logger.info()`), making the previously-island `Variable` nodes queryable
+  ("which functions use this config / Zod schema / registry?"). Deliberately
+  scoped for precision: imported names only (resolved via the file's import map)
+  and the function's own parameters are excluded — a measurement across real repos
+  showed module-variable names collide with parameter names up to ~30% of the time
+  (Python singletons like `app`/`config`/`logger`/`settings`), so a broad
+  identifier match would be noisy; import-resolution + parameter-exclusion sidesteps
+  it. On real repos: ai-chatbot links Zod schemas / registries / model lists,
+  rw-fastapi links auth/cache/service singletons, flask links context-locals — all
+  precise. Same-file variable use is not linked (lower value, higher shadowing risk).
 - **DRF `permission_classes` on classes** — Django REST Framework class-based
   views now record their `permission_classes = (IsAuthenticated, ...)` attribute
   as a `permission_classes` list on the `Class` node. Class-based-view routes link
