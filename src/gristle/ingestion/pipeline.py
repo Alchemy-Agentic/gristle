@@ -1319,34 +1319,53 @@ class IngestionPipeline:
 
     @staticmethod
     def _unwrap_generic(type_str: str) -> str:
-        """Unwrap one level of generic wrapper to get the inner type.
+        """Reduce a (possibly nested) generic/optional annotation to its core type name.
+
+        Peels wrappers repeatedly until stable, so deeply-nested annotations resolve to
+        the inner class. Each pass strips at most one layer and strictly shortens the
+        string, so iteration always terminates.
 
         Examples:
-            Promise<User> -> User
-            Array<User> -> User
-            User[] -> User
-            list[User] -> User
-            Optional[User] -> User
-            dict[str, User] -> User (extracts value type)
+            Promise<User>          -> User
+            Promise<UserEntity[]>  -> UserEntity   (nested: peel <>, then [])
+            list[dict[str, User]]  -> User         (nested: peel list[], then dict value)
+            Optional[User]         -> User
+            Article | None         -> Article      (Optional shorthand)
+            dict[str, User]        -> User          (extracts value type)
+            User | Comment         -> User | Comment  (ambiguous union: left intact)
         """
         s = type_str.strip()
 
-        # Handle T[] syntax
-        if s.endswith("[]"):
-            return s[:-2].strip()
+        for _ in range(10):  # bounded; each peel strictly shortens s
+            prev = s
 
-        # Handle Generic<T> or Generic[T] syntax
-        for open_ch, close_ch in [("<", ">"), ("[", "]")]:
-            idx = s.find(open_ch)
-            if idx > 0 and s.endswith(close_ch):
-                inner = s[idx + 1 : -1].strip()
-                wrapper = s[:idx].strip()
-                # For dict/Map types, extract the value type (second arg)
-                if wrapper.lower() in ("dict", "map", "record", "mapping"):
-                    parts = inner.split(",", 1)
-                    if len(parts) == 2:
-                        return parts[1].strip()
-                return inner
+            # Optional shorthand: `X | None` -> `X` (only when exactly one non-None member)
+            if "|" in s:
+                members = [m.strip() for m in s.split("|")]
+                non_none = [m for m in members if m not in ("None", "null", "undefined")]
+                if len(non_none) == 1:
+                    s = non_none[0]
+
+            # T[] suffix
+            if s.endswith("[]"):
+                s = s[:-2].strip()
+            else:
+                # Generic<T> or Generic[T]
+                for open_ch, close_ch in (("<", ">"), ("[", "]")):
+                    idx = s.find(open_ch)
+                    if idx > 0 and s.endswith(close_ch):
+                        inner = s[idx + 1 : -1].strip()
+                        wrapper = s[:idx].strip()
+                        # For dict/Map types, extract the value type (second arg)
+                        if wrapper.lower() in ("dict", "map", "record", "mapping"):
+                            kv = inner.split(",", 1)
+                            s = kv[1].strip() if len(kv) == 2 else inner
+                        else:
+                            s = inner
+                        break
+
+            if s == prev:
+                break
 
         return s
 

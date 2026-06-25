@@ -63,6 +63,13 @@ All notable changes to Gristle are documented here. This file is intended for co
   version (hatch dynamic), and `examples/sample-app`.
 
 ### Changed
+- **RETURNS/ACCEPTS resolve nested generic return/param types** — type-flow
+  edges now peel nested wrappers (`Promise<UserEntity[]>` → `UserEntity`,
+  `list[dict[str, User]]` → `User`) and the `X | None` Optional shorthand,
+  instead of unwrapping a single layer. Ambiguous multi-type unions
+  (`User | Comment`) are left intact (no edge). On a real NestJS+TypeORM app:
+  RETURNS edges 28 → 32 (the `Promise<Entity[]>` service signatures), zero new
+  false edges.
 - **CALLS edges carry a `resolution` confidence property** — `exact`,
   `file_scoped`, `import`, `typed_receiver`, `dotted`, `same_file`, or
   `unique_global` — so consumers can weight/filter call edges by how reliably the

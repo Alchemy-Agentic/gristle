@@ -455,6 +455,34 @@ class TestGenericUnwrapping:
 
         assert IngestionPipeline._unwrap_generic("Record<string, User>") == "User"
 
+    def test_nested_promise_array(self):
+        """Promise<UserEntity[]> should peel both layers to UserEntity (real TypeORM shape)."""
+        from gristle.ingestion.pipeline import IngestionPipeline
+
+        assert IngestionPipeline._unwrap_generic("Promise<UserEntity[]>") == "UserEntity"
+
+    def test_nested_list_dict(self):
+        from gristle.ingestion.pipeline import IngestionPipeline
+
+        assert IngestionPipeline._unwrap_generic("list[dict[str, User]]") == "User"
+
+    def test_optional_shorthand_union(self):
+        """`Article | None` resolves to Article (Optional shorthand)."""
+        from gristle.ingestion.pipeline import IngestionPipeline
+
+        assert IngestionPipeline._unwrap_generic("Article | None") == "Article"
+
+    def test_ambiguous_union_left_intact(self):
+        """A multi-type union is ambiguous and is not reduced to a single type."""
+        from gristle.ingestion.pipeline import IngestionPipeline
+
+        assert IngestionPipeline._unwrap_generic("User | Comment") == "User | Comment"
+
+    def test_nested_promise_optional(self):
+        from gristle.ingestion.pipeline import IngestionPipeline
+
+        assert IngestionPipeline._unwrap_generic("Promise<User | null>") == "User"
+
 
 # ======================================================================
 # Query Engine: get_data_contract
