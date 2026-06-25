@@ -39,6 +39,11 @@ class ParsedFunction:
     return_type: str | None = None
     complexity: int = 1
     calls: list[str] = field(default_factory=list)
+    # Call descriptors that include positional identifier arguments, e.g.
+    # "session.query(User)" or "db.insert(chat)". Lets the schema linker see a
+    # model passed as an argument (the model name is dropped from `calls`, which
+    # keeps only the callee name). Consumed in-memory by SchemaExtractor.
+    calls_with_args: list[str] = field(default_factory=list)
     callback_refs: list[tuple[str, str]] = field(default_factory=list)  # (callee_name, context)
     parameters: list[str] = field(default_factory=list)  # Parameter names
     typed_parameters: list[tuple[str, str | None]] = field(default_factory=list)  # (name, type) pairs

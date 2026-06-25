@@ -186,6 +186,60 @@ class TestSchemaExtractor:
         assert ("func::views.py::list_articles", "read") in items
         assert not any(fid.endswith("::render") for fid, _ in items)  # verb-less ignored
 
+    def test_links_functions_to_models_via_args(self):
+        """A model/table passed as a call *argument* (Drizzle ``db.insert(chat)``,
+        SQLAlchemy ``session.query(User)``) gets a USES_MODEL edge. A verb that
+        appears only in an argument (``can(create, Document)``) does not."""
+        from gristle.models import ParsedFile, ParsedFunction, ParsedModel
+
+        def _fn(name, calls_with_args):
+            return ParsedFunction(
+                name=name,
+                qualified_name=f"db.ts::{name}",
+                file_path="db.ts",
+                start_line=1,
+                end_line=2,
+                signature="",
+                calls_with_args=calls_with_args,
+            )
+
+        pf = ParsedFile(
+            path="db.ts",
+            language="typescript",
+            functions=[
+                _fn("saveChat", ["db.insert(chat)"]),  # write verb + arg model
+                _fn("loadUser", ["session.query(User)"]),  # read verb + arg model
+                _fn("authorize", ["can(create, Document)"]),  # verb is an arg -> no edge
+            ],
+            classes=[],
+            imports=[],
+            line_count=2,
+        )
+
+        def _model(name):
+            return ParsedModel(
+                name=name,
+                qualified_name=f"schema.ts::{name}",
+                file_path="schema.ts",
+                line_start=1,
+                line_end=2,
+                orm="drizzle",
+            )
+
+        models = [_model("Chat"), _model("User"), _model("Document")]
+
+        graph = _make_graph_mock()
+        ext = SchemaExtractor(graph, file_path_to_id={})
+        ext._write_models(models, [pf])
+
+        uses = [c for c in graph.batch_merge_relationships.call_args_list if c.args[0] == "USES_MODEL"]
+        items = {(i["from_id"], i["access"]) for call in uses for i in call.args[1]}
+        assert ("func::db.ts::saveChat", "write") in items
+        assert ("func::db.ts::loadUser", "read") in items
+        # The Document model name appears, but the only verb ("create") is an
+        # argument, not part of the method name -> no spurious edge.
+        assert not any(fid.endswith("::authorize") for fid, _ in items)
+
     def test_related_to_props_have_no_nulls(self, prisma_file_with_relations):
         """RELATED_TO props must never be None — FalkorDB cannot MERGE on a null
         property value (a one-to-many relation has no FK/through/source field)."""

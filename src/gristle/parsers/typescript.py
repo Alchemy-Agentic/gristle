@@ -581,6 +581,7 @@ class TypeScriptParser(LanguageParser):
         qualified = f"{file_path}::{class_name}.{name}"
 
         calls = self._extract_calls(body, src) if body else []
+        calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
 
         return ParsedFunction(
@@ -597,6 +598,7 @@ class TypeScriptParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            calls_with_args=calls_with_args,
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
             typed_parameters=typed_params,
@@ -652,6 +654,7 @@ class TypeScriptParser(LanguageParser):
         sig = f"{'async ' if is_async else ''}function {name}{params_text}{f': {return_text}' if return_text else ''}"
 
         calls = self._extract_calls(body, src) if body else []
+        calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
 
         return ParsedFunction(
@@ -667,6 +670,7 @@ class TypeScriptParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            calls_with_args=calls_with_args,
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
             typed_parameters=typed_params,
@@ -700,6 +704,7 @@ class TypeScriptParser(LanguageParser):
                 )
 
                 calls = self._extract_calls(body, src) if body else []
+                calls_with_args = self._extract_call_arg_refs(body, src) if body else []
                 callback_refs = self._extract_callback_refs(body, src) if body else []
 
                 return ParsedFunction(
@@ -715,6 +720,7 @@ class TypeScriptParser(LanguageParser):
                     return_type=return_text,
                     complexity=self._cyclomatic_complexity(body) if body else 1,
                     calls=calls,
+                    calls_with_args=calls_with_args,
                     callback_refs=callback_refs,
                     parameters=[p[0] for p in typed_params],
                     typed_parameters=typed_params,
@@ -897,6 +903,72 @@ class TypeScriptParser(LanguageParser):
                     return f"{obj_name}.{prop_name}"
                 return prop_name
         return None
+
+    def _extract_call_arg_refs(self, node: Node, src: bytes) -> list[str]:
+        """Extract call descriptors that include positional identifier arguments.
+
+        For ``db.insert(chat)`` this records ``"db.insert(chat)"`` so the schema
+        linker can see both the access verb and the model passed as an argument.
+        :meth:`_extract_calls` keeps only the callee name, dropping args.
+        """
+        refs: list[str] = []
+        self._walk_call_arg_refs(node, src, refs)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for r in refs:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    # Drizzle select-builders whose table arrives via a later `.from(table)` call.
+    _DRIZZLE_SELECT_METHODS = frozenset({"select", "selectDistinct", "selectDistinctOn"})
+
+    def _walk_call_arg_refs(self, node: Node, src: bytes, out: list[str]) -> None:
+        if node.type == "call_expression":
+            func_node = node.child_by_field_name("function")
+            args_node = node.child_by_field_name("arguments")
+            if func_node and args_node:
+                arg_idents = self._positional_arg_idents(args_node, src)
+                if arg_idents:
+                    # Prefer the synthetic select-chain name so Drizzle reads carry
+                    # a read verb; otherwise the plain callee name.
+                    call_name = self._select_from_chain_name(func_node, src) or self._resolve_call_name(func_node, src)
+                    if call_name:
+                        out.append(f"{call_name}({','.join(arg_idents)})")
+        for child in node.children:
+            self._walk_call_arg_refs(child, src, out)
+
+    def _select_from_chain_name(self, func_node: Node, src: bytes) -> str | None:
+        """For Drizzle ``db.select().from(table)``, return ``"select.from"``.
+
+        The table is the argument to ``.from()`` but the read verb (``select``)
+        lives in an earlier call of the chain, so a plain callee name would lose
+        it. Fires only when ``.from()`` is called directly on a select-builder
+        call — ``Array.from(x)`` and other ``.from()`` uses are not matched.
+        """
+        if func_node.type != "member_expression":
+            return None
+        prop = func_node.child_by_field_name("property")
+        if not prop or self._text(prop, src) != "from":
+            return None
+        obj = func_node.child_by_field_name("object")
+        if not obj or obj.type != "call_expression":
+            return None
+        inner_fn = obj.child_by_field_name("function")
+        if inner_fn and self._get_method_name(inner_fn, src) in self._DRIZZLE_SELECT_METHODS:
+            return "select.from"
+        return None
+
+    def _positional_arg_idents(self, args_node: Node, src: bytes) -> list[str]:
+        """Return the text of positional identifier/member-expression arguments."""
+        idents: list[str] = []
+        for child in args_node.named_children:
+            if child.type in ("identifier", "member_expression"):
+                text = self._text(child, src)
+                if text:
+                    idents.append(text)
+        return idents
 
     # ------------------------------------------------------------------
     # JSDoc extraction

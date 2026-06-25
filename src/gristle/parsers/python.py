@@ -547,6 +547,7 @@ class PythonParser(LanguageParser):
 
         # Extract calls from the function body
         calls = self._extract_calls(body, src) if body else []
+        calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
 
         # Resolve self.method -> ClassName.method
@@ -579,6 +580,7 @@ class PythonParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            calls_with_args=calls_with_args,
             callback_refs=callback_refs,
             parameters=param_names,
             typed_parameters=typed_params,
@@ -625,6 +627,45 @@ class PythonParser(LanguageParser):
                     return f"{obj_name}.{attr_name}"
                 return attr_name
         return None
+
+    def _extract_call_arg_refs(self, node: Node, src: bytes) -> list[str]:
+        """Extract call descriptors that include positional identifier arguments.
+
+        For ``session.query(User)`` this records ``"session.query(User)"`` so the
+        schema linker can see both the access verb and the model passed as an
+        argument. :meth:`_extract_calls` keeps only the callee name, dropping args.
+        """
+        refs: list[str] = []
+        self._walk_call_arg_refs(node, src, refs)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for r in refs:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    def _walk_call_arg_refs(self, node: Node, src: bytes, out: list[str]) -> None:
+        if node.type == "call":
+            func_node = node.child_by_field_name("function")
+            args_node = node.child_by_field_name("arguments")
+            if func_node and args_node:
+                call_name = self._resolve_call_name(func_node, src)
+                arg_idents = self._positional_arg_idents(args_node, src)
+                if call_name and arg_idents:
+                    out.append(f"{call_name}({','.join(arg_idents)})")
+        for child in node.children:
+            self._walk_call_arg_refs(child, src, out)
+
+    def _positional_arg_idents(self, args_node: Node, src: bytes) -> list[str]:
+        """Return the text of positional identifier/attribute arguments."""
+        idents: list[str] = []
+        for child in args_node.named_children:
+            if child.type in ("identifier", "attribute"):
+                text = self._text(child, src)
+                if text:
+                    idents.append(text)
+        return idents
 
     # ------------------------------------------------------------------
     # Callback / handler detection

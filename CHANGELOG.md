@@ -16,8 +16,12 @@ All notable changes to Gristle are documented here. This file is intended for co
   `paths`/`baseUrl` import resolution, and SQLAlchemy/Django/TypeORM model
   detection (Model/ModelField/relation nodes).
 - **Code → data edges** — new `USES_MODEL` edge (Function → Model, with a
-  read/write `access` property) links code that queries a model to it, for
-  Django/SQLAlchemy/Prisma method-chain access patterns.
+  read/write `access` property) links code that queries a model to it. Covers
+  method-chain access (Django/SQLAlchemy/Prisma, e.g. `User.objects.filter()`)
+  **and** model/table passed as a call argument — Drizzle `db.insert(chat)` /
+  `db.select().from(chat)` and SQLAlchemy `session.query(User)` / `select(User)`.
+  Precise by design: an edge requires a read/write verb in the call's method name
+  (never from an argument), so incidental name reuse doesn't create false edges.
 - **Packaging** — tag-triggered PyPI + GHCR release workflow, single-source
   version (hatch dynamic), and `examples/sample-app`.
 

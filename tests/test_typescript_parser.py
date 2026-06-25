@@ -256,6 +256,38 @@ class TestCallExtraction:
         calls = result.functions[0].calls
         assert any("filter" in c for c in calls)
 
+    def test_captures_positional_arg_identifiers(self):
+        """calls_with_args records the table passed as an argument (Drizzle
+        `db.insert(chat)`) so the schema linker can see it."""
+        parser = TypeScriptParser()
+        code = "function save() {\n  return db.insert(chat).values({ id: 1 });\n}\n"
+        result = parser.parse_file("queries.ts", code)
+        assert "db.insert(chat)" in result.functions[0].calls_with_args
+        # The plain callee name remains in `calls`, args dropped.
+        assert "db.insert" in result.functions[0].calls
+
+    def test_arg_refs_skip_non_identifier_args(self):
+        """Object/array/literal args produce no identifier ref."""
+        parser = TypeScriptParser()
+        code = "function f() {\n  doThing({ a: 1 }, 'str', 42);\n}\n"
+        result = parser.parse_file("test.ts", code)
+        assert all("doThing(" not in c for c in result.functions[0].calls_with_args)
+
+    def test_captures_drizzle_select_chain(self):
+        """Drizzle `db.select().from(chat)` carries the read verb via a synthetic
+        `select.from(chat)` descriptor; a plain `.from()` does not."""
+        parser = TypeScriptParser()
+        code = "function load() {\n  return db.select().from(chat).where(eq(chat.id, id));\n}\n"
+        result = parser.parse_file("queries.ts", code)
+        assert "select.from(chat)" in result.functions[0].calls_with_args
+
+    def test_plain_from_is_not_a_select_chain(self):
+        """`.from()` not preceded by select() (e.g. Array.from) gets no synthetic verb."""
+        parser = TypeScriptParser()
+        code = "function f() {\n  return Array.from(items);\n}\n"
+        result = parser.parse_file("test.ts", code)
+        assert all(not c.startswith("select.from") for c in result.functions[0].calls_with_args)
+
 
 class TestComponentDetection:
     def test_detects_function_component(self):

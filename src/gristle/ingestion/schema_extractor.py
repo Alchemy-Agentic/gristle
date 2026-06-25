@@ -227,16 +227,22 @@ class SchemaExtractor:
     ) -> None:
         """Create USES_MODEL edges (Function -> Model) from a function's call chains.
 
-        Precise by design: an edge is created only when a call chain contains BOTH
-        a known model name AND a read/write verb — e.g. ``User.objects.filter()``,
-        ``Article.objects.create()``, ``user.save()``, ``prisma.user.create()``.
-        Requiring the verb avoids false positives from incidental name reuse (a UI
-        component referencing a ``Document`` *type*, say). The ``access`` property is
-        "read" or "write".
+        Precise by design: an edge is created only when a call references BOTH a
+        known model name AND a read/write verb. Two call shapes are recognised:
 
-        Known limitation: ORM calls that pass the table/model as an *argument*
-        (Drizzle ``db.insert(chat)``, SQLAlchemy ``session.query(User)``) are not yet
-        captured, because call arguments aren't recorded — a follow-up.
+        - Method chains where the model is in the chain — ``User.objects.filter()``,
+          ``Article.objects.create()``, ``user.save()``, ``prisma.user.create()``
+          (from ``func.calls``).
+        - Calls passing the model/table as an argument — Drizzle ``db.insert(chat)``,
+          SQLAlchemy ``session.query(User)``, and Drizzle reads
+          ``db.select().from(chat)`` (the parser emits ``"select.from(chat)"`` for
+          these) — all from ``func.calls_with_args``.
+
+        The verb must appear in the *method-name* portion of the call, never in an
+        argument — so ``can(create, Document)`` (an action constant + a model) does
+        not create a spurious edge. Requiring the verb avoids false positives from
+        incidental name reuse (a UI component referencing a ``Document`` *type*).
+        The ``access`` property is "read" or "write".
         """
         token_to_model = {name.lower(): mid for name, mid in model_name_to_id.items()}
 
@@ -249,20 +255,35 @@ class SchemaExtractor:
                 functions.extend(cls.methods)
             for func in functions:
                 func_id = f"func::{func.qualified_name}"
-                for call in func.calls:
-                    segments = [s.lower() for s in _IDENT_SPLIT.split(call) if s]
-                    matched = next((token_to_model[s] for s in segments if s in token_to_model), None)
-                    if matched is None:
+                for call in (*func.calls, *func.calls_with_args):
+                    match = self._match_call(call, token_to_model)
+                    if match is None:
                         continue
-                    if any(s in _WRITE_VERBS for s in segments):
-                        access = "write"
-                    elif any(s in _READ_VERBS for s in segments):
-                        access = "read"
-                    else:
-                        continue  # name match without a read/write verb — skip (avoid noise)
-                    key = (func_id, matched)
+                    model_id, access = match
+                    key = (func_id, model_id)
                     if access == "write" or key not in edges:
                         edges[key] = access
 
         for (func_id, model_id), access in edges.items():
             batch.add_merge_relationship("USES_MODEL", func_id, model_id, {"access": access})
+
+    @staticmethod
+    def _match_call(call: str, token_to_model: dict[str, str]) -> tuple[str, str] | None:
+        """Match one call against the model table, returning ``(model_id, access)``.
+
+        ``call`` is either a method chain (``"prisma.user.create"``) or a descriptor
+        with arguments (``"db.insert(chat)"``). The verb is read only from the
+        method-name part (before ``(``); the model may be in either part.
+        """
+        head, sep, rest = call.partition("(")
+        verb_segments = [s.lower() for s in _IDENT_SPLIT.split(head) if s]
+        arg_segments = [s.lower() for s in _IDENT_SPLIT.split(rest.rstrip(")")) if s] if sep else []
+
+        matched = next((token_to_model[s] for s in (*verb_segments, *arg_segments) if s in token_to_model), None)
+        if matched is None:
+            return None
+        if any(s in _WRITE_VERBS for s in verb_segments):
+            return matched, "write"
+        if any(s in _READ_VERBS for s in verb_segments):
+            return matched, "read"
+        return None  # name match without a read/write verb — skip (avoid noise)

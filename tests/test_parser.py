@@ -115,6 +115,25 @@ class TestCallExtraction:
         # Should capture the call to notify_order_created
         assert "notify_order_created" in create_order.calls
 
+    def test_captures_positional_arg_identifiers(self):
+        """calls_with_args records the model/table passed as an argument so the
+        schema linker can see it (the callee name in `calls` drops args)."""
+        parser = PythonParser()
+        code = (
+            "def load(session):\n"
+            "    return session.query(User).filter_by(id=1).first()\n"
+            "\n"
+            "def add(session, obj):\n"
+            "    session.add(obj)\n"
+        )
+        result = parser.parse_file("repo.py", code)
+        load = next(f for f in result.functions if f.name == "load")
+        assert "session.query(User)" in load.calls_with_args
+        # filter_by(id=1) is keyword-only -> not captured as a positional ident
+        assert all("filter_by(" not in c for c in load.calls_with_args)
+        # The plain callee name is still in `calls`, args dropped.
+        assert "session.query" in load.calls
+
 
 class TestDecoratorExtraction:
     def test_extracts_decorators(self):
