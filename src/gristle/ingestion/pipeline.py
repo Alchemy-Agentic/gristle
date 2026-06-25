@@ -153,6 +153,8 @@ class IngestionPipeline:
         self._auth_middleware_paths: list[tuple[str, str]] = []
         # Unlinked routes: (route_id, handler_name, file_path) for Phase 2 resolution
         self._unlinked_routes: list[tuple[str, str, str]] = []
+        # Unlinked route middleware: (route_id, middleware_name, file_path)
+        self._unlinked_middleware: list[tuple[str, str, str]] = []
         # PASSED_TO target IDs for is_callback batch update
         self._callback_target_ids: set[str] = set()
 
@@ -218,6 +220,7 @@ class IngestionPipeline:
         self._test_file_import_targets.clear()
         self._auth_middleware_paths.clear()
         self._unlinked_routes.clear()
+        self._unlinked_middleware.clear()
         self._callback_target_ids.clear()
 
         # Walk and collect source files (include .prisma for schema extraction)
@@ -773,6 +776,15 @@ class IngestionPipeline:
             # Track for Phase 2 import-aware resolution
             self._unlinked_routes.append((route_id, route.handler_name, route.file_path))
 
+        # Link route to its middleware functions (USES_MIDDLEWARE). Same-file/global
+        # middleware resolve now; cross-file (imported) ones defer to Phase 2.
+        for mw_name in route.middleware:
+            mw_id = self._id_map.get(mw_name) or self._id_map.get(f"{route.file_path}::{mw_name}")
+            if mw_id:
+                batch.add_relationship("USES_MIDDLEWARE", route_id, mw_id)
+            else:
+                self._unlinked_middleware.append((route_id, mw_name, route.file_path))
+
     def _build_variable(self, file_id: str, var: ParsedVariable, batch: BatchCollector) -> None:
         var_id = f"var::{var.qualified_name}"
         # Register as a resolvable entity (for imports/references) without clobbering
@@ -1034,6 +1046,9 @@ class IngestionPipeline:
         # Resolve unlinked route handlers via import-aware resolution
         self._resolve_unlinked_route_handlers(batch)
 
+        # Resolve unlinked route middleware via import-aware resolution
+        self._resolve_unlinked_middleware(batch)
+
         # Resolve TESTS_FUNCTION edges (test function -> production function, depth 1-2)
         self._resolve_test_function_edges(result, batch)
 
@@ -1119,6 +1134,17 @@ class IngestionPipeline:
                 resolved,
                 len(self._unlinked_routes),
             )
+
+    def _resolve_unlinked_middleware(self, batch: BatchCollector) -> None:
+        """Resolve route middleware imported from other files (Phase 2), mirroring
+        :meth:`_resolve_unlinked_route_handlers`."""
+        for route_id, mw_name, file_path in self._unlinked_middleware:
+            pf = self._parsed_files_by_path.get(file_path)
+            if not pf:
+                continue
+            mw_id = self._get_imported_entities(pf).get(mw_name)
+            if mw_id:
+                batch.add_relationship("USES_MIDDLEWARE", route_id, mw_id)
 
     def _resolve_test_function_edges(
         self,

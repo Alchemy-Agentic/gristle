@@ -70,6 +70,7 @@ This clones the repo and runs full ingestion in one step.
 | `REFERENCES` | DocumentSection | Function, Class, File | Doc references code |
 | `HAS_SECTION` | Document | DocumentSection | Doc contains section |
 | `HANDLES` | Route | Function, Class | Route handler. Targets a `Function` for function/arrow handlers; targets a `Class` for class-based views (Django CBV / DRF `ViewSet`, where the class's methods do the work) |
+| `USES_MIDDLEWARE` | Route | Function, Class | Middleware applied to a route (`app.get('/x', requireAuth, handler)`), resolved to the middleware function/class. Unresolved names remain in the route's `middleware` property |
 | `DEFINED_IN` | EnvVar | File | Env var defined in config file |
 | `USES_ENV` | File | EnvVar | Source file references env var |
 | `HAS_MODEL_FIELD` | Model | ModelField | Model's column/field |

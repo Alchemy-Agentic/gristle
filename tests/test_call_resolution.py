@@ -874,6 +874,35 @@ class TestTypedReceiverResolution:
         assert result == ("func::svc.ts::ArticleService.findAll", "typed_receiver")
 
 
+class TestMiddlewareEdges:
+    def test_uses_middleware_edge_resolves_cross_file(self):
+        """A route's middleware imported from another file gets a USES_MIDDLEWARE
+        edge to the middleware function (resolved in Phase 2 via imports)."""
+        from gristle.models import ParsedRoute
+
+        mw = _make_func("requireAuth", "src/mw.ts", is_exported=True)
+        mw_file = _make_file("src/mw.ts", functions=[mw])
+
+        imp = _make_import("./mw", imported_names=["requireAuth"])
+        handler = _make_func("adminHandler", "src/api.ts")
+        api = _make_file("src/api.ts", functions=[handler], imports=[imp])
+        api.routes = [
+            ParsedRoute(
+                method="GET",
+                path="/admin",
+                handler_name="adminHandler",
+                file_path="src/api.ts",
+                line=1,
+                middleware=["requireAuth"],
+            )
+        ]
+
+        # api before mw so the middleware is unresolved in Phase 1 -> Phase 2 imports.
+        pipeline = _setup_pipeline_with_resolution([api, mw_file])
+        create_rels = _extract_batch_create_rels(pipeline.graph)
+        assert any(r[2] == "USES_MIDDLEWARE" and r[1] == "func::src/mw.ts::requireAuth" for r in create_rels)
+
+
 class TestErrorFlowEdges:
     def test_raises_edge_to_local_exception_class(self):
         """A raised type that resolves to a local Class gets a RAISES edge;

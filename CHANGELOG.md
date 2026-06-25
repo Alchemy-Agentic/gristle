@@ -43,6 +43,10 @@ All notable changes to Gristle are documented here. This file is intended for co
     abstract Django bases (`class Meta: abstract = True`) are excluded.
     On a real Django REST app: routes 0→11, models 1→5, USES_MODEL 0→26, with
     route→view→model tracing end-to-end.
+- **Traversable middleware** — route middleware (`app.get('/x', requireAuth, handler)`)
+  was a string list on the Route node; it now also gets `USES_MIDDLEWARE` edges
+  (Route → the middleware function/class), resolved same-file and cross-file via
+  imports, so you can traverse which middleware guards which routes.
 - **Error-flow edges** — functions now record raised/thrown and caught exception
   types (`raises`/`catches` properties), and get `RAISES`/`CATCHES` edges to
   locally-defined exception classes (Python `raise`/`except <Type>`, JS/TS
