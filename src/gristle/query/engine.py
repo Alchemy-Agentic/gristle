@@ -2126,15 +2126,17 @@ class QueryEngine:
         Excludes entry points (they're meant to be external-facing).
         Useful for identifying unused public API surface.
         """
+        # NB: FalkorDB does not support the EXISTS { subquery } form. Use an
+        # OPTIONAL MATCH anti-join: an export is dead when no *other* file imports
+        # its file (self-imports excluded via the path inequality).
         query = """
         MATCH (file:File)-[:EXPORTS]->(entity)
-        WHERE NOT EXISTS {
-            MATCH (other:File)-[:IMPORTS]->(target:File)
-            WHERE target.path = file.path
-              AND other.path <> file.path
-        }
-        AND NOT entity.is_entry_point
-        AND file.is_documentation <> true
+        WHERE NOT entity.is_entry_point
+          AND file.is_documentation <> true
+        OPTIONAL MATCH (importer:File)-[:IMPORTS]->(file)
+        WHERE importer.path <> file.path
+        WITH file, entity, count(importer) AS importers
+        WHERE importers = 0
         RETURN entity.qualified_name AS qualified_name,
                entity.name AS name,
                file.path AS file,
@@ -2159,7 +2161,10 @@ class QueryEngine:
         Returns cycles as file path lists, grouped by length.
         Cycles are deduplicated (a→b→a is same as b→a→b).
         """
-        query = """
+        # Variable-length bounds CANNOT be query parameters in FalkorDB, so the
+        # validated int is string-interpolated (not passed via params).
+        max_len = max(1, int(max_length))
+        query = f"""
         MATCH path = (a:File)-[:IMPORTS*1..{max_len}]->(a)
         WHERE ALL(r IN relationships(path) WHERE type(r) = 'IMPORTS')
         WITH [n IN nodes(path) | n.path] AS cycle_files,
@@ -2167,7 +2172,7 @@ class QueryEngine:
         RETURN cycle_files, cycle_length
         ORDER BY cycle_length ASC, cycle_files[0] ASC
         """
-        result = self.graph.execute(query, {"max_len": max_length})
+        result = self.graph.execute(query)
 
         cycles = []
         by_length: dict[int, int] = {}
