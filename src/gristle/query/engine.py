@@ -1442,6 +1442,16 @@ class QueryEngine:
         "request_trace": "dagre-lr",
     }
 
+    # Anchor labels a view exists to show. These are typically LOW-degree (a Route
+    # has one HANDLES edge; a Model is a leaf), so plain degree-ranked truncation
+    # would drop them first — gutting the view. They're force-kept before the
+    # remaining node budget is filled by degree.
+    _VIZ_PIN_LABELS: dict[str, set[str]] = {
+        "request_trace": {"Route", "Model"},
+        "blast_radius": {"Route"},
+        "call_hierarchy": set(),
+    }
+
     # Per-label display-prop allowlist — keeps the payload lean. A node keeps only
     # these property keys (those that exist); unlisted labels keep all properties.
     _VIZ_PROP_ALLOWLIST: dict[str, list[str]] = {
@@ -1608,7 +1618,16 @@ class QueryEngine:
             center_id = self._viz_center_id(center, nodes)
             if center_id is not None:
                 keep.add(center_id)
-            for n in sorted(nodes, key=lambda nd: degree.get(nd["id"], 0), reverse=True):
+            ranked = sorted(nodes, key=lambda nd: degree.get(nd["id"], 0), reverse=True)
+            # Force-keep the view's low-degree anchors (Routes/Models) first, then
+            # fill the remaining budget with the highest-degree nodes.
+            pin_labels = self._VIZ_PIN_LABELS.get(view, set())
+            for n in ranked:
+                if len(keep) >= limit:
+                    break
+                if n.get("label") in pin_labels:
+                    keep.add(n["id"])
+            for n in ranked:
                 if len(keep) >= limit:
                     break
                 keep.add(n["id"])

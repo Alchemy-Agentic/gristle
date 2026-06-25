@@ -209,6 +209,31 @@ class TestSubgraphTruncation:
         for e in out["edges"]:
             assert e["source"] in ids and e["target"] in ids  # no dangling edges
 
+    def test_truncation_pins_routes_and_models(self):
+        # request_trace must not truncate away the Routes/Models it exists to show,
+        # even though they are low-degree vs hub functions. limit=3.
+        nodes = [
+            _node("route::GET/a", label="Route", path="/a"),
+            _node("model::User", label="Model"),
+            _node("func::hub1"),
+            _node("func::hub2"),
+            _node("func::hub3"),
+        ]
+        edges = [
+            {"source": "func::hub1", "target": "func::hub2", "type": "CALLS"},
+            {"source": "func::hub2", "target": "func::hub3", "type": "CALLS"},
+            {"source": "func::hub3", "target": "func::hub1", "type": "CALLS"},
+            {"source": "route::GET/a", "target": "func::hub1", "type": "HANDLES"},
+            {"source": "func::hub1", "target": "model::User", "type": "USES_MODEL"},
+        ]
+        engine, _ = _make_engine(_qr([{"nodes": nodes, "edges": edges}]))
+        out = engine.get_subgraph("request_trace", center=None, limit=3)
+        ids = {n["id"] for n in out["nodes"]}
+        assert out["meta"]["truncated"] is True
+        assert len(out["nodes"]) == 3
+        assert "route::GET/a" in ids  # anchor pinned despite degree 1
+        assert "model::User" in ids  # anchor pinned despite degree 1
+
     def test_no_truncation_under_limit(self):
         nodes = [_node("func::a"), _node("func::b")]
         engine, _ = _make_engine(_qr([{"nodes": nodes, "edges": []}]))
