@@ -7,6 +7,15 @@ All notable changes to Gristle are documented here. This file is intended for co
 ## [Unreleased]
 
 ### Added
+- **Vue / Svelte / Astro single-file components** — `.vue`, `.svelte`, and `.astro`
+  files are now parsed (previously skipped entirely). The parser locates the
+  embedded `<script>` block (or Astro `---` frontmatter) and analyzes it with the
+  existing TypeScript parser, so the script's functions, classes, imports, and
+  module variables become first-class graph nodes. The TS/JS is parsed by
+  tree-sitter; only the SFC container is scanned to find the block, and non-script
+  regions are blanked so line numbers map to the SFC file. No new dependencies. On
+  real apps: a Vue RealWorld repo's 22 components yield functions/composables/imports
+  linked to their files; a SvelteKit RealWorld repo's components parse cleanly.
 - **`gristle_subgraph` MCP tool** — returns a `{nodes, edges, meta}` subgraph for a
   code-visualization *view*, so consumers can SEE relationships, not just list
   them. Three views: `call_hierarchy` (who calls X / what X calls), `blast_radius`

@@ -39,9 +39,11 @@ class ParserRegistry:
     def build_default(self) -> ParserRegistry:
         """Register all built-in parsers and return self for chaining."""
         from gristle.parsers.python import PythonParser
+        from gristle.parsers.sfc import SFCParser
         from gristle.parsers.typescript import JavaScriptParser, TypeScriptParser
 
         self.register(PythonParser())
         self.register(TypeScriptParser())
         self.register(JavaScriptParser())
+        self.register(SFCParser())
         return self

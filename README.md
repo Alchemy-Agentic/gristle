@@ -27,6 +27,12 @@ In short: deeper than ctags/tree-sitter-only tools, lighter and broader than typ
 | Python | Yes | Yes | Yes | FastAPI, Flask, Django | - | pytest |
 | TypeScript | Yes | Yes | Yes | Express, Hono, Fastify | React | jest, vitest |
 | JavaScript | Yes | Yes | Yes | Express, Hono, Fastify | React | jest, vitest |
+| Vue / Svelte / Astro | Yes | Yes | Yes | - | - | - |
+
+Vue/Svelte/Astro single-file components are parsed by extracting the embedded
+`<script>` block (or Astro `---` frontmatter) and analyzing it with the TypeScript
+parser, so the script's functions, classes, imports, and variables become graph
+nodes alongside the rest of the codebase.
 
 ## Quick start
 

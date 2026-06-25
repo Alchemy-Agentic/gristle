@@ -71,6 +71,7 @@ src/gristle/
     registry.py            # Extension-based parser dispatch
     python.py              # Python parser (tree-sitter)
     typescript.py          # TypeScript + JavaScript parsers (tree-sitter)
+    sfc.py                 # Vue/Svelte/Astro SFCs (extract <script>, delegate to TS parser)
     markdown.py            # Markdown document parser (regex-based)
     config.py              # Config file parser (package.json, Dockerfile, CI, .env)
     env_vars.py            # Regex-based env var reference detection
