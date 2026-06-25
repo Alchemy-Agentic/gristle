@@ -22,6 +22,11 @@ All notable changes to Gristle are documented here. This file is intended for co
   `db.select().from(chat)` and SQLAlchemy `session.query(User)` / `select(User)`.
   Precise by design: an edge requires a read/write verb in the call's method name
   (never from an argument), so incidental name reuse doesn't create false edges.
+  Also covers the TypeORM/NestJS repository pattern: a field typed
+  `Repository<ArticleEntity>` (constructor param-property) maps
+  `this.articleRepository.findOne()` to the `ArticleEntity` model via the field's
+  type. On a real NestJS+TypeORM app: USES_MODEL 1 → 32, enabling route → controller
+  → service → entity tracing.
 - **Inline route handlers** — Express/Hono routes whose handler is an inline
   arrow/function (`app.get('/x', (c) => …)`) now synthesize an entry-point
   Function node, so the route gets a `HANDLES` edge and route→handler→callee/

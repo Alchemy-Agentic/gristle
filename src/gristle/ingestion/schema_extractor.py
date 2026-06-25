@@ -14,7 +14,7 @@ from gristle.models import ParsedModel, SchemaExtractionResult
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
     from gristle.ingestion.walker import WalkedFile
-    from gristle.models import ParsedFile
+    from gristle.models import ParsedClass, ParsedFile, ParsedFunction
 
 # Verbs in a call chain that indicate writing vs reading a model/table.
 _WRITE_VERBS = frozenset(
@@ -24,6 +24,8 @@ _READ_VERBS = frozenset(
     {"query", "select", "get", "find", "filter", "all", "first", "one", "fetch", "read", "exists", "count", "list"}
 )
 _IDENT_SPLIT = re.compile(r"[^A-Za-z0-9_]+")
+# Split a camelCase/PascalCase identifier into words (findOne -> find, one).
+_CAMEL_SPLIT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +245,12 @@ class SchemaExtractor:
           ``db.select().from(chat)`` (the parser emits ``"select.from(chat)"`` for
           these) — all from ``func.calls_with_args``.
 
+        Also catches the TypeORM/NestJS repository pattern: a class field typed
+        ``Repository<ArticleEntity>`` (usually a constructor param-property) is
+        mapped to the model, so ``this.articleRepository.findOne()`` links the
+        method to ``ArticleEntity`` (here the model name comes from the field's
+        *type*, not the call).
+
         The verb must appear in the *method-name* portion of the call, never in an
         argument — so ``can(create, Document)`` (an action constant + a model) does
         not create a spurious edge. Requiring the verb avoids false positives from
@@ -255,22 +263,83 @@ class SchemaExtractor:
         edges: dict[tuple[str, str], str] = {}
 
         for pf in parsed_files:
-            functions = list(pf.functions)
+            for func in pf.functions:
+                self._collect_model_edges(func, token_to_model, {}, edges)
             for cls in pf.classes:
-                functions.extend(cls.methods)
-            for func in functions:
-                func_id = f"func::{func.qualified_name}"
-                for call in (*func.calls, *func.calls_with_args):
-                    match = self._match_call(call, token_to_model)
-                    if match is None:
-                        continue
-                    model_id, access = match
-                    key = (func_id, model_id)
-                    if access == "write" or key not in edges:
-                        edges[key] = access
+                field_to_model = self._repo_field_models(cls, token_to_model)
+                for method in cls.methods:
+                    self._collect_model_edges(method, token_to_model, field_to_model, edges)
 
         for (func_id, model_id), access in edges.items():
             batch.add_merge_relationship("USES_MODEL", func_id, model_id, {"access": access})
+
+    @staticmethod
+    def _record_edge(edges: dict[tuple[str, str], str], func_id: str, model_id: str, access: str) -> None:
+        key = (func_id, model_id)
+        if access == "write" or key not in edges:  # write outranks read
+            edges[key] = access
+
+    def _collect_model_edges(
+        self,
+        func: ParsedFunction,
+        token_to_model: dict[str, str],
+        field_to_model: dict[str, str],
+        edges: dict[tuple[str, str], str],
+    ) -> None:
+        func_id = f"func::{func.qualified_name}"
+        for call in (*func.calls, *func.calls_with_args):
+            match = self._match_call(call, token_to_model)
+            if match is not None:
+                model_id, access = match
+                self._record_edge(edges, func_id, model_id, access)
+
+        # Repository/entity field access: ``<field>.<verb>()`` (``this.`` stripped
+        # by the parser) where the field's declared type names a known model.
+        if field_to_model:
+            for call in func.calls:
+                parts = call.split(".")
+                if len(parts) < 2:
+                    continue
+                field_model = field_to_model.get(parts[-2])
+                if field_model is None:
+                    continue
+                field_access = self._method_access(parts[-1])
+                if field_access:
+                    self._record_edge(edges, func_id, field_model, field_access)
+
+    @staticmethod
+    def _repo_field_models(cls: ParsedClass, token_to_model: dict[str, str]) -> dict[str, str]:
+        """Map a class's fields to the model their declared type references.
+
+        Covers the TypeORM/NestJS repository pattern (``Repository<ArticleEntity>``
+        constructor param-properties) and entity-typed fields. Only fields whose
+        type names exactly one known model are mapped (stay precise).
+        """
+        typed: list[tuple[str, str | None]] = []
+        for m in cls.methods:
+            if m.name in ("constructor", "__init__"):
+                typed.extend(m.typed_parameters)
+        typed.extend((f.name, f.type_annotation) for f in cls.fields)
+
+        field_to_model: dict[str, str] = {}
+        for fname, ftype in typed:
+            if not ftype:
+                continue
+            ids = {token_to_model[t.lower()] for t in _IDENT_SPLIT.split(ftype) if t.lower() in token_to_model}
+            if len(ids) == 1:
+                field_to_model[fname] = next(iter(ids))
+        return field_to_model
+
+    @staticmethod
+    def _method_access(method: str) -> str | None:
+        """Classify a method name as read/write, splitting camelCase so TypeORM
+        names resolve (``findOne`` → read, ``softDelete`` → write)."""
+        words = [w.lower() for w in _CAMEL_SPLIT.findall(method)]
+        if any(w in _WRITE_VERBS for w in words):
+            return "write"
+        if any(w in _READ_VERBS for w in words):
+            return "read"
+        return None
 
     @staticmethod
     def _match_call(call: str, token_to_model: dict[str, str]) -> tuple[str, str] | None:

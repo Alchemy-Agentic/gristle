@@ -240,6 +240,61 @@ class TestSchemaExtractor:
         # argument, not part of the method name -> no spurious edge.
         assert not any(fid.endswith("::authorize") for fid, _ in items)
 
+    def test_links_typeorm_repository_fields_to_models(self):
+        """A method calling ``<field>.<verb>()`` where the field is typed
+        ``Repository<Entity>`` links to that entity (by the field's type, not the
+        call). A field typed as a non-model class produces no edge."""
+        from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedModel
+
+        def _m(name, calls=None, typed_parameters=None):
+            return ParsedFunction(
+                name=name,
+                qualified_name=f"svc.ts::ArticleService.{name}",
+                file_path="svc.ts",
+                start_line=1,
+                end_line=2,
+                signature="",
+                calls=calls or [],
+                typed_parameters=typed_parameters or [],
+            )
+
+        cls = ParsedClass(
+            name="ArticleService",
+            qualified_name="svc.ts::ArticleService",
+            file_path="svc.ts",
+            start_line=1,
+            end_line=20,
+            signature="",
+            methods=[
+                _m(
+                    "constructor",
+                    typed_parameters=[("articleRepository", "Repository<ArticleEntity>"), ("svc", "SomeService")],
+                ),
+                _m("findOne", calls=["articleRepository.findOne"]),  # read (camelCase)
+                _m("create", calls=["articleRepository.save", "svc.create"]),  # write; svc is not a model
+            ],
+        )
+        pf = ParsedFile(path="svc.ts", language="typescript", classes=[cls], functions=[], imports=[], line_count=20)
+        model = ParsedModel(
+            name="ArticleEntity",
+            qualified_name="entity.ts::ArticleEntity",
+            file_path="entity.ts",
+            line_start=1,
+            line_end=2,
+            orm="typeorm",
+        )
+
+        graph = _make_graph_mock()
+        ext = SchemaExtractor(graph, file_path_to_id={})
+        ext._write_models([model], [pf])
+
+        uses = [c for c in graph.batch_merge_relationships.call_args_list if c.args[0] == "USES_MODEL"]
+        items = {(i["from_id"], i["access"]) for call in uses for i in call.args[1]}
+        assert ("func::svc.ts::ArticleService.findOne", "read") in items
+        assert ("func::svc.ts::ArticleService.create", "write") in items
+        # svc.create -> SomeService is not a model, so no model edge for that field
+        assert ("func::svc.ts::ArticleService.create", "read") not in items
+
     def test_related_to_props_have_no_nulls(self, prisma_file_with_relations):
         """RELATED_TO props must never be None — FalkorDB cannot MERGE on a null
         property value (a one-to-many relation has no FK/through/source field)."""

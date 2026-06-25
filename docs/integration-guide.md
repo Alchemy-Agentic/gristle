@@ -73,7 +73,7 @@ This clones the repo and runs full ingestion in one step.
 | `REFERENCES` | ModelField | Model | FK relationship (when `is_foreign_key: true`) |
 | `RELATED_TO` | Model | Model | High-level relationship (with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint` properties) |
 | `PROMOTED_FROM` | Model | Class | Link to source Class node (ORM class promoter) |
-| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma) and model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`) |
+| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma), model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`), and the TypeORM/NestJS repository pattern (a `Repository<Entity>`-typed field → `this.fooRepository.find()` links to `Entity`) |
 
 ### Indexes
 
