@@ -966,6 +966,8 @@ class IngestionPipeline:
                 "todo_count": len(func.todos),
                 "security_finding_count": len(func.security_findings),
                 "security_findings": func.security_findings,
+                "raises": func.raises,
+                "catches": func.catches,
                 "tested_by_count": 0,
             },
         )
@@ -1447,6 +1449,22 @@ class IngestionPipeline:
                     {"context": context},
                 )
                 self._callback_target_ids.add(callee_id)
+
+        # Error flow: RAISES / CATCHES edges to locally-defined exception classes.
+        # (Builtin/library exceptions stay in the func.raises/catches properties.)
+        for exc in func.raises:
+            class_id = self._resolve_exception_class(exc, pf)
+            if class_id:
+                batch.add_merge_relationship("RAISES", caller_id, class_id)
+        for exc in func.catches:
+            class_id = self._resolve_exception_class(exc, pf)
+            if class_id:
+                batch.add_merge_relationship("CATCHES", caller_id, class_id)
+
+    def _resolve_exception_class(self, name: str, pf: ParsedFile) -> str | None:
+        """Resolve an exception type name to a locally-defined Class node, if any."""
+        class_id = self._file_entities.get(pf.path, {}).get(name) or self._id_map.get(name)
+        return class_id if class_id and class_id.startswith("class::") else None
 
     def _find_callee(
         self,

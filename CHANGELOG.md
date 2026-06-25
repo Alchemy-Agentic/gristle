@@ -43,6 +43,12 @@ All notable changes to Gristle are documented here. This file is intended for co
     abstract Django bases (`class Meta: abstract = True`) are excluded.
     On a real Django REST app: routes 0→11, models 1→5, USES_MODEL 0→26, with
     route→view→model tracing end-to-end.
+- **Error-flow edges** — functions now record raised/thrown and caught exception
+  types (`raises`/`catches` properties), and get `RAISES`/`CATCHES` edges to
+  locally-defined exception classes (Python `raise`/`except <Type>`, JS/TS
+  `throw new X()`). Re-raised variables (`raise exc`) are excluded — only
+  PascalCase types are recorded. On real repos: rw-fastapi 51 RAISES + 19 CATCHES
+  edges to custom exceptions; builtins (`ValueError`, …) stay in the property.
 - **`Variable` node type** — module-level `const`/`let`/`var` (TS/JS) and module
   assignments (Python) that aren't functions or classes — config objects,
   validation schemas (Zod), handler/route registries, React contexts, constants —

@@ -159,6 +159,30 @@ class TestVariableExtraction:
         assert v.is_exported is False
 
 
+class TestErrorFlow:
+    def test_raises_and_catches(self):
+        parser = PythonParser()
+        code = "def f():\n    try:\n        do()\n    except KeyError:\n        raise ValueError('bad')\n"
+        fn = parser.parse_file("m.py", code).functions[0]
+        assert "ValueError" in fn.raises
+        assert "KeyError" in fn.catches
+
+    def test_attribute_exception_and_tuple_catch(self):
+        parser = PythonParser()
+        code = "def f():\n    try:\n        pass\n    except (TypeError, errors.NotFound):\n        raise mod.CustomError()\n"
+        fn = parser.parse_file("m.py", code).functions[0]
+        assert "CustomError" in fn.raises  # attribute -> last segment
+        assert "TypeError" in fn.catches
+        assert "NotFound" in fn.catches
+
+    def test_bare_raise_and_alias_not_captured(self):
+        parser = PythonParser()
+        code = "def f():\n    try:\n        pass\n    except Exception as e:\n        raise\n"
+        fn = parser.parse_file("m.py", code).functions[0]
+        assert fn.raises == []  # bare re-raise has no type
+        assert fn.catches == ["Exception"]  # the `as e` alias is not captured
+
+
 class TestDjangoRoutes:
     def test_path_with_class_based_view(self):
         parser = PythonParser()

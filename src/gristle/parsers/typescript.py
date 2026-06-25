@@ -587,6 +587,7 @@ class TypeScriptParser(LanguageParser):
         calls = self._extract_calls(body, src) if body else []
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
+        raises, catches = self._extract_error_flow(body, src) if body else ([], [])
 
         return ParsedFunction(
             name=name,
@@ -606,6 +607,8 @@ class TypeScriptParser(LanguageParser):
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
             typed_parameters=typed_params,
+            raises=raises,
+            catches=catches,
             decorators=self._extract_decorators(node, src),
         )
 
@@ -660,6 +663,7 @@ class TypeScriptParser(LanguageParser):
         calls = self._extract_calls(body, src) if body else []
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
+        raises, catches = self._extract_error_flow(body, src) if body else ([], [])
 
         return ParsedFunction(
             name=name,
@@ -678,6 +682,8 @@ class TypeScriptParser(LanguageParser):
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
             typed_parameters=typed_params,
+            raises=raises,
+            catches=catches,
         )
 
     def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
@@ -710,6 +716,7 @@ class TypeScriptParser(LanguageParser):
                 calls = self._extract_calls(body, src) if body else []
                 calls_with_args = self._extract_call_arg_refs(body, src) if body else []
                 callback_refs = self._extract_callback_refs(body, src) if body else []
+                raises, catches = self._extract_error_flow(body, src) if body else ([], [])
 
                 return ParsedFunction(
                     name=name,
@@ -728,6 +735,8 @@ class TypeScriptParser(LanguageParser):
                     callback_refs=callback_refs,
                     parameters=[p[0] for p in typed_params],
                     typed_parameters=typed_params,
+                    raises=raises,
+                    catches=catches,
                 )
         return None
 
@@ -1038,6 +1047,38 @@ class TypeScriptParser(LanguageParser):
                 if text:
                     idents.append(text)
         return idents
+
+    # ------------------------------------------------------------------
+    # Error flow (throw)
+    # ------------------------------------------------------------------
+
+    def _extract_error_flow(self, node: Node, src: bytes) -> tuple[list[str], list[str]]:
+        """Return (thrown, caught) exception type names. Only ``throw new X()``
+        yields a type; JS/TS ``catch`` clauses can't name an exception type, so
+        the caught list is always empty (kept for symmetry with Python)."""
+        raises: list[str] = []
+        self._walk_throws(node, src, raises)
+        return list(dict.fromkeys(raises)), []
+
+    def _walk_throws(self, node: Node, src: bytes, raises: list[str]) -> None:
+        if node.type == "throw_statement":
+            for child in node.named_children:
+                if child.type == "new_expression":
+                    ctor = child.child_by_field_name("constructor")
+                    name = self._exception_ctor_name(ctor, src) if ctor is not None else None
+                    if name:
+                        raises.append(name)
+                break  # only the thrown expression
+        for child in node.children:
+            self._walk_throws(child, src, raises)
+
+    def _exception_ctor_name(self, node: Node, src: bytes) -> str | None:
+        if node.type == "identifier":
+            return self._text(node, src)
+        if node.type == "member_expression":
+            prop = node.child_by_field_name("property")
+            return self._text(prop, src) if prop is not None else None
+        return None
 
     # ------------------------------------------------------------------
     # JSDoc extraction

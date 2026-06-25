@@ -609,6 +609,7 @@ class PythonParser(LanguageParser):
         calls = self._extract_calls(body, src) if body else []
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
+        raises, catches = self._extract_error_flow(body, src) if body else ([], [])
 
         # Resolve self.method -> ClassName.method
         if class_name:
@@ -644,6 +645,8 @@ class PythonParser(LanguageParser):
             callback_refs=callback_refs,
             parameters=param_names,
             typed_parameters=typed_params,
+            raises=raises,
+            catches=catches,
         )
 
     # ------------------------------------------------------------------
@@ -726,6 +729,70 @@ class PythonParser(LanguageParser):
                 if text:
                     idents.append(text)
         return idents
+
+    # ------------------------------------------------------------------
+    # Error flow (raise / except)
+    # ------------------------------------------------------------------
+
+    def _extract_error_flow(self, node: Node, src: bytes) -> tuple[list[str], list[str]]:
+        """Return (raised, caught) exception type names from a function body."""
+        raises: list[str] = []
+        catches: list[str] = []
+        self._walk_error_flow(node, src, raises, catches)
+        return list(dict.fromkeys(raises)), list(dict.fromkeys(catches))
+
+    def _walk_error_flow(self, node: Node, src: bytes, raises: list[str], catches: list[str]) -> None:
+        if node.type == "raise_statement":
+            for child in node.named_children:
+                name = self._exception_type_name(child, src)
+                if name:
+                    raises.append(name)
+                break  # the first expression is the exception; ignore a `from` cause
+        elif node.type == "except_clause":
+            for child in node.children:
+                if child.type == "block":
+                    break  # body starts
+                if child.type == "as_pattern":
+                    # `except <type> as e:` — the type is the as_pattern's first child
+                    if child.named_children:
+                        self._collect_exception_types(child.named_children[0], src, catches)
+                    break
+                if child.type in ("identifier", "attribute", "tuple"):
+                    self._collect_exception_types(child, src, catches)
+                    break
+        for child in node.children:
+            self._walk_error_flow(child, src, raises, catches)
+
+    def _collect_exception_types(self, node: Node, src: bytes, out: list[str]) -> None:
+        """Append exception type name(s) from a type node (identifier, attribute,
+        or a tuple of them)."""
+        if node.type == "tuple":
+            for t in node.named_children:
+                name = self._exception_type_name(t, src)
+                if name:
+                    out.append(name)
+        else:
+            name = self._exception_type_name(node, src)
+            if name:
+                out.append(name)
+
+    def _exception_type_name(self, node: Node, src: bytes) -> str | None:
+        """Resolve an exception expression to its type name (``ValueError``,
+        ``errors.NotFound`` -> ``NotFound``). Bare ``raise`` yields nothing.
+
+        Requires a PascalCase name so re-raised *variables* (``raise exc`` /
+        ``raise http_exception``) are excluded — those name an instance, not a type.
+        """
+        if node.type == "call":
+            fn = node.child_by_field_name("function")
+            node = fn if fn is not None else node
+        name: str | None = None
+        if node.type == "identifier":
+            name = self._text(node, src)
+        elif node.type == "attribute":
+            attr = node.child_by_field_name("attribute")
+            name = self._text(attr, src) if attr is not None else None
+        return name if name and name[0].isupper() else None
 
     # ------------------------------------------------------------------
     # Callback / handler detection

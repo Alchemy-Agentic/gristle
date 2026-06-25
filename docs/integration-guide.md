@@ -35,7 +35,7 @@ This clones the repo and runs full ingestion in one step.
 | Label | Key Properties | Purpose |
 |-------|---------------|---------|
 | `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
-| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback` | Function or method |
+| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback`, `raises`, `catches` | Function or method (`raises`/`catches` are exception type-name lists; see `RAISES`/`CATCHES` edges for locally-defined ones) |
 | `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind` | Class, interface, type, or enum |
 | `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative`, `resolved` | Import statement |
 | `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware`, `has_auth` | HTTP endpoint |
@@ -58,6 +58,8 @@ This clones the repo and runs full ingestion in one step.
 | `CALLS` | Function | Function | Function call. Carries a `resolution` property recording how the callee was resolved, by confidence: `exact` / `file_scoped` / `import` / `typed_receiver` / `dotted` / `same_file` / `unique_global` — lets consumers weight or filter by reliability |
 | `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument, jsx_callback) |
 | `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
+| `RAISES` | Function | Class | Function raises/throws a locally-defined exception class (Python `raise`, JS/TS `throw new`). Builtin/library exceptions (no Class node) stay in the function's `raises` property |
+| `CATCHES` | Function | Class | Function catches a locally-defined exception class (Python `except <Type>`). Other caught types stay in the function's `catches` property |
 | `INHERITS_FROM` | Class | Class | Class inheritance |
 | `IMPORTS` | File | File | File-level import dependency |
 | `TESTS` | File | File | Test file covers production file |

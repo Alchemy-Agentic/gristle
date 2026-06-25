@@ -874,6 +874,22 @@ class TestTypedReceiverResolution:
         assert result == ("func::svc.ts::ArticleService.findAll", "typed_receiver")
 
 
+class TestErrorFlowEdges:
+    def test_raises_edge_to_local_exception_class(self):
+        """A raised type that resolves to a local Class gets a RAISES edge;
+        builtin/library exceptions (no Class node) stay only in the property."""
+        errors_file = _make_file("errors.ts", classes=[_make_class("DomainError", "errors.ts", is_exported=True)])
+        caller = _make_func("f", "svc.ts")
+        caller.raises = ["DomainError", "Error"]  # Error is a builtin -> no node
+        svc_file = _make_file("svc.ts", functions=[caller])
+
+        pipeline = _setup_pipeline_with_resolution([errors_file, svc_file])
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        raises_edges = [r for r in rels if r[2] == "RAISES"]
+        assert ("func::svc.ts::f", "class::errors.ts::DomainError", "RAISES") in raises_edges
+        assert len(raises_edges) == 1  # builtin Error has no class -> no edge
+
+
 class TestCallsResolutionProperty:
     """CALLS edges carry a `resolution` property recording how they were resolved."""
 

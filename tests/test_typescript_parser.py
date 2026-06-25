@@ -289,6 +289,19 @@ class TestCallExtraction:
         assert all(not c.startswith("select.from") for c in result.functions[0].calls_with_args)
 
 
+class TestErrorFlow:
+    def test_throws_new_error_type(self):
+        parser = TypeScriptParser()
+        result = parser.parse_file("t.ts", "function f() { throw new CustomError('x'); }\n")
+        assert "CustomError" in result.functions[0].raises
+
+    def test_rethrow_variable_has_no_type(self):
+        parser = TypeScriptParser()
+        result = parser.parse_file("t.ts", "function f() { try { g(); } catch (e) { throw e; } }\n")
+        assert result.functions[0].raises == []  # re-throwing a variable names no type
+        assert result.functions[0].catches == []  # JS/TS catch clauses can't name a type
+
+
 class TestVariableExtraction:
     def test_extracts_exported_const_object(self):
         parser = TypeScriptParser()

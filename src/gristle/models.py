@@ -49,6 +49,10 @@ class ParsedFunction:
     typed_parameters: list[tuple[str, str | None]] = field(default_factory=list)  # (name, type) pairs
     todos: list[str] = field(default_factory=list)  # TODO/FIXME/HACK comments
     security_findings: list[str] = field(default_factory=list)  # e.g. ["unsafe_call:eval", "llm_output_risk:exec"]
+    raises: list[str] = field(
+        default_factory=list
+    )  # Exception type names raised/thrown (Python raise, JS/TS throw new)
+    catches: list[str] = field(default_factory=list)  # Exception type names caught (Python except <Type>)
 
 
 @dataclass(slots=True)
