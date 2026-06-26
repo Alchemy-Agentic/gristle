@@ -154,6 +154,38 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_viz(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from gristle.query.engine import QueryEngine
+    from gristle.viz import render_html
+
+    graph = _build_graph(args.repo_id)
+    if not graph.ping():
+        print(_falkordb_down_message(), file=sys.stderr)
+        return 1
+    data = QueryEngine(graph).get_subgraph(
+        view=args.view,
+        center=args.center,
+        depth=args.depth,
+        limit=args.limit,
+        models_only=args.models_only,
+    )
+    if "error" in data:
+        print(f"error: {data['error']}", file=sys.stderr)
+        return 1
+
+    out = Path(args.out) if args.out else Path(settings.viz_output_path)
+    out.write_text(render_html(data, title=f"{args.repo_id} · {args.view}"), encoding="utf-8")
+    m = data["meta"]
+    print(f"Wrote {out}  ({m['node_count']} nodes, {m['edge_count']} edges, view={m['view']})")
+    if m.get("truncated"):
+        print(f"  note: truncated to {m['limit']} nodes — raise --limit or narrow --center")
+    if m["node_count"] == 0:
+        print("  note: 0 nodes — check --center / --view (request_trace with no --center spans all routes)")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gristle", description="Graph-based code intelligence for AI agents.")
     sub = parser.add_subparsers(dest="command")
@@ -183,6 +215,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_serve = sub.add_parser("serve", help="Start the MCP server (this is the default with no subcommand).")
     p_serve.add_argument("--http", action="store_true", help="Use streamable-http transport instead of stdio.")
     p_serve.set_defaults(func=_cmd_serve)
+
+    p_viz = sub.add_parser("viz", help="Export an interactive self-contained HTML visualization of a view.")
+    p_viz.add_argument("--repo-id", required=True, help="Identifier used at ingest time.")
+    p_viz.add_argument(
+        "--view",
+        default="call_hierarchy",
+        choices=["call_hierarchy", "blast_radius", "request_trace"],
+        help="Which subgraph view to render (default: call_hierarchy).",
+    )
+    p_viz.add_argument("--center", default=None, help="Focal function/route — id, qualified_name, or route path.")
+    p_viz.add_argument("--depth", type=int, default=2, help="Traversal depth, clamped to 1..4 (default: 2).")
+    p_viz.add_argument(
+        "--limit", type=int, default=None, help="Max nodes before truncation (default: GRISTLE_VIZ_MAX_NODES)."
+    )
+    p_viz.add_argument("--models-only", action="store_true", help="request_trace only: prune to route->DB-model paths.")
+    p_viz.add_argument("--out", default=None, help="Output HTML path (default: GRISTLE_VIZ_OUTPUT_PATH).")
+    p_viz.set_defaults(func=_cmd_viz)
 
     return parser
 

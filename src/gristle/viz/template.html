@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>__GRISTLE_TITLE__</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+               font:13px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  #cy { position:absolute; inset:0; }
+  .panel { position:absolute; background:var(--panel); border:1px solid var(--border);
+           border-radius:8px; padding:10px 12px; z-index:5; }
+  #controls { top:12px; left:12px; max-width:240px; }
+  #controls h1 { font-size:13px; margin:0 0 2px; }
+  #controls .sub { color:var(--muted); font-size:11px; margin-bottom:8px; }
+  #controls .group { margin-top:8px; }
+  #controls .group b { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .toggle { display:flex; align-items:center; gap:6px; cursor:pointer; padding:2px 0; }
+  .toggle input { margin:0; }
+  .swatch { width:11px; height:11px; border-radius:3px; flex:0 0 auto; }
+  #controls button, #controls select, #controls input[type=search] {
+    background:#21262d; color:var(--text); border:1px solid var(--border); border-radius:6px;
+    padding:4px 8px; font-size:12px; margin-top:6px; width:100%; }
+  #detail { top:12px; right:12px; width:300px; max-height:calc(100% - 24px); overflow:auto; display:none; }
+  #detail h2 { font-size:13px; margin:0 0 6px; word-break:break-all; }
+  #detail .row { display:flex; gap:8px; padding:2px 0; border-top:1px solid var(--border); }
+  #detail .k { color:var(--muted); flex:0 0 110px; }
+  #detail .v { word-break:break-word; white-space:pre-wrap; }
+  #detail a { color:var(--accent); }
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+           color:var(--muted); z-index:1; }
+</style>
+</head>
+<body>
+<div id="cy"></div>
+<div id="empty">No nodes to display.</div>
+
+<div id="controls" class="panel">
+  <h1 id="title"></h1>
+  <div class="sub" id="subtitle"></div>
+  <input type="search" id="search" placeholder="Filter nodes…" />
+  <div class="group"><b>Node types</b><div id="nodeToggles"></div></div>
+  <div class="group"><b>Edge types</b><div id="edgeToggles"></div></div>
+  <div class="group">
+    <select id="layout" title="Graph layout" aria-label="Graph layout">
+      <option value="dagre">Layered (dagre)</option>
+      <option value="cose">Force (spread out)</option>
+      <option value="breadthfirst">Breadth-first</option>
+    </select>
+    <button id="reset" type="button">Reset view</button>
+  </div>
+</div>
+
+<div id="detail" class="panel"><h2 id="dTitle"></h2><div id="dBody"></div></div>
+
+<script>__GRISTLE_CYTOSCAPE_JS__</script>
+<script>__GRISTLE_DAGRE_JS__</script>
+<script>__GRISTLE_CYTOSCAPE_DAGRE_JS__</script>
+<script>
+const DATA = __GRISTLE_DATA__;
+
+// --- node styling by label (color doubles as the legend swatch) -------------
+const NODE_STYLE = {
+  Function: { color:"#58a6ff", shape:"round-rectangle" },
+  Class:    { color:"#bc8cff", shape:"round-rectangle" },
+  File:     { color:"#8b949e", shape:"rectangle" },
+  Route:    { color:"#3fb950", shape:"round-tag" },
+  Model:    { color:"#f0883e", shape:"barrel" },
+  Variable: { color:"#d29922", shape:"diamond" },
+  Method:   { color:"#58a6ff", shape:"round-rectangle" },
+};
+const DEFAULT_STYLE = { color:"#6e7681", shape:"ellipse" };
+const styleFor = (lbl) => NODE_STYLE[lbl] || DEFAULT_STYLE;
+
+// CALLS confidence rank (mirrors engine _RESOLUTION_RANK). rank <= 2 = low-confidence.
+const RESOLUTION_RANK = { exact:6, file_scoped:5, typed_receiver:5, import:4, dotted:4, same_file:3, unique_global:2 };
+const lowConfidence = (e) => (RESOLUTION_RANK[e.data.resolution] || 9) <= 2;
+
+// --- deterministic ordering (stable layout / screenshot diffs) --------------
+const nodes = [...DATA.nodes].sort((a,b)=> String(a.id).localeCompare(String(b.id)));
+const edges = [...DATA.edges].sort((a,b)=>
+  (a.source+a.target+a.type).localeCompare(b.source+b.target+b.type));
+
+const labelOf = (n) => (n.props && (n.props.name || n.props.path)) || String(n.id).split("::").pop();
+
+const elements = [
+  ...nodes.map(n => ({ data: { id:n.id, label:n.label, text:labelOf(n), props:n.props||{},
+                               color:styleFor(n.label).color, shape:styleFor(n.label).shape } })),
+  ...edges.map((e,i) => ({ data: { id:"e"+i, source:e.source, target:e.target, etype:e.type,
+                                   access:e.access||"", low: e.type==="CALLS" && lowConfidence(e) ? 1:0 } })),
+];
+
+if (!nodes.length) { document.getElementById("controls").style.display="none"; }
+else { document.getElementById("empty").style.display="none"; }
+
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements,
+  wheelSensitivity: 0.25,
+  style: [
+    { selector:"node", style:{
+        "background-color":"data(color)", "shape":"data(shape)", "label":"data(text)",
+        "color":"#c9d1d9", "font-size":10, "text-valign":"bottom", "text-margin-y":3,
+        "width":18, "height":18, "border-width":1, "border-color":"#0d1117" } },
+    { selector:"edge", style:{
+        "width":1.2, "line-color":"#484f58", "target-arrow-color":"#484f58",
+        "target-arrow-shape":"triangle", "curve-style":"bezier", "arrow-scale":0.8 } },
+    // USES_MODEL read/write coloring
+    { selector:'edge[etype="USES_MODEL"][access="read"]',  style:{ "line-color":"#58a6ff","target-arrow-color":"#58a6ff" } },
+    { selector:'edge[etype="USES_MODEL"][access="write"]', style:{ "line-color":"#f85149","target-arrow-color":"#f85149" } },
+    { selector:'edge[etype="USES_MODEL"]', style:{ "width":1.8 } },
+    { selector:'edge[etype="HANDLES"]', style:{ "line-color":"#3fb950","target-arrow-color":"#3fb950" } },
+    // low-confidence CALLS edges: dashed + dimmed (rank <= 2 = unique_global)
+    { selector:'edge[low=1]', style:{ "line-style":"dashed", "line-color":"#3d444d", "target-arrow-color":"#3d444d" } },
+    { selector:".dim", style:{ "opacity":0.12 } },
+    { selector:".hot", style:{ "border-width":3, "border-color":"#58a6ff" } },
+  ],
+});
+
+// --- layout -----------------------------------------------------------------
+const rankDir = (DATA.meta && DATA.meta.layout_hint === "dagre-lr") ? "LR" : "TB";
+function runLayout(name){
+  const opts = name==="dagre"
+    ? { name:"dagre", rankDir, nodeSep:18, rankSep:50, animate:false }
+    : { name, animate:false, fit:true };
+  try { cy.layout(opts).run(); }
+  catch (err) {
+    // dagre unavailable (registration failed) -> built-in hierarchical fallback
+    cy.layout({ name:"breadthfirst", directed:true, animate:false, fit:true }).run();
+  }
+}
+runLayout("dagre");
+cy.fit(undefined, 30);
+
+// --- node-type + edge-type toggles (double as legend) -----------------------
+function buildToggles(containerId, items, onToggle){
+  const c = document.getElementById(containerId);
+  items.forEach(({key,color}) => {
+    const id = containerId+"_"+key;
+    const row = document.createElement("label"); row.className="toggle";
+    const cb = document.createElement("input"); cb.type="checkbox"; cb.checked=true; cb.id=id;
+    cb.addEventListener("change", () => onToggle(key, cb.checked));
+    const sw = document.createElement("span"); sw.className="swatch"; sw.style.background=color;
+    const tx = document.createElement("span"); tx.textContent = key;   // textContent: no HTML injection
+    row.append(cb, sw, tx); c.appendChild(row);
+  });
+}
+const nodeLabels = [...new Set(nodes.map(n=>n.label))].sort();
+const edgeTypes  = [...new Set(edges.map(e=>e.type))].sort();
+buildToggles("nodeToggles", nodeLabels.map(l=>({key:l,color:styleFor(l).color})),
+  (label,on)=> cy.nodes(`[label="${label}"]`).style("display", on?"element":"none"));
+buildToggles("edgeToggles", edgeTypes.map(t=>({key:t,color:"#8b949e"})),
+  (t,on)=> cy.edges(`[etype="${t}"]`).style("display", on?"element":"none"));
+
+// --- hover-dim (1-hop neighborhood) -----------------------------------------
+cy.on("mouseover","node", ev => {
+  const n = ev.target, keep = n.closedNeighborhood();
+  cy.elements().not(keep).addClass("dim"); n.addClass("hot");
+});
+cy.on("mouseout","node", () => cy.elements().removeClass("dim hot"));
+
+// --- detail panel (textContent only — never innerHTML of repo strings) ------
+const detail = document.getElementById("detail");
+function showDetail(n){
+  const d = n.data();
+  document.getElementById("dTitle").textContent = d.text + "  ·  " + d.label;
+  const body = document.getElementById("dBody"); body.replaceChildren();
+  const p = d.props || {};
+  const order = ["qualified_name","path","signature","file_path","start_line","method",
+                 "complexity","is_entry_point","is_async","return_type","table_name","orm",
+                 "tested_by_count","security_finding_count","kind","value_kind"];
+  const keys = [...order.filter(k=>k in p), ...Object.keys(p).filter(k=>!order.includes(k))];
+  for (const k of keys){
+    if (p[k]===null || p[k]===undefined || p[k]==="") continue;
+    const row=document.createElement("div"); row.className="row";
+    const kk=document.createElement("span"); kk.className="k"; kk.textContent=k;
+    const vv=document.createElement("span"); vv.className="v"; vv.textContent=String(p[k]);
+    row.append(kk,vv); body.appendChild(row);
+  }
+  detail.style.display="block";
+}
+cy.on("tap","node", ev => showDetail(ev.target));
+cy.on("tap", ev => { if (ev.target === cy) detail.style.display="none"; });
+
+// --- search, layout switch, reset -------------------------------------------
+document.getElementById("search").addEventListener("input", e => {
+  const q = e.target.value.toLowerCase().trim();
+  if (!q){ cy.nodes().removeClass("dim"); return; }
+  cy.nodes().forEach(n => n.toggleClass("dim", !n.data("text").toLowerCase().includes(q)));
+});
+document.getElementById("layout").addEventListener("change", e => runLayout(e.target.value));
+document.getElementById("reset").addEventListener("click", () => cy.fit(undefined, 30));
+
+// --- header -----------------------------------------------------------------
+const m = DATA.meta || {};
+document.getElementById("title").textContent = (m.view||"graph").replace(/_/g," ");
+document.getElementById("subtitle").textContent =
+  `${m.repo_id||""} · ${nodes.length} nodes · ${edges.length} edges` +
+  (m.truncated ? " · truncated" : "") + (m.models_only ? " · models only" : "");
+</script>
+</body>
+</html>

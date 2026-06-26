@@ -64,6 +64,12 @@ path = "src/gristle/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gristle"]
+# Vendored non-.py renderer assets (Cytoscape/dagre + HTML template) must ship in
+# the wheel so `gristle viz` works from a pip install, not just an editable checkout.
+artifacts = [
+    "src/gristle/viz/template.html",
+    "src/gristle/viz/assets/*.js",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

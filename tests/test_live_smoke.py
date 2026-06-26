@@ -174,3 +174,10 @@ def test_get_subgraph_view_executes(ctx: dict[str, Any], view: str, center_key: 
     dangling = [ed for ed in result["edges"] if ed["source"] not in ids or ed["target"] not in ids]
     assert not dangling, f"{view} produced dangling edges: {dangling[:3]}"
 
+
+def test_request_trace_models_only_executes(ctx: dict[str, Any]) -> None:
+    """models_only must execute and set the flag (empty is valid if the fixture has no ORM models)."""
+    out = ctx["engine"].get_subgraph("request_trace", center=None, models_only=True)
+    assert out["meta"]["models_only"] is True
+    ids = {n["id"] for n in out["nodes"]}
+    assert not [ed for ed in out["edges"] if ed["source"] not in ids or ed["target"] not in ids]

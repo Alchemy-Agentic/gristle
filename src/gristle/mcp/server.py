@@ -1239,6 +1239,7 @@ async def gristle_subgraph(
     depth: int = 2,
     edge_types: list[str] | None = None,
     repo_id: str | None = None,
+    models_only: bool = False,
 ) -> dict:
     """Return a {nodes, edges, meta} subgraph for a code-visualization VIEW.
 
@@ -1249,7 +1250,8 @@ async def gristle_subgraph(
     - call_hierarchy — who calls X and what X calls, transitively (center required)
     - blast_radius   — what breaks if X changes; includes covering tests + routes
     - request_trace  — HTTP route -> handler -> functions -> DB model, end to end
-                       (center optional: a route path/id, or omit for all routes)
+                       (center optional: a route path/id, or omit for all routes;
+                       pass models_only=true to prune to just the route->DB paths)
 
     Each node carries {id, label, props}; each edge {source, target, type} plus
     edge metadata where it applies (CALLS `resolution` confidence, USES_MODEL
@@ -1263,12 +1265,13 @@ async def gristle_subgraph(
         depth: Traversal depth, clamped to 1..4.
         edge_types: Override which edge types appear (defaults to the view's set).
         repo_id: Repository identifier (uses most recent if omitted).
+        models_only: request_trace only — prune to nodes on a path to a DB Model.
     """
     engine = _resolve_engine(repo_id)
     if engine is None:
         return {"error": f"Repo '{repo_id or '(default)'}' not found. Call gristle_ingest first."}
 
-    return engine.get_subgraph(view=view, center=center, depth=depth, edge_types=edge_types)
+    return engine.get_subgraph(view=view, center=center, depth=depth, edge_types=edge_types, models_only=models_only)
 
 
 # ======================================================================

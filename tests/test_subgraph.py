@@ -276,4 +276,75 @@ class TestMCPSubgraph:
         srv._engines["r1"] = engine
         result = await gristle_subgraph(view="call_hierarchy", center="func::x", depth=3)
         assert result["meta"]["view"] == "call_hierarchy"
-        engine.get_subgraph.assert_called_once_with(view="call_hierarchy", center="func::x", depth=3, edge_types=None)
+        engine.get_subgraph.assert_called_once_with(
+            view="call_hierarchy", center="func::x", depth=3, edge_types=None, models_only=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_passes_models_only_through(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_subgraph
+
+        engine = MagicMock()
+        engine.get_subgraph.return_value = {"meta": {}, "nodes": [], "edges": []}
+        srv._engines["r1"] = engine
+        await gristle_subgraph(view="request_trace", center=None, models_only=True)
+        assert engine.get_subgraph.call_args.kwargs["models_only"] is True
+
+
+# ======================================================================
+# request_trace models_only (route -> DB pruning)
+# ======================================================================
+
+
+class TestModelsOnly:
+    def test_prune_keeps_only_paths_to_model(self):
+        nodes = [
+            _node("func::h"),
+            _node("func::mapper"),
+            _node("func::dao"),
+            {"id": "model::M", "label": "Model", "props": {"name": "M"}},
+        ]
+        edges = [
+            {"source": "func::h", "target": "func::mapper", "type": "CALLS"},
+            {"source": "func::h", "target": "func::dao", "type": "CALLS"},
+            {"source": "func::dao", "target": "model::M", "type": "USES_MODEL"},
+        ]
+        kept_nodes, kept_edges = QueryEngine._viz_prune_to_model_paths(nodes, edges)
+        ids = {n["id"] for n in kept_nodes}
+        assert ids == {"func::h", "func::dao", "model::M"}  # mapper has no path to a model -> dropped
+        assert all(e["source"] in ids and e["target"] in ids for e in kept_edges)
+
+    def test_prune_empty_when_no_model(self):
+        nodes = [_node("func::h"), _node("func::x")]
+        edges = [{"source": "func::h", "target": "func::x", "type": "CALLS"}]
+        assert QueryEngine._viz_prune_to_model_paths(nodes, edges) == ([], [])
+
+    def test_request_trace_models_only_prunes_and_sets_meta(self):
+        nodes = [
+            _node("func::h"),
+            _node("func::mapper"),
+            {"id": "model::M", "label": "Model", "props": {"name": "M"}},
+        ]
+        edges = [
+            {"source": "func::h", "target": "func::mapper", "type": "CALLS"},
+            {"source": "func::h", "target": "model::M", "type": "USES_MODEL"},
+        ]
+        engine, _ = _make_engine(_qr([{"nodes": nodes, "edges": edges}]))
+        out = engine.get_subgraph("request_trace", center=None, models_only=True)
+        ids = {n["id"] for n in out["nodes"]}
+        assert ids == {"func::h", "model::M"}  # mapper pruned
+        assert out["meta"]["models_only"] is True
+
+    def test_models_only_ignored_for_other_views(self):
+        # gated to request_trace: call_hierarchy keeps everything; flag still reported
+        nodes = [_node("func::h"), _node("func::mapper")]
+        edges = [{"source": "func::h", "target": "func::mapper", "type": "CALLS"}]
+        engine, _ = _make_engine(_qr([{"nodes": nodes, "edges": edges}]))
+        out = engine.get_subgraph("call_hierarchy", center="func::h", models_only=True)
+        assert len(out["nodes"]) == 2  # not pruned
+        assert out["meta"]["models_only"] is True
+
+    def test_default_models_only_false(self):
+        engine, _ = _make_engine(_qr([{"nodes": [_node("func::a")], "edges": []}]))
+        assert engine.get_subgraph("request_trace", center=None)["meta"]["models_only"] is False

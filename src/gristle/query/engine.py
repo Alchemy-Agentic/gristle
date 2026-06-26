@@ -1556,6 +1556,7 @@ class QueryEngine:
         depth: int = 2,
         edge_types: list[str] | None = None,
         limit: int | None = None,
+        models_only: bool = False,
     ) -> dict[str, Any]:
         """Return a ``{meta, nodes, edges}`` subgraph for a code-visualization VIEW.
 
@@ -1563,6 +1564,11 @@ class QueryEngine:
         (``func::…``) or a ``qualified_name``/``path``. The payload is capped at
         ``limit`` (default ``GRISTLE_VIZ_MAX_NODES``); over the cap the lowest-degree
         nodes are dropped and ``meta.truncated`` is set.
+
+        ``models_only`` (request_trace only): prune the handler call-closure to just
+        the nodes on a path to a ``Model`` — the "route → DB" view. Default ``False``
+        keeps the full closure (every function the handler calls, models highlighted),
+        which stays honest when a ``USES_MODEL`` edge is unresolved.
         """
         if not isinstance(depth, int) or isinstance(depth, bool):
             return {"error": "depth must be an integer"}
@@ -1584,7 +1590,40 @@ class QueryEngine:
             nodes = list(rec.get("nodes") or [])
             edges = list(rec.get("edges") or [])
 
-        return self._viz_finalize(view, center, depth, et, node_limit, nodes, edges)
+        if models_only and view == "request_trace":
+            nodes, edges = self._viz_prune_to_model_paths(nodes, edges)
+
+        return self._viz_finalize(view, center, depth, et, node_limit, nodes, edges, models_only=models_only)
+
+    @staticmethod
+    def _viz_prune_to_model_paths(
+        nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Keep only nodes on a path to a Model (request_trace ``models_only``).
+
+        A node is kept iff it can reach a ``Model`` by following edges forward --
+        i.e. it is reverse-reachable from a Model node. Drops handler-closure
+        branches (validators, mappers, plumbing) that never touch the DB. Returns
+        ``([], [])`` when no Model is present (an honest "no resolved DB path").
+        """
+        from collections import deque
+
+        model_ids = {n["id"] for n in nodes if n.get("label") == "Model"}
+        if not model_ids:
+            return [], []
+        reverse: dict[str, list[str]] = {}
+        for e in edges:
+            reverse.setdefault(e["target"], []).append(e["source"])
+        keep = set(model_ids)
+        queue = deque(model_ids)
+        while queue:
+            for src in reverse.get(queue.popleft(), []):
+                if src not in keep:
+                    keep.add(src)
+                    queue.append(src)
+        nodes = [n for n in nodes if n["id"] in keep]
+        edges = [e for e in edges if e["source"] in keep and e["target"] in keep]
+        return nodes, edges
 
     def _viz_finalize(
         self,
@@ -1595,6 +1634,7 @@ class QueryEngine:
         limit: int,
         nodes: list[dict[str, Any]],
         edges: list[dict[str, Any]],
+        models_only: bool = False,
     ) -> dict[str, Any]:
         """Trim props to the allowlist, truncate to ``limit`` by degree, build meta."""
         from gristle import __version__
@@ -1648,6 +1688,7 @@ class QueryEngine:
                 "center": center,
                 "depth": depth,
                 "edge_types": edge_types,
+                "models_only": models_only,
                 "node_count": len(nodes),
                 "edge_count": len(edges),
                 "truncated": truncated,
