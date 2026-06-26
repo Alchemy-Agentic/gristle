@@ -193,6 +193,7 @@ This starts FalkorDB on port 6390 and Gristle on port 8080 with streamable-http 
 | [Integration Guide](docs/integration-guide.md) | AI agents, consuming apps | Graph schema, tool reference, configuration, deployment, workflows |
 | [Architecture](ARCHITECTURE.md) | Contributors | Data models, parsers, ingestion pipeline, call resolution, design decisions |
 | [Changelog](CHANGELOG.md) | Everyone | Version history, what's new, breaking changes |
+| [Audience](docs/audience.md) | Product / positioning | Who Gristle benefits most — personas, use cases, and how that drives the parser roadmap |
 | [Roadmap](docs/future-improvements.md) | Product planning | Upcoming features, prioritization |
 
 ## Contributing
