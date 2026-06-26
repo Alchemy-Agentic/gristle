@@ -2,6 +2,8 @@
 
 Graph-based code intelligence for AI agents. Gristle parses repositories into a [FalkorDB](https://www.falkordb.com/) graph database, preserving structural relationships — function calls, imports, inheritance, routes, and data models — so AI agents can query code the way humans think about it.
 
+It traces a request from **HTTP route → handler → function → database model** end-to-end, scores the **blast radius** of a change *before* you make it, and renders any slice of the graph as a **diagram** — all exposed natively over MCP so an agent can call it mid-task.
+
 ## Why graphs instead of vectors?
 
 Vector search over chunked code loses structure. "Function A calls function B which inherits from class C" becomes three unrelated text chunks. Gristle keeps these relationships as first-class edges in a graph, enabling queries like:
@@ -9,6 +11,19 @@ Vector search over chunked code loses structure. "Function A calls function B wh
 - **Impact analysis** — "What breaks if I change this function?"
 - **Call tracing** — "How does a request flow from the API handler toward the database?"
 - **Convention inference** — "What patterns does this project follow?"
+- **Visualization** — render a route's full path to the database, or a function's blast radius, as a node-link diagram (`gristle_subgraph` over MCP, or a self-contained HTML file via `gristle viz`).
+
+## Who is Gristle for?
+
+Gristle serves two consumers equally — **AI coding agents** (via MCP) and the **developers driving them**. Three primary beneficiaries:
+
+- **AI coding agents (and the developer driving them) — the headline audience.** An agent can't hold a large repo in context, and vector-chunking destroys the very relationships it needs to reason about a change. Before editing, an agent asks Gristle *"what breaks if I change this?"* (`gristle_impact_score`), *"which tests cover it?"* (`gristle_tests`), and *"how does this route reach the database?"* (`gristle_subgraph`) — turning a confident guess into a grounded edit. Gristle is the only code graph of its kind that's **MCP-native**.
+- **Developers onboarding to an unfamiliar codebase.** They need a *map*, not taint analysis. `gristle_conventions` plus a `request_trace` subgraph turn a wall of files into a picture of the request surface — build-free, in seconds.
+- **Security / API auditors doing a first-pass structural review.** *Which routes have no auth? What's the middleware chain? Any hardcoded secrets or CVE-laden dependencies?* — surface enumeration across the whole repo (`gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`). A first-pass structural audit, explicitly **not** a taint/dataflow proof.
+
+**In one line:** Gristle is the connected route→handler→DB code graph that AI agents query over MCP — so the agent knows the blast radius and the request-to-database path *before* it writes a diff. Deeper than ctags/tree-sitter-only tools, lighter and broader than type-resolved indexers, and the only one designed to be *called by an agent* rather than browsed in an IDE.
+
+**Probably not for you if** you need type-exact resolution (use a SCIP/LSIF indexer such as Sourcegraph), dataflow/taint proofs (CodeQL), a language outside Python/TS/JS (+ Vue/Svelte/Astro), or zero infrastructure (Gristle needs FalkorDB running). Its edges are high-coverage navigation aids, not proofs — see the boundary below.
 
 ## Scope (and what it isn't)
 
@@ -17,8 +32,6 @@ Gristle is a **fast, build-free, framework-aware *structural* graph** built with
 - **Call/import resolution is name- and heuristic-based**, not type-resolved. It's high-coverage and great for navigation and architecture, but it can miss or mis-link edges that a type-aware indexer (SCIP/LSIF, Sourcegraph) would get exactly. Edges are best-effort, not proofs.
 - **It is not a dataflow/taint engine** (CodeQL/Glean). It models structural and framework relationships (calls, routes→handlers, code→model, tests→code, deps), not value-level data flow.
 - Coverage is strongest on the supported frameworks below; constructs outside them (and languages without a parser) are simply not represented.
-
-In short: deeper than ctags/tree-sitter-only tools, lighter and broader than type-resolved indexers — and designed to be queried by an agent, not a human IDE.
 
 ## Supported languages
 
@@ -64,6 +77,7 @@ gristle ingest examples/sample-app --repo-id demo
 gristle overview --repo-id demo
 gristle explore register --repo-id demo
 gristle query "MATCH (f:Function)-[:CALLS]->(g:Function) RETURN f.name, g.name LIMIT 10" --repo-id demo
+gristle viz --repo-id demo --view request_trace --out demo.html   # render route→DB as a self-contained HTML diagram
 ```
 
 Point `gristle ingest` at your own project to index it. See [examples/](examples/) for a guided walkthrough.
@@ -148,9 +162,9 @@ Railway auto-injects `PORT` which Gristle picks up. The transport defaults to `s
 
 ## MCP tools
 
-Gristle exposes 30 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips.
+Gristle exposes 32 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips.
 
-Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_trace`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`.
+Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_impact_score`, `gristle_trace`, `gristle_subgraph`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_models`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`. `gristle_subgraph` returns a `{nodes, edges, meta}` subgraph for the `call_hierarchy`, `blast_radius`, and `request_trace` views — the same data `gristle viz` renders to HTML.
 
 ## Development
 
