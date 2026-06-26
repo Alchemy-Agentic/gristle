@@ -2435,7 +2435,11 @@ class QueryEngine:
 
     def get_changelog(self) -> dict[str, Any]:
         """Show what changed since last ingestion by diffing Snapshot nodes."""
-        result = self.graph.execute("MATCH (s:Snapshot) RETURN s ORDER BY s.captured_at DESC LIMIT 2")
+        # RETURN properties(s) (a map), not the raw node -- FalkorDB Node objects
+        # have no .get(), so the metric lookups below would raise on a bare node.
+        result = self.graph.execute(
+            "MATCH (s:Snapshot) WITH s ORDER BY s.captured_at DESC LIMIT 2 RETURN properties(s) AS s"
+        )
         snapshots = result.records
         if not snapshots:
             return {"status": "no_snapshots", "message": "No snapshots found. Run gristle_ingest first."}
@@ -2497,8 +2501,10 @@ class QueryEngine:
 
     def get_snapshot_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return all snapshots ordered by date."""
+        # properties(s), not the raw node -- otherwise the records carry FalkorDB
+        # Node objects that don't serialize cleanly to JSON for MCP consumers.
         result = self.graph.execute(
-            "MATCH (s:Snapshot) RETURN s ORDER BY s.captured_at DESC LIMIT $limit",
+            "MATCH (s:Snapshot) WITH s ORDER BY s.captured_at DESC LIMIT $limit RETURN properties(s) AS s",
             {"limit": limit},
         )
         return [r["s"] for r in result.records]
