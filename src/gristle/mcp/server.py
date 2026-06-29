@@ -1344,13 +1344,21 @@ def _resolve_engine(repo_id: str | None) -> QueryEngine | None:
 
 def _rehydrate_engine(repo_id: str) -> QueryEngine | None:
     """Rebuild a QueryEngine from an existing FalkorDB graph, or None if absent."""
-    graph = GraphClient(
-        host=settings.falkordb_host,
-        port=settings.falkordb_port,
-        repo_id=repo_id,
-        password=settings.falkordb_password,
-    )
-    if not graph.graph_exists():
+    try:
+        graph = GraphClient(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            repo_id=repo_id,
+            password=settings.falkordb_password,
+        )
+        if not graph.graph_exists():
+            return None
+    except RedisConnectionError:
+        # FalkorDB unreachable (the client connects eagerly on construction): we
+        # can't rehydrate, so treat the repo as unavailable (None) rather than
+        # letting the error escape — callers like the repo_overview resource
+        # aren't wrapped by the tool error boundary.
+        logger.debug("FalkorDB unreachable while rehydrating '%s'; treating as unavailable", repo_id)
         return None
     repo_path: str | None = None
     try:
