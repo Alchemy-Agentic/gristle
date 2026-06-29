@@ -4,7 +4,9 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ---
 
-## [Unreleased]
+## [0.1.0] - 2026-06-26
+
+First public release.
 
 ### Added
 - **Vue / Svelte / Astro single-file components** — `.vue`, `.svelte`, and `.astro`
@@ -159,9 +161,10 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ---
 
-## [0.1.0] - 2026-02-03
+## [0.0.1] - 2026-02-03
 
-Initial release.
+Initial internal scaffold (never published to PyPI; its contents ship as part of
+the first public `0.1.0` release above).
 
 ### Supported Languages
 
