@@ -4,6 +4,22 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Duplicate-id nodes inflated impact analysis.** Nodes are written with `CREATE`,
+  so multiple same-named entities in one file (e.g. several local `create_app`
+  helpers, which collide on `qualified_name`) produced duplicate nodes sharing one
+  id — and `MERGE` relationships then matched the Cartesian product of those
+  duplicate endpoints, fanning one logical edge into many (a `CALLS` pair seen up to
+  9×). This inflated `gristle_impact`/`gristle_impact_score` caller counts.
+  `BatchCollector` now enforces the id-uniqueness invariant: an already-seen node id
+  is dropped (first write wins). On flask: `CALLS` 1090 → 1036 edges with no
+  duplicate pairs; node id-duplicates eliminated.
+- **Unreachable FalkorDB during engine rehydration** no longer escapes as an
+  unhandled `ConnectionError` (which crashed the `repo_overview` resource); an
+  unreachable backend now degrades to "repo unavailable."
+
 ## [0.1.0] - 2026-06-26
 
 First public release.

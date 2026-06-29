@@ -113,6 +113,33 @@ class TestBatchCollector:
         batch.flush()
         assert batch.pending_count == 0
 
+    def test_dedupes_duplicate_node_ids(self):
+        # Two same-named functions in one file collide on qualified_name -> same id.
+        # With CREATE writes that would make duplicate nodes that fan out edges, so
+        # the collector keeps exactly one node per id (first add wins).
+        graph = _make_graph_mock()
+        batch = BatchCollector(graph, batch_size=100)
+
+        batch.add_node("Function", {"id": "func::a.py::dup", "name": "dup", "start_line": 1})
+        batch.add_node("Function", {"id": "func::a.py::dup", "name": "dup", "start_line": 9})
+
+        counts = batch.flush()
+        assert counts["nodes_created"] == 1
+        items = graph.batch_create_nodes.call_args.args[1]
+        assert len(items) == 1
+        assert items[0]["start_line"] == 1  # first occurrence wins
+
+    def test_dedupe_persists_across_flushes(self):
+        graph = _make_graph_mock()
+        batch = BatchCollector(graph, batch_size=100)
+
+        batch.add_node("Function", {"id": "func::x", "name": "x"})
+        batch.flush()  # node now exists in the graph
+        batch.add_node("Function", {"id": "func::x", "name": "x"})  # repeat
+
+        counts = batch.flush()
+        assert counts["nodes_created"] == 0  # not re-created after an earlier flush
+
     def test_flush_clears_buffers(self):
         graph = _make_graph_mock()
         batch = BatchCollector(graph, batch_size=100)

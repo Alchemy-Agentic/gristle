@@ -28,9 +28,22 @@ class BatchCollector:
         self._nodes: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._create_rels: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._merge_rels: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        # The business `id` is the unique node key. Nodes are written with CREATE
+        # (not MERGE) for speed, so the same id added twice would produce duplicate
+        # nodes — and because ids embed the file path, collisions only happen within
+        # one file (e.g. several same-named local functions), i.e. within one
+        # collector. Track seen ids (persisting across flushes) and drop repeats, so
+        # one id maps to exactly one node. Otherwise duplicate endpoints make every
+        # MERGE relationship fan out Cartesian-style (N callers x M callees edges).
+        self._seen_node_ids: set[str] = set()
 
     def add_node(self, label: str, properties: dict[str, Any]) -> None:
-        """Buffer a node creation."""
+        """Buffer a node creation, skipping a repeat of an already-seen ``id``."""
+        node_id = properties.get("id")
+        if node_id is not None:
+            if node_id in self._seen_node_ids:
+                return
+            self._seen_node_ids.add(node_id)
         self._nodes[label].append(properties)
 
     def add_relationship(
