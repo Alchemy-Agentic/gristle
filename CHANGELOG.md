@@ -14,6 +14,17 @@ All notable changes to Gristle are documented here. This file is intended for co
   must I run?" in a single call instead of chaining `gristle_impact_score` +
   `gristle_tests`. (33 MCP tools total.)
 
+### Fixed
+- **`gristle_conventions` errored on every Next.js repo.** The framework-detection
+  queries (Next.js API routes / middleware, CSS modules, Supabase edge functions)
+  used the Cypher regex operator `=~`, which FalkorDB does not support — so
+  `infer_conventions` raised on any repo where the Next.js/Supabase branch ran,
+  taking down the whole tool for a core audience. Rewritten to use FalkorDB's
+  supported `CONTAINS` / `ENDS WITH` predicates (verified: ai-chatbot now reports
+  its 11 `app/api/**/route.ts` endpoints correctly). A mock-only suite can't catch
+  this class of bug, so a CI guard (`tests/test_cypher_dialect.py`) now fails fast
+  if a FalkorDB-incompatible operator reappears in the shipped Cypher.
+
 ## [0.1.1] - 2026-06-29
 
 ### Fixed

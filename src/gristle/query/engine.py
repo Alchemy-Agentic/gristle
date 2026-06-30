@@ -1218,6 +1218,18 @@ class QueryEngine:
 
         return detected
 
+    # File-suffix variants for TS/JS source files (no leading dot).
+    _TJS_EXTS = ("ts", "tsx", "js", "jsx")
+
+    @staticmethod
+    def _ends_with_any(alias: str, suffixes: tuple[str, ...]) -> str:
+        """Build an ``(alias ENDS WITH 'a' OR alias ENDS WITH 'b' ...)`` predicate.
+
+        FalkorDB has no regex match operator, so framework file-pattern checks are
+        expressed as a disjunction of ENDS WITH / CONTAINS predicates instead.
+        """
+        return "(" + " OR ".join(f"{alias} ENDS WITH '{s}'" for s in suffixes) + ")"
+
     def _detect_nextjs_conventions(self) -> dict[str, Any]:
         """Detect Next.js-specific conventions from the graph."""
         info: dict[str, Any] = {}
@@ -1251,20 +1263,20 @@ class QueryEngine:
         info["use_client"] = directives.get("use client", 0)
         info["use_server"] = directives.get("use server", 0)
 
-        # API routes
+        # API routes: a `route.{ts,tsx,js,jsx}` file under an api/ (or app/api/) dir.
+        route_files = self._ends_with_any("f.path", tuple(f"route.{e}" for e in self._TJS_EXTS))
         api_routes = self.graph.execute(
-            """
+            f"""
             MATCH (f:File)
-            WHERE f.path =~ '.*/(api|app/api)/.*route\\.[tj]sx?$'
+            WHERE f.path CONTAINS '/api/' AND {route_files}
             RETURN count(f) AS c
             """
         )
         info["api_routes"] = api_routes.records[0]["c"] if api_routes.records else 0
 
-        # Middleware
-        middleware = self.graph.execute(
-            "MATCH (f:File) WHERE f.path =~ '.*/middleware\\.[tj]sx?$' RETURN count(f) AS c"
-        )
+        # Middleware: a top-level `middleware.{ts,tsx,js,jsx}` file.
+        mw_files = self._ends_with_any("f.path", tuple(f"middleware.{e}" for e in self._TJS_EXTS))
+        middleware = self.graph.execute(f"MATCH (f:File) WHERE {mw_files} RETURN count(f) AS c")
         info["has_middleware"] = (middleware.records[0]["c"] if middleware.records else 0) > 0
 
         return info
@@ -1305,7 +1317,7 @@ class QueryEngine:
             if packages and any(pkg in dep_names for pkg in packages):
                 found_styles.append(lib_name)
         # Check for CSS modules via file pattern
-        css_modules = self.graph.execute("MATCH (f:File) WHERE f.path =~ '.*\\.module\\.css$' RETURN count(f) AS c")
+        css_modules = self.graph.execute("MATCH (f:File) WHERE f.path ENDS WITH '.module.css' RETURN count(f) AS c")
         if css_modules.records and css_modules.records[0]["c"] > 0:
             found_styles.append("css-modules")
         if found_styles:
@@ -1346,9 +1358,10 @@ class QueryEngine:
         info["uses_auth_helpers"] = "@supabase/auth-helpers-nextjs" in dep_names
         info["uses_storage"] = "@supabase/storage-js" in dep_names
 
-        # Edge functions
+        # Edge functions: `supabase/functions/<name>/index.{ts,tsx,js,jsx}`.
+        index_files = self._ends_with_any("f.path", tuple(f"index.{e}" for e in self._TJS_EXTS))
         edge_funcs = self.graph.execute(
-            "MATCH (f:File) WHERE f.path =~ '.*/supabase/functions/.*/index\\.[tj]sx?$' RETURN count(f) AS c"
+            f"MATCH (f:File) WHERE f.path CONTAINS '/supabase/functions/' AND {index_files} RETURN count(f) AS c"
         )
         info["edge_function_count"] = edge_funcs.records[0]["c"] if edge_funcs.records else 0
 

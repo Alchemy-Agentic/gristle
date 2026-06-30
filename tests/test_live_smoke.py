@@ -107,6 +107,7 @@ def _methods(ctx: dict[str, Any]) -> dict[str, Callable[[], Any]]:
         "get_callees": lambda: e.get_callees(fn),
         "impact_analysis": lambda: e.impact_analysis(fn),
         "get_impact_analysis": lambda: e.get_impact_analysis(fn),
+        "get_change_impact": lambda: e.get_change_impact(fn),
         "find_path": lambda: e.find_path(fn, fn),
         "search": lambda: e.search("user"),
         "get_routes": lambda: e.get_routes(),
@@ -120,6 +121,7 @@ def _methods(ctx: dict[str, Any]) -> dict[str, Callable[[], Any]]:
         "get_external_services": lambda: e.get_external_services(),
         "detect_layer_violations": lambda: e.detect_layer_violations(),
         "get_dependencies": lambda: e.get_dependencies(),
+        "get_outdated_dependencies": lambda: e.get_outdated_dependencies(),
         "get_env_vars": lambda: e.get_env_vars(),
         "get_config_files": lambda: e.get_config_files(),
         "get_setup_requirements": lambda: e.get_setup_requirements(),
@@ -137,6 +139,7 @@ def _methods(ctx: dict[str, Any]) -> dict[str, Callable[[], Any]]:
         "get_model_relationships": lambda: e.get_model_relationships(),
         "get_docs_for_entity": lambda: e.get_docs_for_entity(fn),
         "get_doc_staleness": lambda: e.get_doc_staleness(),
+        "get_doc_overview": lambda: e.get_doc_overview(),
     }
 
 
