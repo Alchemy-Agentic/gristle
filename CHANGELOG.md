@@ -4,7 +4,7 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ---
 
-## [Unreleased]
+## [0.1.1] - 2026-06-29
 
 ### Fixed
 - **Duplicate-id nodes inflated impact analysis.** Nodes are written with `CREATE`,
