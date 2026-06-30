@@ -1451,3 +1451,62 @@ class TestChangelog:
         )
         result = engine.get_changelog()
         assert "Removed 2 routes" in result["summary"]
+
+
+class TestGetChangeImpact:
+    """get_change_impact bundles scored impact + covering tests for a pre-edit check."""
+
+    def test_bundles_impact_and_tests(self):
+        from unittest.mock import MagicMock
+
+        engine, _ = _make_engine()
+        engine.get_impact_analysis = MagicMock(
+            return_value={
+                "target": "mod.foo",
+                "target_type": "Function",
+                "target_file": "mod.py",
+                "blast_radius_score": 72.0,
+                "risk_level": "high",
+                "direct_callers": ["a", "b"],
+                "direct_callers_count": 2,
+                "affected_files": ["x.py"],
+                "affected_files_count": 1,
+                "is_entry_point": False,
+                "is_exported": True,
+                "has_route": False,
+            }
+        )
+        engine.get_tests_for_entity = MagicMock(return_value=[{"test_name": "test_foo", "depth": 1}])
+
+        out = engine.get_change_impact("mod.foo")
+        assert out["blast_radius_score"] == 72.0
+        assert out["risk_level"] == "high"
+        assert out["tests_to_run"] == [{"test_name": "test_foo", "depth": 1}]
+        assert "HIGH risk" in out["recommendation"]
+        assert "1 covering test" in out["recommendation"]
+
+    def test_no_tests_recommends_adding(self):
+        from unittest.mock import MagicMock
+
+        engine, _ = _make_engine()
+        engine.get_impact_analysis = MagicMock(
+            return_value={
+                "target": "mod.foo",
+                "blast_radius_score": 10.0,
+                "risk_level": "low",
+                "direct_callers_count": 0,
+                "affected_files_count": 0,
+            }
+        )
+        engine.get_tests_for_entity = MagicMock(return_value=[])
+
+        out = engine.get_change_impact("mod.foo")
+        assert out["tests_to_run"] == []
+        assert "add tests" in out["recommendation"].lower()
+
+    def test_not_found_returns_none(self):
+        from unittest.mock import MagicMock
+
+        engine, _ = _make_engine()
+        engine.get_impact_analysis = MagicMock(return_value=None)
+        assert engine.get_change_impact("nope") is None

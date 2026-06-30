@@ -540,6 +540,47 @@ class QueryEngine:
 
         return result
 
+    def get_change_impact(self, name: str) -> dict[str, Any] | None:
+        """One-call pre-edit safety check for an agent about to change an entity.
+
+        Composes the scored blast radius (:meth:`get_impact_analysis`) with the
+        exact covering tests (:meth:`get_tests_for_entity`), so an agent can answer
+        "what breaks, and what must I run?" in a single call instead of chaining
+        impact -> tests -> trace. Returns None if the entity isn't found.
+        """
+        impact = self.get_impact_analysis(name)
+        if impact is None:
+            return None
+        tests = self.get_tests_for_entity(name)
+        score = impact["blast_radius_score"]
+        risk = impact["risk_level"]
+        n_callers = impact["direct_callers_count"]
+        n_files = impact["affected_files_count"]
+        if tests:
+            test_advice = f"Run the {len(tests)} covering test(s) below before and after editing."
+        else:
+            test_advice = "No covering tests found — add tests before changing this."
+        recommendation = (
+            f"{risk.upper()} risk (blast radius {score}/100): {n_callers} direct caller(s), "
+            f"{n_files} affected file(s). {test_advice}"
+        )
+        return {
+            "entity": impact.get("target") or name,
+            "entity_type": impact.get("target_type"),
+            "file": impact.get("target_file"),
+            "blast_radius_score": score,
+            "risk_level": risk,
+            "direct_callers": impact.get("direct_callers") or [],
+            "direct_callers_count": n_callers,
+            "affected_files": impact.get("affected_files") or [],
+            "affected_files_count": n_files,
+            "is_entry_point": impact.get("is_entry_point"),
+            "is_exported": impact.get("is_exported"),
+            "has_route": impact.get("has_route"),
+            "tests_to_run": tests,
+            "recommendation": recommendation,
+        }
+
     # ------------------------------------------------------------------
     # 7. Search
     # ------------------------------------------------------------------

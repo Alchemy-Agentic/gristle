@@ -988,9 +988,11 @@ class TestHealthCheck:
         request = MagicMock()
         response = await health_check(request)
         body = json.loads(response.body)
+        from gristle import __version__
+
         assert body["status"] == "ok"
         assert body["server"] == "gristle"
-        assert body["version"] == "0.1.0"
+        assert body["version"] == __version__  # track the package version, not a literal
         assert "repos_loaded" in body
 
 
@@ -1174,3 +1176,37 @@ class TestRehydration:
         with patch("gristle.mcp.server._rehydrate_engine", return_value=sentinel) as reh:
             assert srv._resolve_engine("absent") is sentinel
             reh.assert_called_once_with("absent")
+
+
+class TestMCPChangeImpact:
+    @pytest.mark.asyncio
+    async def test_no_repo(self):
+        from gristle.mcp.server import gristle_change_impact
+
+        result = await gristle_change_impact(entity_name="foo")
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_engine(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_change_impact
+
+        engine = _mock_engine()
+        engine.get_change_impact.return_value = {"entity": "foo", "risk_level": "low", "tests_to_run": []}
+        srv._engines["r1"] = engine
+
+        result = await gristle_change_impact(entity_name="foo")
+        assert result["risk_level"] == "low"
+        engine.get_change_impact.assert_called_once_with("foo")
+
+    @pytest.mark.asyncio
+    async def test_entity_not_found(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_change_impact
+
+        engine = _mock_engine()
+        engine.get_change_impact.return_value = None
+        srv._engines["r1"] = engine
+
+        result = await gristle_change_impact(entity_name="ghost")
+        assert "error" in result

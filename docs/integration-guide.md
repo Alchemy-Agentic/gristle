@@ -258,6 +258,20 @@ Higher scores indicate more risk. Critical (85+) changes require extra care.
 
 ---
 
+### `gristle_change_impact(entity_name, repo_id?)`
+
+One-call **pre-edit safety check** — call it before modifying a function/class.
+Bundles, in a single response:
+- `blast_radius_score` (0-100) + `risk_level`, plus `direct_callers` / `affected_files`
+- `tests_to_run`: the exact covering tests to run before and after the change
+- `recommendation`: a one-line summary
+
+Saves chaining `gristle_impact_score` + `gristle_tests` — the whole "is this safe to
+edit, and how do I verify it?" question at once. Returns `{"error": ...}` if the
+entity isn't found.
+
+---
+
 ### `gristle_data_contract(entity_name, repo_id?)`
 
 Returns the input/output data contract for a function — what types it accepts and returns, with field details.

@@ -4,6 +4,16 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ---
 
+## [Unreleased]
+
+### Added
+- **`gristle_change_impact` tool** — a one-call pre-edit safety check for agents.
+  Bundles the scored blast radius + risk level (`get_impact_analysis`) with the
+  exact covering tests to run (`get_tests_for_entity`) and a one-line
+  recommendation, so an agent can answer "what breaks if I change this, and what
+  must I run?" in a single call instead of chaining `gristle_impact_score` +
+  `gristle_tests`. (33 MCP tools total.)
+
 ## [0.1.1] - 2026-06-29
 
 ### Fixed

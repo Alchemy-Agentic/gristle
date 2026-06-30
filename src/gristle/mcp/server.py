@@ -538,6 +538,37 @@ async def gristle_impact_score(
 
 
 @mcp.tool()
+async def gristle_change_impact(
+    entity_name: str,
+    repo_id: str | None = None,
+) -> dict:
+    """Pre-edit safety check: what breaks if you change this, and what to run.
+
+    Call this BEFORE modifying a function or class. It bundles, in one response:
+    - blast_radius_score (0-100) + risk_level (low/medium/high/critical)
+    - direct_callers and affected_files
+    - tests_to_run: the exact covering tests to run before and after the change
+    - recommendation: a one-line summary
+
+    Saves chaining gristle_impact_score + gristle_tests — the whole "is this safe
+    to edit, and how do I verify it" question in a single call.
+
+    Args:
+        entity_name: Name of the function or class you're about to change.
+        repo_id: Repository identifier.
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    result = engine.get_change_impact(entity_name)
+    if result is None:
+        return {"error": f"Entity '{entity_name}' not found."}
+
+    return result
+
+
+@mcp.tool()
 async def gristle_trace(
     from_entity: str,
     to_entity: str,
