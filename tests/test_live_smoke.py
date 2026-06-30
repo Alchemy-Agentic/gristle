@@ -108,6 +108,7 @@ def _methods(ctx: dict[str, Any]) -> dict[str, Callable[[], Any]]:
         "impact_analysis": lambda: e.impact_analysis(fn),
         "get_impact_analysis": lambda: e.get_impact_analysis(fn),
         "get_change_impact": lambda: e.get_change_impact(fn),
+        "get_changeset_impact": lambda: e.get_changeset_impact([fn]),
         "find_path": lambda: e.find_path(fn, fn),
         "search": lambda: e.search("user"),
         "get_routes": lambda: e.get_routes(),

@@ -1510,3 +1510,83 @@ class TestGetChangeImpact:
         engine, _ = _make_engine()
         engine.get_impact_analysis = MagicMock(return_value=None)
         assert engine.get_change_impact("nope") is None
+
+
+class TestGetChangesetImpact:
+    """get_changeset_impact aggregates per-entity change impact across a diff."""
+
+    @staticmethod
+    def _ci(entity, *, score, risk, callers, files, tests, file="mod.py", **extra):
+        """Build a get_change_impact-shaped dict."""
+        return {
+            "entity": entity,
+            "entity_type": "Function",
+            "file": file,
+            "blast_radius_score": score,
+            "risk_level": risk,
+            "direct_callers": callers,
+            "direct_callers_count": len(callers),
+            "affected_files": files,
+            "tests_to_run": tests,
+            **extra,
+        }
+
+    def _engine_with(self, mapping, not_found=()):
+        from unittest.mock import MagicMock
+
+        engine, _ = _make_engine()
+        engine.get_change_impact = MagicMock(side_effect=lambda n: mapping.get(n) if n not in not_found else None)
+        return engine
+
+    def test_excludes_co_edited_callers_from_external(self):
+        # foo and bar are edited together; bar calls foo, so bar must NOT count
+        # as external blast radius for foo.
+        mapping = {
+            "foo": self._ci("foo", score=40, risk="medium", callers=["bar", "outside"], files=["a.py"], tests=[]),
+            "bar": self._ci("bar", score=20, risk="low", callers=["foo"], files=["b.py"], tests=[]),
+        }
+        out = self._engine_with(mapping).get_changeset_impact(["foo", "bar"])
+        assert out["external_callers"] == ["outside"]  # bar and foo excluded
+        assert out["external_callers_count"] == 1
+
+    def test_unions_and_dedups_tests(self):
+        t_a = {"test_qualified_name": "t.test_a", "test_file": "t.py"}
+        t_b = {"test_qualified_name": "t.test_b", "test_file": "t.py"}
+        mapping = {
+            "foo": self._ci("foo", score=40, risk="medium", callers=[], files=[], tests=[t_a, t_b]),
+            "bar": self._ci("bar", score=20, risk="low", callers=[], files=[], tests=[t_a]),  # dup
+        }
+        out = self._engine_with(mapping).get_changeset_impact(["foo", "bar"])
+        assert out["tests_to_run_count"] == 2  # t_a deduped
+        keys = {t["test_qualified_name"] for t in out["tests_to_run"]}
+        assert keys == {"t.test_a", "t.test_b"}
+
+    def test_overall_risk_is_worst_case(self):
+        mapping = {
+            "foo": self._ci("foo", score=20, risk="low", callers=[], files=[], tests=[]),
+            "bar": self._ci("bar", score=90, risk="critical", callers=[], files=[], tests=[]),
+        }
+        out = self._engine_with(mapping).get_changeset_impact(["foo", "bar"])
+        assert out["overall_risk_level"] == "critical"
+        assert out["max_blast_radius_score"] == 90
+        assert "CRITICAL risk across 2 changed entities" in out["recommendation"]
+
+    def test_affected_files_exclude_changeset_files(self):
+        mapping = {
+            "foo": self._ci(
+                "foo", score=40, risk="medium", callers=[], files=["mod.py", "other.py"], tests=[], file="mod.py"
+            ),
+        }
+        out = self._engine_with(mapping).get_changeset_impact(["foo"])
+        assert out["affected_files"] == ["other.py"]  # mod.py is being edited
+
+    def test_unresolved_names_reported(self):
+        mapping = {"foo": self._ci("foo", score=10, risk="low", callers=[], files=[], tests=[])}
+        out = self._engine_with(mapping, not_found={"ghost"}).get_changeset_impact(["foo", "ghost"])
+        assert out["not_found"] == ["ghost"]
+        assert len(out["entities"]) == 1
+
+    def test_all_unresolved_returns_error(self):
+        out = self._engine_with({}, not_found={"a", "b"}).get_changeset_impact(["a", "b"])
+        assert "error" in out
+        assert out["entities"] == []

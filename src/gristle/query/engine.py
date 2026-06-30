@@ -581,6 +581,111 @@ class QueryEngine:
             "recommendation": recommendation,
         }
 
+    # Risk levels ordered worst-last, for taking the max across a changeset.
+    _RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+    def get_changeset_impact(self, names: list[str]) -> dict[str, Any]:
+        """Combined pre-edit safety check for a *set* of entities changed together.
+
+        Agents edit diffs, not single symbols. This runs :meth:`get_change_impact`
+        for each named entity and aggregates the parts an agent needs to vet a whole
+        edit in one call:
+
+        - **external_callers** — callers that are *not themselves in the changeset*
+          (a co-edited symbol calling another isn't blast radius), i.e. the real
+          surface this edit might break.
+        - **tests_to_run** — the de-duplicated union of every changed entity's
+          covering tests.
+        - **affected_files** — files touched by external callers, excluding the
+          files being edited.
+        - **overall_risk_level / max_blast_radius_score** — worst case across the set.
+
+        Entities that don't resolve are reported in ``not_found`` rather than failing.
+        """
+        per_entity: list[dict[str, Any]] = []
+        not_found: list[str] = []
+        for name in names:
+            impact = self.get_change_impact(name)
+            if impact is None:
+                not_found.append(name)
+            else:
+                per_entity.append(impact)
+
+        if not per_entity:
+            return {
+                "requested": names,
+                "not_found": not_found,
+                "entities": [],
+                "error": "None of the requested entities were found.",
+            }
+
+        # Qualified names + files of the entities being edited together.
+        changeset_ids = {ci["entity"] for ci in per_entity}
+        changeset_files = {ci["file"] for ci in per_entity if ci.get("file")}
+
+        external_callers: set[str] = set()
+        affected_files: set[str] = set()
+        tests_by_key: dict[str, dict[str, Any]] = {}
+        for ci in per_entity:
+            for caller in ci.get("direct_callers") or []:
+                if caller and caller not in changeset_ids:
+                    external_callers.add(caller)
+            for path in ci.get("affected_files") or []:
+                if path:
+                    affected_files.add(path)
+            for test in ci.get("tests_to_run") or []:
+                key = test.get("test_qualified_name") or f"file::{test.get('test_file')}"
+                tests_by_key.setdefault(key, test)
+        affected_files -= changeset_files
+
+        overall_risk = max(
+            (ci["risk_level"] for ci in per_entity),
+            key=lambda r: self._RISK_ORDER.get(r, 0),
+        )
+        max_score = max(ci["blast_radius_score"] for ci in per_entity)
+        tests_to_run = list(tests_by_key.values())
+
+        n = len(per_entity)
+        if tests_to_run:
+            test_advice = f"Run the {len(tests_to_run)} covering test(s) below before and after editing."
+        else:
+            test_advice = "No covering tests found for this changeset — add tests before editing."
+        recommendation = (
+            f"{overall_risk.upper()} risk across {n} changed "
+            f"{'entity' if n == 1 else 'entities'} (max blast radius {max_score}/100): "
+            f"{len(external_callers)} external caller(s), "
+            f"{len(affected_files)} other affected file(s). {test_advice}"
+        )
+
+        return {
+            "requested": names,
+            "not_found": not_found,
+            "entities": [
+                {
+                    "entity": ci["entity"],
+                    "entity_type": ci.get("entity_type"),
+                    "file": ci.get("file"),
+                    "blast_radius_score": ci["blast_radius_score"],
+                    "risk_level": ci["risk_level"],
+                    "direct_callers_count": ci.get("direct_callers_count"),
+                    "is_entry_point": ci.get("is_entry_point"),
+                    "has_route": ci.get("has_route"),
+                }
+                for ci in per_entity
+            ],
+            "overall_risk_level": overall_risk,
+            "max_blast_radius_score": max_score,
+            "has_entry_point": any(ci.get("is_entry_point") for ci in per_entity),
+            "has_route": any(ci.get("has_route") for ci in per_entity),
+            "external_callers": sorted(external_callers),
+            "external_callers_count": len(external_callers),
+            "affected_files": sorted(affected_files),
+            "affected_files_count": len(affected_files),
+            "tests_to_run": tests_to_run,
+            "tests_to_run_count": len(tests_to_run),
+            "recommendation": recommendation,
+        }
+
     # ------------------------------------------------------------------
     # 7. Search
     # ------------------------------------------------------------------

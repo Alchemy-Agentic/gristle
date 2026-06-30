@@ -1210,3 +1210,29 @@ class TestMCPChangeImpact:
 
         result = await gristle_change_impact(entity_name="ghost")
         assert "error" in result
+
+
+class TestMCPChangesetImpact:
+    @pytest.mark.asyncio
+    async def test_no_repo(self):
+        from gristle.mcp.server import gristle_changeset_impact
+
+        result = await gristle_changeset_impact(entity_names=["foo"])
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_engine(self):
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_changeset_impact
+
+        engine = _mock_engine()
+        engine.get_changeset_impact.return_value = {
+            "overall_risk_level": "high",
+            "tests_to_run": [],
+            "not_found": [],
+        }
+        srv._engines["r1"] = engine
+
+        result = await gristle_changeset_impact(entity_names=["foo", "bar"])
+        assert result["overall_risk_level"] == "high"
+        engine.get_changeset_impact.assert_called_once_with(["foo", "bar"])

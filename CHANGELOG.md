@@ -13,6 +13,13 @@ All notable changes to Gristle are documented here. This file is intended for co
   recommendation, so an agent can answer "what breaks if I change this, and what
   must I run?" in a single call instead of chaining `gristle_impact_score` +
   `gristle_tests`. (33 MCP tools total.)
+- **`gristle_changeset_impact` tool** — the pre-edit safety check for a whole diff.
+  Pass every function/class an edit touches and get one aggregated, deduplicated
+  view: `external_callers` (callers *outside* the changeset — co-edited symbols are
+  excluded, so this is the real surface the edit might break), the de-duplicated
+  union of covering `tests_to_run`, `affected_files` (excluding the files being
+  edited), and the worst-case `overall_risk_level` / `max_blast_radius_score`.
+  Vets a multi-symbol change in a single call. (34 MCP tools total.)
 
 ### Fixed
 - **`gristle_conventions` errored on every Next.js repo.** The framework-detection

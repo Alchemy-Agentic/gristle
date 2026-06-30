@@ -272,6 +272,26 @@ entity isn't found.
 
 ---
 
+### `gristle_changeset_impact(entity_names, repo_id?)`
+
+The `gristle_change_impact` of a whole **diff**. Pass every function/class your
+change touches; get one aggregated, deduplicated view:
+- `external_callers` / `external_callers_count`: callers **outside** the changeset —
+  a co-edited symbol calling another isn't blast radius, so it's excluded. This is
+  the real surface the edit might break.
+- `tests_to_run` / `tests_to_run_count`: the de-duplicated union of every entity's
+  covering tests.
+- `affected_files`: files touched by external callers, excluding the files being edited.
+- `overall_risk_level` + `max_blast_radius_score`: worst case across the set.
+- `entities`: per-entity risk summary; `not_found`: requested names that didn't resolve.
+- `recommendation`: a one-line summary.
+
+Use it when an edit spans multiple functions/files to vet the combined blast radius
+and the full test set in a single call. Returns `{"error": ...}` only if **none** of
+the requested entities resolve.
+
+---
+
 ### `gristle_data_contract(entity_name, repo_id?)`
 
 Returns the input/output data contract for a function — what types it accepts and returns, with field details.

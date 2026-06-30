@@ -569,6 +569,36 @@ async def gristle_change_impact(
 
 
 @mcp.tool()
+async def gristle_changeset_impact(
+    entity_names: list[str],
+    repo_id: str | None = None,
+) -> dict:
+    """Pre-edit safety check for a SET of entities you're changing together.
+
+    Like gristle_change_impact, but for a whole diff. Pass every function/class
+    your change touches and get one aggregated view:
+    - external_callers: callers OUTSIDE the changeset (co-edited symbols aren't
+      blast radius) — the real surface this edit might break
+    - tests_to_run: the de-duplicated union of every entity's covering tests
+    - affected_files: files touched by external callers (excludes files you're editing)
+    - overall_risk_level + max_blast_radius_score: worst case across the set
+    - entities: per-entity risk summary; not_found: names that didn't resolve
+
+    Use this when an edit spans multiple functions/files to vet the combined
+    blast radius and the full test set in a single call.
+
+    Args:
+        entity_names: Names of the functions/classes your change touches.
+        repo_id: Repository identifier.
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    return engine.get_changeset_impact(entity_names)
+
+
+@mcp.tool()
 async def gristle_trace(
     from_entity: str,
     to_entity: str,
