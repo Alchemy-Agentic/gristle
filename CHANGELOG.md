@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-30
+
 ### Added
 - **`gristle_change_impact` tool** — a one-call pre-edit safety check for agents.
   Bundles the scored blast radius + risk level (`get_impact_analysis`) with the
