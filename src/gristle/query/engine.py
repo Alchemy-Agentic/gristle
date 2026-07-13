@@ -157,15 +157,20 @@ class QueryEngine:
         name: str,
         include_source: bool = True,
     ) -> dict[str, Any] | None:
-        """Get a function with its callers, callees, class, and optionally source."""
+        """Get a function with its callers, callees, class, and optionally source.
+
+        `callers_detail` / `callees_detail` carry how reliably each call edge was
+        resolved (see :func:`resolution_confidence`); `callers` / `callees` remain
+        plain name lists.
+        """
         result = self.graph.execute(
             """
             MATCH (f:Function)
             WHERE f.name = $name OR f.qualified_name = $name
             MATCH (f)-[:DEFINED_IN]->(file:File)
             OPTIONAL MATCH (cls:Class)-[:CONTAINS]->(f)
-            OPTIONAL MATCH (caller:Function)-[:CALLS]->(f)
-            OPTIONAL MATCH (f)-[:CALLS]->(callee:Function)
+            OPTIONAL MATCH (caller:Function)-[cr:CALLS]->(f)
+            OPTIONAL MATCH (f)-[er:CALLS]->(callee:Function)
             RETURN f.qualified_name AS qualified_name,
                    f.name AS name,
                    f.signature AS signature,
@@ -180,7 +185,11 @@ class QueryEngine:
                    file.path AS file_path,
                    cls.name AS class_name,
                    collect(DISTINCT caller.qualified_name) AS callers,
-                   collect(DISTINCT callee.qualified_name) AS callees
+                   collect(DISTINCT callee.qualified_name) AS callees,
+                   collect(DISTINCT {name: caller.qualified_name,
+                                     resolution: cr.resolution}) AS caller_details,
+                   collect(DISTINCT {name: callee.qualified_name,
+                                     resolution: er.resolution}) AS callee_details
             """,
             {"name": name},
         )
@@ -188,6 +197,8 @@ class QueryEngine:
             return None
 
         rec = result.records[0]
+        rec["callers_detail"] = self._resolution_details(rec.pop("caller_details", None), "name")
+        rec["callees_detail"] = self._resolution_details(rec.pop("callee_details", None), "name")
         if include_source and self.repo_path:
             rec["source_code"] = self._load_source(rec["file_path"], rec["start_line"], rec["end_line"])
         return rec
@@ -318,6 +329,25 @@ class QueryEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _resolution_details(entries: list[dict[str, Any]] | None, name_key: str) -> list[dict[str, Any]]:
+        """Turn raw ``collect()``-ed ``{name, resolution}`` maps into rows carrying a
+        confidence bucket.
+
+        Drops the all-null entry FalkorDB emits when an OPTIONAL MATCH found nothing:
+        a map literal is itself non-null, so (unlike a plain ``collect()``, which drops
+        nulls) it survives — and an entity with no callers would report a phantom one.
+        """
+        return [
+            {
+                name_key: e["name"],
+                "resolution": e.get("resolution"),
+                "confidence": resolution_confidence(e.get("resolution")),
+            }
+            for e in (entries or [])
+            if e.get("name")
+        ]
+
+    @staticmethod
     def _best_route_confidence(paths: list[list[str | None]]) -> tuple[str | None, str]:
         """Pick the most trustworthy route among *paths* and describe its confidence.
 
@@ -414,19 +444,7 @@ class QueryEngine:
 
         rec = result.records[0]
 
-        # How reliably was each direct caller's CALLS edge resolved? A map literal in
-        # collect() survives even when OPTIONAL MATCH found nothing (unlike a plain
-        # collect, which drops nulls), so an uncalled target yields one all-null entry
-        # — filter it or an uncalled function would report a phantom caller.
-        details = [
-            {
-                "caller": d["name"],
-                "resolution": d.get("resolution"),
-                "confidence": resolution_confidence(d.get("resolution")),
-            }
-            for d in (rec.pop("caller_details", None) or [])
-            if d.get("name")
-        ]
+        details = self._resolution_details(rec.pop("caller_details", None), "caller")
         rec["direct_callers_detail"] = details
         rec["low_confidence_callers"] = [d["caller"] for d in details if d["confidence"] == "low"]
 

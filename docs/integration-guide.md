@@ -165,9 +165,23 @@ gristle_explore(entity="Schema.validate")
     "tests/test_schema.py::TestRequiredFields.test_allow_none_custom_message"
   ],
   "callees": ["src/marshmallow/schema.py::Schema._do_load"],
+  "callers_detail": [
+    {"name": "tests/test_schema.py::test_multiple_errors_can_be_stored_for_a_given_index",
+     "resolution": "import", "confidence": "medium"},
+    {"name": "tests/test_schema.py::TestRequiredFields.test_allow_none_custom_message",
+     "resolution": "import", "confidence": "medium"}
+  ],
+  "callees_detail": [
+    {"name": "src/marshmallow/schema.py::Schema._do_load",
+     "resolution": "file_scoped", "confidence": "high"}
+  ],
   "source_code": "def validate(self, data, *, many=None, partial=None):\n    ..."
 }
 ```
+
+`callers` / `callees` are plain name lists; `callers_detail` / `callees_detail` add how
+reliably each call edge was resolved — see [Call confidence](#call-confidence). Verify
+`low`-confidence edges before relying on them.
 
 **Example — exploring a class:**
 ```

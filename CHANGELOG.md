@@ -20,6 +20,10 @@ All notable changes to Gristle are documented here. This file is intended for co
   its weakest link. Lets an agent act on `high` edges and verify `low` ones instead of
   treating every edge as fact. Existing fields (`direct_callers`, …) are unchanged — this
   is purely additive.
+- **Call confidence in `gristle_explore`** — exploring a function now also returns
+  `callers_detail` / `callees_detail` (`[{name, resolution, confidence}]`) alongside the
+  existing plain `callers` / `callees` name lists, so every tool that reports call edges
+  now reports how far to trust them.
 
 ## [0.2.0] - 2026-06-30
 

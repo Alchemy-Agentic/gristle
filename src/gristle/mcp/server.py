@@ -438,6 +438,11 @@ async def gristle_explore(
     Use this to understand what something is, what it contains, and how
     it fits into the codebase. Automatically detects the entity type.
 
+    For a function, `callers` / `callees` are plain name lists, and
+    `callers_detail` / `callees_detail` add how reliably each call edge was
+    resolved (`confidence`: high / medium / low) — call resolution is name-based,
+    not type-resolved, so verify `low`-confidence edges before relying on them.
+
     Args:
         entity: A function name, class name, qualified name, or file path.
         repo_id: Repository identifier. If omitted, uses the most recently

@@ -99,6 +99,62 @@ class TestGetFunctionContext:
             assert result["source_code"] is not None
             assert "line 3" in result["source_code"]
 
+    def test_callers_and_callees_carry_confidence(self):
+        rec = {
+            "qualified_name": "mod.foo",
+            "name": "foo",
+            "signature": "def foo(x)",
+            "docstring": None,
+            "start_line": 1,
+            "end_line": 2,
+            "is_async": False,
+            "complexity": 1,
+            "decorators": None,
+            "visibility": "public",
+            "return_type": None,
+            "file_path": "mod.py",
+            "class_name": None,
+            "callers": ["mod.bar"],
+            "callees": ["mod.baz"],
+            "caller_details": [{"name": "mod.bar", "resolution": "exact"}],
+            "callee_details": [{"name": "mod.baz", "resolution": "unique_global"}],
+        }
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([rec])
+        result = engine.get_function_context("foo", include_source=False)
+
+        assert result["callers"] == ["mod.bar"]  # plain lists unchanged
+        assert result["callers_detail"] == [{"name": "mod.bar", "resolution": "exact", "confidence": "high"}]
+        assert result["callees_detail"] == [{"name": "mod.baz", "resolution": "unique_global", "confidence": "low"}]
+
+    def test_isolated_function_has_no_phantom_edges(self):
+        # FalkorDB emits one all-null map when an OPTIONAL MATCH found nothing.
+        rec = {
+            "qualified_name": "mod.orphan",
+            "name": "orphan",
+            "signature": "def orphan()",
+            "docstring": None,
+            "start_line": 1,
+            "end_line": 2,
+            "is_async": False,
+            "complexity": 1,
+            "decorators": None,
+            "visibility": "public",
+            "return_type": None,
+            "file_path": "mod.py",
+            "class_name": None,
+            "callers": [],
+            "callees": [],
+            "caller_details": [{"name": None, "resolution": None}],
+            "callee_details": [{"name": None, "resolution": None}],
+        }
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([rec])
+        result = engine.get_function_context("orphan", include_source=False)
+
+        assert result["callers_detail"] == []
+        assert result["callees_detail"] == []
+
     def test_no_source_when_include_source_false(self):
         engine, graph = _make_engine(repo_path="/some/path")
         rec = {
