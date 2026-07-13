@@ -4,6 +4,45 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# How a CALLS edge was resolved, ranked by confidence (higher = more reliable).
+# Written to the edge's `resolution` property during ingestion and surfaced by the
+# query engine so consumers can weight or filter edges. Single source of truth for
+# the ranking — the ingestion pipeline and the query engine both read it.
+RESOLUTION_RANK: dict[str, int] = {
+    "exact": 6,  # exact qualified name — always unique
+    "file_scoped": 5,  # qualified within the calling file
+    "typed_receiver": 5,  # obj.method() where obj's type annotation names a class
+    "import": 4,  # name/method imported from a resolved file
+    "dotted": 4,  # self/this, ClassName.method, imported-module method
+    "same_file": 3,  # bare name defined in the same file
+    "unique_global": 2,  # only one function with that name repo-wide (weakest)
+}
+
+
+def resolution_confidence(resolution: str | None) -> str:
+    """Bucket a CALLS `resolution` label into high / medium / low.
+
+    Gives agents a coarse "how much should I trust this edge?" signal without
+    needing to know the resolution strategies. Edges ingested before the
+    `resolution` property existed have no label and report ``"unknown"``.
+    """
+    rank = RESOLUTION_RANK.get(resolution or "", 0)
+    if rank >= 5:
+        return "high"
+    if rank == 4:
+        return "medium"
+    if rank >= 2:
+        return "low"
+    return "unknown"
+
+
+def weakest_resolution(resolutions: list[str | None]) -> str | None:
+    """The least-confident label in a call path — a path is only as good as its
+    weakest edge. Returns None for an empty path."""
+    if not resolutions:
+        return None
+    return min(resolutions, key=lambda r: RESOLUTION_RANK.get(r or "", 0))
+
 
 @dataclass(slots=True)
 class ParsedImport:

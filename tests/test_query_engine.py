@@ -286,6 +286,43 @@ class TestGetCallers:
         graph.execute.return_value = _empty()
         assert engine.get_callers("isolated") == []
 
+    def test_surfaces_weakest_link_confidence(self):
+        # One caller reachable by two routes: a 2-hop route whose weakest edge is
+        # `unique_global` (low), and a 2-hop route whose weakest edge is `import`
+        # (medium). The best route wins -> medium.
+        recs = [
+            {
+                "caller": "mod.bar",
+                "file_path": "mod.py",
+                "line": 10,
+                "depth": 2,
+                "routes": [["exact", "unique_global"], ["exact", "import"]],
+            },
+            {
+                "caller": "mod.baz",
+                "file_path": "mod.py",
+                "line": 20,
+                "depth": 1,
+                "routes": [["dotted"]],
+            },
+        ]
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(recs)
+        result = engine.get_callers("foo")
+        assert result[0]["resolution"] == "import"
+        assert result[0]["confidence"] == "medium"
+        assert result[1]["resolution"] == "dotted"
+        assert result[1]["confidence"] == "medium"
+        assert "routes" not in result[0]  # raw per-path data isn't leaked to consumers
+
+    def test_missing_resolution_reports_unknown(self):
+        # Graphs ingested before the `resolution` property existed have no labels.
+        recs = [{"caller": "mod.bar", "file_path": "mod.py", "line": 10, "depth": 1, "routes": [[None]]}]
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(recs)
+        result = engine.get_callers("foo")
+        assert result[0]["confidence"] == "unknown"
+
 
 # ==================================================================
 # 5. get_callees
@@ -359,6 +396,78 @@ class TestImpactAnalysis:
         assert result["target"] == "mod.create_user"
         assert "mod.router" in result["transitive_callers"]
         assert "test_mod.py" in result["test_files"]
+
+    def test_caller_details_carry_confidence(self):
+        impact_rec = {
+            "target": "mod.create_user",
+            "target_type": "Function",
+            "target_file": "mod.py",
+            "direct_callers": ["mod.api_handler", "mod.legacy"],
+            "caller_details": [
+                {"name": "mod.api_handler", "resolution": "exact"},
+                {"name": "mod.legacy", "resolution": "unique_global"},
+            ],
+            "affected_files": ["mod.py"],
+        }
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [_qr([impact_rec]), _empty(), _empty(), _empty(), _empty(), _empty(), _empty()]
+        result = engine.impact_analysis("create_user")
+
+        assert result["direct_callers"] == ["mod.api_handler", "mod.legacy"]  # shape unchanged
+        assert result["direct_callers_detail"] == [
+            {"caller": "mod.api_handler", "resolution": "exact", "confidence": "high"},
+            {"caller": "mod.legacy", "resolution": "unique_global", "confidence": "low"},
+        ]
+        assert result["low_confidence_callers"] == ["mod.legacy"]
+
+    def test_uncalled_target_has_no_phantom_caller(self):
+        # A map literal inside collect() survives an OPTIONAL MATCH that found nothing
+        # (unlike a plain collect, which drops nulls), so FalkorDB hands back one
+        # all-null entry for a function with no callers. It must not become a caller.
+        impact_rec = {
+            "target": "mod.orphan",
+            "target_type": "Function",
+            "target_file": "mod.py",
+            "direct_callers": [],
+            "caller_details": [{"name": None, "resolution": None}],
+            "affected_files": [],
+        }
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [_qr([impact_rec]), _empty(), _empty(), _empty(), _empty(), _empty(), _empty()]
+        result = engine.impact_analysis("orphan")
+
+        assert result["direct_callers_detail"] == []
+        assert result["low_confidence_callers"] == []
+
+
+class TestResolutionConfidence:
+    """The shared CALLS-resolution ranking used by ingestion and the query engine."""
+
+    def test_buckets_by_rank(self):
+        from gristle.models import resolution_confidence
+
+        assert resolution_confidence("exact") == "high"
+        assert resolution_confidence("typed_receiver") == "high"
+        assert resolution_confidence("import") == "medium"
+        assert resolution_confidence("dotted") == "medium"
+        assert resolution_confidence("same_file") == "low"
+        assert resolution_confidence("unique_global") == "low"
+        assert resolution_confidence(None) == "unknown"
+        assert resolution_confidence("bogus") == "unknown"
+
+    def test_weakest_resolution_is_the_weakest_link(self):
+        from gristle.models import weakest_resolution
+
+        assert weakest_resolution(["exact", "import", "unique_global"]) == "unique_global"
+        assert weakest_resolution(["exact"]) == "exact"
+        assert weakest_resolution([]) is None
+
+    def test_pipeline_and_engine_share_one_ranking(self):
+        # A second copy of the ranking would silently drift from the ingested labels.
+        from gristle.ingestion.pipeline import IngestionPipeline
+        from gristle.models import RESOLUTION_RANK
+
+        assert IngestionPipeline._RESOLUTION_RANK is RESOLUTION_RANK
 
     def test_impact_no_target_file(self):
         """When target_file is None, test_files query is skipped."""

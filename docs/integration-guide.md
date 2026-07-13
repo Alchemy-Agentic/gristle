@@ -243,6 +243,27 @@ Key fields to check:
 - `direct_callers` — functions that call this directly (will break first)
 - `total_affected_files` — every file that transitively depends on this
 - `test_files` / `test_functions` — what tests cover this (run these after your change)
+- `direct_callers_detail` — each direct caller with **how reliably its call edge was
+  resolved**: `[{caller, resolution, confidence}]`
+- `low_confidence_callers` — the subset whose edges are weakly resolved
+
+#### Call confidence
+
+Gristle's call resolution is name- and heuristic-based, not type-resolved (see
+[Scope](../README.md#scope-and-what-it-isnt)), so **not every CALLS edge is equally
+trustworthy**. Every edge records *how* it was resolved, and the impact tools bucket
+that into a `confidence` you can act on:
+
+| `confidence` | `resolution` strategies | How to treat it |
+|--------------|------------------------|-----------------|
+| `high` | `exact`, `file_scoped`, `typed_receiver` | Trust it |
+| `medium` | `import`, `dotted` | Normally right; spot-check on risky edits |
+| `low` | `same_file`, `unique_global` | Verify the call site by hand before relying on it |
+| `unknown` | (edge has no label) | Graph ingested before `resolution` existed — re-ingest |
+
+For a transitive path, confidence is the **weakest edge on the best route** — a path is
+only as reliable as its weakest link. This lets an agent calibrate: act on `high`
+edges, and verify `low` ones before treating them as blast radius.
 
 ---
 
@@ -263,8 +284,9 @@ Higher scores indicate more risk. Critical (85+) changes require extra care.
 One-call **pre-edit safety check** — call it before modifying a function/class.
 Bundles, in a single response:
 - `blast_radius_score` (0-100) + `risk_level`, plus `direct_callers` / `affected_files`
+- `direct_callers_detail` + `low_confidence_callers` — see [Call confidence](#call-confidence)
 - `tests_to_run`: the exact covering tests to run before and after the change
-- `recommendation`: a one-line summary
+- `recommendation`: a one-line summary (calls out low-confidence edges when present)
 
 Saves chaining `gristle_impact_score` + `gristle_tests` — the whole "is this safe to
 edit, and how do I verify it?" question at once. Returns `{"error": ...}` if the
@@ -283,6 +305,8 @@ change touches; get one aggregated, deduplicated view:
   covering tests.
 - `affected_files`: files touched by external callers, excluding the files being edited.
 - `overall_risk_level` + `max_blast_radius_score`: worst case across the set.
+- `low_confidence_callers`: external callers whose call edge was weakly resolved — see
+  [Call confidence](#call-confidence).
 - `entities`: per-entity risk summary; `not_found`: requested names that didn't resolve.
 - `recommendation`: a one-line summary.
 

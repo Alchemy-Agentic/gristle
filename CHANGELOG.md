@@ -6,6 +6,21 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Call confidence in impact tools.** Gristle's call resolution is name/heuristic-based,
+  not type-resolved, so CALLS edges vary in reliability — every edge has recorded *how*
+  it was resolved since 0.1.0, but the tools never exposed it. Now `gristle_impact`,
+  `gristle_impact_score` and `gristle_change_impact` return `direct_callers_detail`
+  (`[{caller, resolution, confidence}]`) and `low_confidence_callers`, and
+  `gristle_changeset_impact` aggregates `low_confidence_callers` across the diff. The
+  `recommendation` calls out weakly-resolved edges. `confidence` buckets the resolution
+  strategy as `high` (`exact`/`file_scoped`/`typed_receiver`), `medium` (`import`/`dotted`),
+  `low` (`same_file`/`unique_global`), or `unknown` (pre-`resolution` graphs). For a
+  transitive path it's the weakest edge on the best route — a path is only as reliable as
+  its weakest link. Lets an agent act on `high` edges and verify `low` ones instead of
+  treating every edge as fact. Existing fields (`direct_callers`, …) are unchanged — this
+  is purely additive.
+
 ## [0.2.0] - 2026-06-30
 
 ### Added

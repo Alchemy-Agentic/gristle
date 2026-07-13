@@ -490,6 +490,12 @@ async def gristle_impact(
     ALWAYS use this before modifying code to understand the blast radius.
     Returns direct callers, affected files, and transitive impact.
 
+    Call edges are name/heuristic-resolved, not type-resolved, so each direct
+    caller comes with how reliably it was resolved:
+    - direct_callers_detail: [{caller, resolution, confidence}] where confidence is
+      high / medium / low (see gristle://schema for the resolution strategies)
+    - low_confidence_callers: the subset worth verifying by hand before you rely on it
+
     Args:
         entity_name: Name of the function or class to analyze.
         repo_id: Repository identifier.
@@ -547,6 +553,9 @@ async def gristle_change_impact(
     Call this BEFORE modifying a function or class. It bundles, in one response:
     - blast_radius_score (0-100) + risk_level (low/medium/high/critical)
     - direct_callers and affected_files
+    - direct_callers_detail: each caller with the confidence of its call edge
+      (high/medium/low), plus low_confidence_callers — edges to verify by hand,
+      since call resolution is name-based, not type-resolved
     - tests_to_run: the exact covering tests to run before and after the change
     - recommendation: a one-line summary
 
@@ -582,6 +591,8 @@ async def gristle_changeset_impact(
     - tests_to_run: the de-duplicated union of every entity's covering tests
     - affected_files: files touched by external callers (excludes files you're editing)
     - overall_risk_level + max_blast_radius_score: worst case across the set
+    - low_confidence_callers: external callers whose call edge was weakly resolved —
+      verify these by hand before trusting the blast radius
     - entities: per-entity risk summary; not_found: names that didn't resolve
 
     Use this when an edit spans multiple functions/files to vet the combined

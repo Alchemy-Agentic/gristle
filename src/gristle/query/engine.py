@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from gristle.config import settings
+from gristle.models import RESOLUTION_RANK, resolution_confidence, weakest_resolution
 
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
@@ -316,43 +317,73 @@ class QueryEngine:
     # 4. Callers (transitive)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _best_route_confidence(paths: list[list[str | None]]) -> tuple[str | None, str]:
+        """Pick the most trustworthy route among *paths* and describe its confidence.
+
+        A call path is only as reliable as its weakest edge, so each path is scored
+        by its weakest `resolution`; the best (highest-ranked) of those wins. Returns
+        ``(weakest_resolution_label, confidence_bucket)`` for that route.
+        """
+        weakest_per_path = [weakest_resolution(p) for p in paths if p]
+        if not weakest_per_path:
+            return None, "unknown"
+        best = max(weakest_per_path, key=lambda r: RESOLUTION_RANK.get(r or "", 0))
+        return best, resolution_confidence(best)
+
     def get_callers(self, name: str, max_depth: int = 2) -> list[dict[str, Any]]:
-        """Find all functions that call a given function, up to max_depth."""
+        """Find all functions that call a given function, up to max_depth.
+
+        Each result carries `resolution` / `confidence`: how reliably the call path
+        was resolved (weakest edge on the best route). See :func:`resolution_confidence`.
+        """
         result = self.graph.execute(
             f"""
             MATCH path = (caller:Function)-[:CALLS*1..{max_depth}]->(target:Function)
             WHERE target.name = $name OR target.qualified_name = $name
-            WITH caller, min(length(path)) AS depth
+            WITH caller, length(path) AS d, [r IN relationships(path) | r.resolution] AS res
             RETURN caller.qualified_name AS caller,
                    caller.file_path AS file_path,
                    caller.start_line AS line,
-                   depth
+                   min(d) AS depth,
+                   collect(res) AS routes
             ORDER BY depth, caller
             """,
             {"name": name},
         )
-        return result.records
+        return [self._with_confidence(r, "routes") for r in result.records]
 
     # ------------------------------------------------------------------
     # 5. Callees (transitive)
     # ------------------------------------------------------------------
 
     def get_callees(self, name: str, max_depth: int = 2) -> list[dict[str, Any]]:
-        """Find all functions called by a given function, up to max_depth."""
+        """Find all functions called by a given function, up to max_depth.
+
+        Each result carries `resolution` / `confidence` (see :meth:`get_callers`).
+        """
         result = self.graph.execute(
             f"""
             MATCH path = (source:Function)-[:CALLS*1..{max_depth}]->(callee:Function)
             WHERE source.name = $name OR source.qualified_name = $name
-            WITH callee, min(length(path)) AS depth
+            WITH callee, length(path) AS d, [r IN relationships(path) | r.resolution] AS res
             RETURN callee.qualified_name AS callee,
                    callee.file_path AS file_path,
                    callee.start_line AS line,
-                   depth
+                   min(d) AS depth,
+                   collect(res) AS routes
             ORDER BY depth, callee
             """,
             {"name": name},
         )
-        return result.records
+        return [self._with_confidence(r, "routes") for r in result.records]
+
+    def _with_confidence(self, record: dict[str, Any], routes_key: str) -> dict[str, Any]:
+        """Replace a record's raw per-path resolution lists with resolution/confidence."""
+        resolution, confidence = self._best_route_confidence(record.pop(routes_key, []) or [])
+        record["resolution"] = resolution
+        record["confidence"] = confidence
+        return record
 
     # ------------------------------------------------------------------
     # 6. Impact analysis
@@ -366,12 +397,14 @@ class QueryEngine:
             WHERE (target:Function OR target:Class)
               AND (target.name = $name OR target.qualified_name = $name)
             OPTIONAL MATCH (target)-[:DEFINED_IN]->(file:File)
-            OPTIONAL MATCH (caller:Function)-[:CALLS]->(target)
+            OPTIONAL MATCH (caller:Function)-[cr:CALLS]->(target)
             OPTIONAL MATCH (caller)-[:DEFINED_IN]->(caller_file:File)
             RETURN target.qualified_name AS target,
                    labels(target)[0] AS target_type,
                    file.path AS target_file,
                    collect(DISTINCT caller.qualified_name) AS direct_callers,
+                   collect(DISTINCT {name: caller.qualified_name,
+                                     resolution: cr.resolution}) AS caller_details,
                    collect(DISTINCT caller_file.path) AS affected_files
             """,
             {"name": name},
@@ -380,6 +413,22 @@ class QueryEngine:
             return None
 
         rec = result.records[0]
+
+        # How reliably was each direct caller's CALLS edge resolved? A map literal in
+        # collect() survives even when OPTIONAL MATCH found nothing (unlike a plain
+        # collect, which drops nulls), so an uncalled target yields one all-null entry
+        # — filter it or an uncalled function would report a phantom caller.
+        details = [
+            {
+                "caller": d["name"],
+                "resolution": d.get("resolution"),
+                "confidence": resolution_confidence(d.get("resolution")),
+            }
+            for d in (rec.pop("caller_details", None) or [])
+            if d.get("name")
+        ]
+        rec["direct_callers_detail"] = details
+        rec["low_confidence_callers"] = [d["caller"] for d in details if d["confidence"] == "low"]
 
         # Also get transitive callers (depth 2) for broader impact
         transitive = self.get_callers(name, max_depth=3)
@@ -560,9 +609,15 @@ class QueryEngine:
             test_advice = f"Run the {len(tests)} covering test(s) below before and after editing."
         else:
             test_advice = "No covering tests found — add tests before changing this."
+        low_confidence = impact.get("low_confidence_callers") or []
+        confidence_advice = (
+            f" {len(low_confidence)} caller edge(s) are low-confidence — verify those call sites by hand."
+            if low_confidence
+            else ""
+        )
         recommendation = (
             f"{risk.upper()} risk (blast radius {score}/100): {n_callers} direct caller(s), "
-            f"{n_files} affected file(s). {test_advice}"
+            f"{n_files} affected file(s). {test_advice}{confidence_advice}"
         )
         return {
             "entity": impact.get("target") or name,
@@ -571,6 +626,8 @@ class QueryEngine:
             "blast_radius_score": score,
             "risk_level": risk,
             "direct_callers": impact.get("direct_callers") or [],
+            "direct_callers_detail": impact.get("direct_callers_detail") or [],
+            "low_confidence_callers": low_confidence,
             "direct_callers_count": n_callers,
             "affected_files": impact.get("affected_files") or [],
             "affected_files_count": n_files,
@@ -624,12 +681,16 @@ class QueryEngine:
         changeset_files = {ci["file"] for ci in per_entity if ci.get("file")}
 
         external_callers: set[str] = set()
+        low_confidence_callers: set[str] = set()
         affected_files: set[str] = set()
         tests_by_key: dict[str, dict[str, Any]] = {}
         for ci in per_entity:
             for caller in ci.get("direct_callers") or []:
                 if caller and caller not in changeset_ids:
                     external_callers.add(caller)
+            for caller in ci.get("low_confidence_callers") or []:
+                if caller and caller not in changeset_ids:
+                    low_confidence_callers.add(caller)
             for path in ci.get("affected_files") or []:
                 if path:
                     affected_files.add(path)
@@ -650,11 +711,16 @@ class QueryEngine:
             test_advice = f"Run the {len(tests_to_run)} covering test(s) below before and after editing."
         else:
             test_advice = "No covering tests found for this changeset — add tests before editing."
+        confidence_advice = (
+            f" {len(low_confidence_callers)} caller edge(s) are low-confidence — verify those by hand."
+            if low_confidence_callers
+            else ""
+        )
         recommendation = (
             f"{overall_risk.upper()} risk across {n} changed "
             f"{'entity' if n == 1 else 'entities'} (max blast radius {max_score}/100): "
             f"{len(external_callers)} external caller(s), "
-            f"{len(affected_files)} other affected file(s). {test_advice}"
+            f"{len(affected_files)} other affected file(s). {test_advice}{confidence_advice}"
         )
 
         return {
@@ -679,6 +745,7 @@ class QueryEngine:
             "has_route": any(ci.get("has_route") for ci in per_entity),
             "external_callers": sorted(external_callers),
             "external_callers_count": len(external_callers),
+            "low_confidence_callers": sorted(low_confidence_callers),
             "affected_files": sorted(affected_files),
             "affected_files_count": len(affected_files),
             "tests_to_run": tests_to_run,

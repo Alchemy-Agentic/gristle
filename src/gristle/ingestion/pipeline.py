@@ -17,6 +17,7 @@ from gristle.graph.schema import ensure_schema
 from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.walker import WalkedFile, walk_config_files, walk_repo
 from gristle.logging import Timer
+from gristle.models import RESOLUTION_RANK
 from gristle.parsers.config import parse_config_file
 from gristle.parsers.markdown import MarkdownParser
 from gristle.parsers.registry import ParserRegistry
@@ -1447,15 +1448,8 @@ class IngestionPipeline:
 
     # How a CALLS edge was resolved, ranked by confidence (higher = more reliable).
     # Recorded as the edge's `resolution` property so consumers can weight/filter.
-    _RESOLUTION_RANK = {
-        "exact": 6,  # exact qualified name — always unique
-        "file_scoped": 5,  # qualified within the calling file
-        "typed_receiver": 5,  # obj.method() where obj's type annotation names a class
-        "import": 4,  # name/method imported from a resolved file
-        "dotted": 4,  # self/this, ClassName.method, imported-module method
-        "same_file": 3,  # bare name defined in the same file
-        "unique_global": 2,  # only one function with that name repo-wide (weakest)
-    }
+    # Canonical ranking lives in models.RESOLUTION_RANK (the query engine reads it too).
+    _RESOLUTION_RANK = RESOLUTION_RANK
 
     def _resolve_function_calls(self, func: ParsedFunction, pf: ParsedFile, batch: BatchCollector) -> None:
         caller_id = f"func::{func.qualified_name}"
