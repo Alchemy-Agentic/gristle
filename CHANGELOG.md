@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-30
+
 ### Added
 - **Call confidence in impact tools.** Gristle's call resolution is name/heuristic-based,
   not type-resolved, so CALLS edges vary in reliability — every edge has recorded *how*
