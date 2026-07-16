@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-16
+
 ### Added
 - **Worktree-aware repo identity.** A git worktree is a checkout of a repository,
   not a separate repository — but identity was a hash of the ingest path, so an
