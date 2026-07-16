@@ -2,10 +2,12 @@
 
 Gives developers a terminal path to value without wiring up an MCP client:
 
-    gristle ingest .                 # index the current repo
-    gristle overview --repo-id .     # see the indexed graph
-    gristle explore myFunc --repo-id .
-    gristle query "MATCH (f:Function) RETURN count(f)" --repo-id .
+    gristle ingest . --repo-id demo  # index the current repo (prints the repo_id)
+    gristle overview --repo-id demo  # see the indexed graph
+    gristle explore myFunc --repo-id demo
+    gristle query "MATCH (f:Function) RETURN count(f)" --repo-id demo
+    gristle repos                    # list every indexed graph
+    gristle drop demo                # remove one
     gristle doctor                   # check the local setup
     gristle serve                    # start the MCP server (default)
 
@@ -23,15 +25,23 @@ from typing import Any
 from gristle.config import settings
 
 
-def _build_graph(repo_id: str):  # noqa: ANN202 - returns GraphClient (imported lazily)
+def _build_graph(repo_id: str):  # noqa: ANN202 - returns GraphClient | None (imported lazily)
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
     from gristle.graph.client import GraphClient
 
-    return GraphClient(
-        host=settings.falkordb_host,
-        port=settings.falkordb_port,
-        repo_id=repo_id,
-        password=settings.falkordb_password,
-    )
+    # FalkorDB connects eagerly in the constructor, so an unreachable server
+    # raises HERE — return None so commands print the friendly fix message
+    # instead of a stack trace.
+    try:
+        return GraphClient(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            repo_id=repo_id,
+            password=settings.falkordb_password,
+        )
+    except RedisConnectionError:
+        return None
 
 
 def _falkordb_down_message() -> str:
@@ -50,9 +60,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     from gristle.ingestion.pipeline import IngestionPipeline
     from gristle.parsers.registry import ParserRegistry
 
-    rid = args.repo_id or GraphClient.repo_id_from_path(args.path)
+    # Canonicalize before hashing: the raw string would give `gristle ingest .`
+    # the SAME graph for every repo it's run in (sha256(".") is constant), and a
+    # git worktree would get its own graph instead of sharing the main repo's.
+    rid = args.repo_id or GraphClient.repo_id_from_path(GraphClient.canonical_repo_path(args.path))
     graph = _build_graph(rid)
-    if not graph.ping():
+    if graph is None or not graph.ping():
         print(_falkordb_down_message(), file=sys.stderr)
         return 1
 
@@ -75,7 +88,7 @@ def _cmd_overview(args: argparse.Namespace) -> int:
     from gristle.query.engine import QueryEngine
 
     graph = _build_graph(args.repo_id)
-    if not graph.ping():
+    if graph is None or not graph.ping():
         print(_falkordb_down_message(), file=sys.stderr)
         return 1
     _dump(QueryEngine(graph).get_repo_overview())
@@ -86,7 +99,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
     from gristle.query.engine import QueryEngine
 
     graph = _build_graph(args.repo_id)
-    if not graph.ping():
+    if graph is None or not graph.ping():
         print(_falkordb_down_message(), file=sys.stderr)
         return 1
     engine = QueryEngine(graph)
@@ -100,7 +113,7 @@ def _cmd_explore(args: argparse.Namespace) -> int:
 
 def _cmd_query(args: argparse.Namespace) -> int:
     graph = _build_graph(args.repo_id)
-    if not graph.ping():
+    if graph is None or not graph.ping():
         print(_falkordb_down_message(), file=sys.stderr)
         return 1
     _dump(graph.execute(args.cypher).records)
@@ -112,7 +125,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print("gristle doctor\n")
 
     graph = _build_graph("doctor")
-    reachable = graph.ping()
+    reachable = graph is not None and graph.ping()
     print(
         f"  [{'OK ' if reachable else 'FAIL'}] FalkorDB reachable at {settings.falkordb_host}:{settings.falkordb_port}"
     )
@@ -145,6 +158,36 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _cmd_repos(args: argparse.Namespace) -> int:
+    graph = _build_graph("default")
+    if graph is None or not graph.ping():
+        print(_falkordb_down_message(), file=sys.stderr)
+        return 1
+    entries = graph.describe_gristle_graphs()
+    if not entries:
+        print("No Gristle graphs on this server. Ingest one with: gristle ingest <path>")
+        return 0
+    print(f"{'REPO_ID':<40} {'NODES':>8}  {'LAST INGESTED':<26} PATH")
+    for e in entries:
+        nodes = e["nodes"] if e["nodes"] is not None else "?"
+        print(f"{e['repo_id']:<40} {nodes:>8}  {str(e['last_ingested_at'] or '?'):<26} {e['repo_path'] or '?'}")
+    print(f"\n{len(entries)} graph(s). Remove one with: gristle drop <repo_id>")
+    return 0
+
+
+def _cmd_drop(args: argparse.Namespace) -> int:
+    graph = _build_graph(args.repo_id)
+    if graph is None or not graph.ping():
+        print(_falkordb_down_message(), file=sys.stderr)
+        return 1
+    if not graph.graph_exists():
+        print(f"No graph found for repo_id '{args.repo_id}'. See: gristle repos", file=sys.stderr)
+        return 1
+    graph.drop()
+    print(f"Dropped graph '{graph.graph_name}' (repo_id={args.repo_id}).")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     from gristle.mcp.server import main as serve_main
 
@@ -161,7 +204,7 @@ def _cmd_viz(args: argparse.Namespace) -> int:
     from gristle.viz import render_html
 
     graph = _build_graph(args.repo_id)
-    if not graph.ping():
+    if graph is None or not graph.ping():
         print(_falkordb_down_message(), file=sys.stderr)
         return 1
     data = QueryEngine(graph).get_subgraph(
@@ -208,6 +251,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("cypher", help="Cypher query string.")
     p_query.add_argument("--repo-id", required=True, help="Identifier used at ingest time.")
     p_query.set_defaults(func=_cmd_query)
+
+    p_repos = sub.add_parser("repos", help="List all Gristle graphs with source path, freshness, and size.")
+    p_repos.set_defaults(func=_cmd_repos)
+
+    p_drop = sub.add_parser("drop", help="Drop a repo's graph from FalkorDB.")
+    p_drop.add_argument("repo_id", help="Repo identifier (see: gristle repos).")
+    p_drop.set_defaults(func=_cmd_drop)
 
     p_doctor = sub.add_parser("doctor", help="Check the local Gristle/FalkorDB setup.")
     p_doctor.set_defaults(func=_cmd_doctor)

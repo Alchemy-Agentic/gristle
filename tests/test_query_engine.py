@@ -59,14 +59,14 @@ class TestGetFunctionContext:
             "return_type": "int",
             "file_path": "mod.py",
             "class_name": None,
-            "callers": ["bar"],
-            "callees": ["baz"],
+            "caller_details": [{"name": "bar", "resolution": "import"}],
+            "callee_details": [{"name": "baz", "resolution": "same_file"}],
         }
         engine, graph = _make_engine()
         graph.execute.return_value = _qr([rec])
         result = engine.get_function_context("foo", include_source=False)
         assert result["qualified_name"] == "mod.foo"
-        assert result["callers"] == ["bar"]
+        assert result["callers"] == ["bar"]  # derived from the details
         assert result["callees"] == ["baz"]
 
     def test_includes_source_when_repo_path_set(self):
@@ -418,7 +418,7 @@ class TestImpactAnalysis:
             "target": "mod.create_user",
             "target_type": "Function",
             "target_file": "mod.py",
-            "direct_callers": ["mod.api_handler"],
+            "caller_details": [{"name": "mod.api_handler", "resolution": "import"}],
             "affected_files": ["mod.py"],
         }
         transitive_callers = [
@@ -458,7 +458,6 @@ class TestImpactAnalysis:
             "target": "mod.create_user",
             "target_type": "Function",
             "target_file": "mod.py",
-            "direct_callers": ["mod.api_handler", "mod.legacy"],
             "caller_details": [
                 {"name": "mod.api_handler", "resolution": "exact"},
                 {"name": "mod.legacy", "resolution": "unique_global"},
@@ -484,7 +483,6 @@ class TestImpactAnalysis:
             "target": "mod.orphan",
             "target_type": "Function",
             "target_file": "mod.py",
-            "direct_callers": [],
             "caller_details": [{"name": None, "resolution": None}],
             "affected_files": [],
         }
@@ -525,6 +523,165 @@ class TestResolutionConfidence:
 
         assert IngestionPipeline._RESOLUTION_RANK is RESOLUTION_RANK
 
+
+class TestOutputCaps:
+    """Unbounded lists are capped at the public projection; counts stay exact.
+
+    On large repos a hub function can have hundreds of callers — measured single
+    impact calls >50k tokens before capping. The `<field>_omitted` sibling records
+    the cut; `*_count` fields always reflect the full data.
+    """
+
+    def test_cap_list_under_cap_is_untouched(self):
+        rec = {"xs": [1, 2, 3]}
+        QueryEngine._cap_list(rec, "xs", cap=5)
+        assert rec == {"xs": [1, 2, 3]}  # no omitted marker when nothing was cut
+
+    def test_cap_list_over_cap_truncates_and_marks(self):
+        rec = {"xs": list(range(10))}
+        QueryEngine._cap_list(rec, "xs", cap=4)
+        assert rec["xs"] == [0, 1, 2, 3]
+        assert rec["xs_omitted"] == 6
+
+    def test_change_impact_hub_function_is_capped_with_true_counts(self):
+        from unittest.mock import MagicMock
+
+        n = 200
+        details = [{"caller": f"mod.c{i:03}", "resolution": "import", "confidence": "medium"} for i in range(n)]
+        engine, _ = _make_engine()
+        engine._get_impact_analysis_full = MagicMock(
+            return_value={
+                "target": "mod.hub",
+                "target_type": "Function",
+                "target_file": "mod.py",
+                "blast_radius_score": 90.0,
+                "risk_level": "critical",
+                "direct_callers": [d["caller"] for d in details],
+                "direct_callers_detail": details,
+                "low_confidence_callers": [],
+                "direct_callers_count": n,
+                "affected_files": [f"f{i}.py" for i in range(3)],
+                "affected_files_count": 3,
+                "total_affected_files": [f"f{i}.py" for i in range(40)],
+                "total_affected_files_count": 40,
+            }
+        )
+        engine.get_tests_for_entity = MagicMock(return_value=[])
+
+        out = engine.get_change_impact("mod.hub")
+        assert len(out["direct_callers"]) == QueryEngine._LIST_CAP
+        assert out["direct_callers_omitted"] == n - QueryEngine._LIST_CAP
+        assert out["direct_callers_count"] == n  # true count survives the cap
+        # affected_files is the transitive union (the full blast surface), and
+        # its count counts THAT list — len + omitted reconciles to the count.
+        assert len(out["affected_files"]) == QueryEngine._LIST_CAP
+        assert out["affected_files_count"] == 40
+        assert len(out["affected_files"]) + out["affected_files_omitted"] == out["affected_files_count"]
+        assert "40 affected file(s)" in out["recommendation"]
+        assert next(iter(out)) == "recommendation"  # actionable summary leads
+
+    def test_changeset_aggregates_full_data_then_caps(self):
+        from unittest.mock import MagicMock
+
+        # 60 external callers: the union/count must see all 60 (uncapped input),
+        # while the returned list is capped at 50.
+        ci = {
+            "entity": "mod.hub",
+            "entity_type": "Function",
+            "file": "mod.py",
+            "blast_radius_score": 50.0,
+            "risk_level": "medium",
+            "direct_callers": [f"ext.c{i:02}" for i in range(60)],
+            "direct_callers_count": 60,
+            "affected_files": [],
+            "tests_to_run": [],
+        }
+        engine, _ = _make_engine()
+        engine._change_impact_full = MagicMock(return_value=ci)
+
+        out = engine.get_changeset_impact(["mod.hub"])
+        assert out["external_callers_count"] == 60
+        assert len(out["external_callers"]) == 50
+        assert out["external_callers_omitted"] == 10
+        assert next(iter(out)) == "recommendation"
+
+    def test_impact_analysis_carries_counts_for_capped_lists(self):
+        # gristle_impact returns impact_analysis directly; its capped lists must
+        # come with true totals (the docstring promises *_count fields).
+        from unittest.mock import MagicMock
+
+        engine, _ = _make_engine()
+        engine._impact_analysis_full = MagicMock(
+            return_value={
+                "target": "mod.hub",
+                "target_type": "Function",
+                "target_file": "mod.py",
+                "direct_callers": [f"c{i}" for i in range(30)],
+                "direct_callers_detail": [],
+                "low_confidence_callers": [],
+                "affected_files": ["a.py"],
+                "transitive_callers": [f"t{i}" for i in range(60)],
+                "total_affected_files": [f"f{i}.py" for i in range(40)],
+            }
+        )
+        out = engine.impact_analysis("mod.hub")
+        assert out["direct_callers_count"] == 30
+        assert out["transitive_callers_count"] == 60
+        assert out["total_affected_files_count"] == 40
+        assert len(out["direct_callers"]) == QueryEngine._LIST_CAP
+        assert len(out["direct_callers"]) + out["direct_callers_omitted"] == out["direct_callers_count"]
+
+    def test_total_affected_files_is_deterministic(self):
+        # Built from a set union — must be sorted, or capping returns a random
+        # 25-file subset on every call.
+        impact_rec = {
+            "target": "mod.f",
+            "target_type": "Function",
+            "target_file": "mod.py",
+            "caller_details": [],
+            "affected_files": ["z.py", "a.py"],
+        }
+        transitive = [{"caller": "c", "file_path": "m.py", "depth": 1}]
+        engine, graph = _make_engine()
+        graph.execute.side_effect = [
+            _qr([impact_rec]),
+            _qr(transitive),
+            _empty(),
+            _empty(),
+            _empty(),
+            _empty(),
+            _empty(),
+        ]
+        out = engine._impact_analysis_full("mod.f")
+        assert out["total_affected_files"] == sorted(out["total_affected_files"])
+
+    def test_function_context_caps_keep_lists_aligned(self):
+        rec = {
+            "qualified_name": "mod.hub",
+            "name": "hub",
+            "signature": "def hub()",
+            "docstring": None,
+            "start_line": 1,
+            "end_line": 2,
+            "is_async": False,
+            "complexity": 1,
+            "decorators": None,
+            "visibility": "public",
+            "return_type": None,
+            "file_path": "mod.py",
+            "class_name": None,
+            "caller_details": [{"name": f"mod.c{i:03}", "resolution": "import"} for i in range(30)],
+            "callee_details": [],
+        }
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([rec])
+
+        out = engine.get_function_context("hub", include_source=False)
+        assert len(out["callers"]) == QueryEngine._LIST_CAP
+        assert out["callers_omitted"] == 5
+        # plain list is derived from the details, so the capped views agree
+        assert out["callers"] == [d["name"] for d in out["callers_detail"]]
+
     def test_impact_no_target_file(self):
         """When target_file is None, test_files query is skipped."""
         impact_rec = {
@@ -561,7 +718,7 @@ class TestImpactScoring:
             "target": "mod.helper",
             "target_type": "Function",
             "target_file": "mod.py",
-            "direct_callers": [],
+            "caller_details": [],
             "affected_files": [],
         }
         engine, graph = _make_engine()
@@ -589,7 +746,11 @@ class TestImpactScoring:
             "target": "api.get_users",
             "target_type": "Function",
             "target_file": "api.py",
-            "direct_callers": ["api.auth", "api.validate", "api.log"],
+            "caller_details": [
+                {"name": "api.auth", "resolution": "import"},
+                {"name": "api.validate", "resolution": "import"},
+                {"name": "api.log", "resolution": "dotted"},
+            ],
             "affected_files": ["api.py", "auth.py"],
             "routes": [{"method": "GET", "path": "/users", "file_path": "api.py", "line": 10}],
         }
@@ -623,7 +784,8 @@ class TestImpactScoring:
             "target": "core.process",
             "target_type": "Function",
             "target_file": "core.py",
-            "direct_callers": [f"mod.caller{i}" for i in range(8)],  # Many direct callers
+            # Many direct callers
+            "caller_details": [{"name": f"mod.caller{i}", "resolution": "import"} for i in range(8)],
             "affected_files": [f"mod{i}.py" for i in range(15)],  # Many affected files
         }
         transitive_callers = [
@@ -654,7 +816,10 @@ class TestImpactScoring:
             "target": "util.format",
             "target_type": "Function",
             "target_file": "util.py",
-            "direct_callers": ["app.main", "app.helper"],
+            "caller_details": [
+                {"name": "app.main", "resolution": "import"},
+                {"name": "app.helper", "resolution": "import"},
+            ],
             "affected_files": ["util.py", "app.py"],
             "test_files": ["test_util.py"],
         }
@@ -686,7 +851,7 @@ class TestImpactScoring:
             "target": "handlers.on_click",
             "target_type": "Function",
             "target_file": "handlers.py",
-            "direct_callers": ["app.setup"],
+            "caller_details": [{"name": "app.setup", "resolution": "import"}],
             "affected_files": ["handlers.py", "app.py"],
         }
         engine, graph = _make_engine()
@@ -1625,7 +1790,7 @@ class TestGetChangeImpact:
         from unittest.mock import MagicMock
 
         engine, _ = _make_engine()
-        engine.get_impact_analysis = MagicMock(
+        engine._get_impact_analysis_full = MagicMock(
             return_value={
                 "target": "mod.foo",
                 "target_type": "Function",
@@ -1636,6 +1801,8 @@ class TestGetChangeImpact:
                 "direct_callers_count": 2,
                 "affected_files": ["x.py"],
                 "affected_files_count": 1,
+                "total_affected_files": ["x.py", "y.py"],
+                "total_affected_files_count": 2,
                 "is_entry_point": False,
                 "is_exported": True,
                 "has_route": False,
@@ -1654,13 +1821,14 @@ class TestGetChangeImpact:
         from unittest.mock import MagicMock
 
         engine, _ = _make_engine()
-        engine.get_impact_analysis = MagicMock(
+        engine._get_impact_analysis_full = MagicMock(
             return_value={
                 "target": "mod.foo",
                 "blast_radius_score": 10.0,
                 "risk_level": "low",
                 "direct_callers_count": 0,
                 "affected_files_count": 0,
+                "total_affected_files_count": 0,
             }
         )
         engine.get_tests_for_entity = MagicMock(return_value=[])
@@ -1673,7 +1841,7 @@ class TestGetChangeImpact:
         from unittest.mock import MagicMock
 
         engine, _ = _make_engine()
-        engine.get_impact_analysis = MagicMock(return_value=None)
+        engine._get_impact_analysis_full = MagicMock(return_value=None)
         assert engine.get_change_impact("nope") is None
 
 
@@ -1700,7 +1868,8 @@ class TestGetChangesetImpact:
         from unittest.mock import MagicMock
 
         engine, _ = _make_engine()
-        engine.get_change_impact = MagicMock(side_effect=lambda n: mapping.get(n) if n not in not_found else None)
+        # The changeset aggregates over the UNCAPPED per-entity data.
+        engine._change_impact_full = MagicMock(side_effect=lambda n: mapping.get(n) if n not in not_found else None)
         return engine
 
     def test_excludes_co_edited_callers_from_external(self):

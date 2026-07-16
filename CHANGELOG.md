@@ -6,6 +6,59 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Worktree-aware repo identity.** A git worktree is a checkout of a repository,
+  not a separate repository — but identity was a hash of the ingest path, so an
+  agent running `gristle_ingest` from each worktree of one repo created one full,
+  near-identical graph per worktree (a repo with ~90 worktrees ≈ millions of
+  duplicate nodes, unidentifiable afterwards). Worktrees now take their identity
+  from the main working tree and share its graph; re-ingesting from any worktree
+  refreshes it. Submodules and orphaned (pruned) worktree dirs keep their own
+  identity. Passing an explicit `repo_id` still isolates deliberately.
+- **`gristle_repos` tool + `gristle repos` / `gristle drop` CLI commands** — the
+  graph lifecycle story. Lists every Gristle graph on the server with its source
+  `repo_path`, `last_ingested_at`, and node count (read from each graph's own
+  ingest snapshot), so stale or orphaned graphs are identifiable and removable
+  instead of opaque `gristle_<hash>` names. The `gristle://repos` resource now
+  carries the same metadata. (34 MCP tools total.)
+
+### Changed
+- **Tool outputs are now capped for agent consumption.** Dogfooding against a
+  2,335-file monorepo measured single calls at 28k–68k tokens (`infer_conventions`
+  listed all ~1,200 entry points; a hub function's impact returned 588 callers
+  three ways) — enough to flood a calling agent's context. Unbounded list fields
+  are now capped (callers/files/tests at 25; changeset unions at 50; entry points
+  at 20; repo file list at 100; dead exports and env-var listings at 50) with a
+  `<field>_omitted: N` sibling whenever items were cut. **All counts and scores are
+  computed from the full data** — capping happens only at the projection, so
+  `*_count` fields and changeset unions remain exact. `recommendation` now leads
+  the change-impact payloads. Measured effect: the audit's worst offenders shrank
+  92% (55.5k → 2.8k tokens for hub-function impact) with no information an agent
+  acts on lost.
+- **Impact payload counts now reconcile with their lists.** Every `*_count` counts
+  the same-named list field (`len(field) + field_omitted == field_count`), and
+  `gristle_impact` gained the count fields outright. Previously
+  `affected_files_count` counted the *transitive* file union while the
+  `affected_files` list held only direct-caller files; `gristle_change_impact`'s
+  `affected_files` is now that transitive union (the full blast surface — what its
+  recommendation always counted), and `gristle_impact_score` reports the union
+  separately as `total_affected_files` / `total_affected_files_count`.
+- **`gristle ingest` (CLI) now canonicalizes the path before hashing.** Previously
+  the raw string was hashed, so `gristle ingest .` produced the *same* repo_id for
+  every repository it was run in (silent graph collision between different repos).
+  Any CLI-created graph whose ingest path wasn't already in fully-resolved form
+  (relative paths, `.`/`..`, different drive-letter case, symlinks) gets a fresh
+  graph on next ingest; use `gristle repos` to find and drop the old one. The MCP
+  tool already resolved paths, so its graph identities only change for worktrees.
+- **`gristle://repos` resource entries for unloaded graphs** now carry
+  `repo_id`/`graph`/`repo_path`/`last_ingested_at`/`nodes` (from
+  `describe_gristle_graphs`) instead of the old bare `graph_name` key.
+- **`gristle_drop` evicts loaded engines by graph name**, so dropping via the
+  sanitized repo_id shown by `gristle_repos` (e.g. `my_app` for a repo ingested as
+  `my-app`) can no longer leave a stale in-memory engine that resurrects the graph
+  on its next query. The CLI no longer tracebacks when FalkorDB is down — every
+  command prints the "start it with docker compose" hint instead.
+
 ## [0.3.0] - 2026-06-30
 
 ### Added
@@ -35,14 +88,14 @@ All notable changes to Gristle are documented here. This file is intended for co
   exact covering tests to run (`get_tests_for_entity`) and a one-line
   recommendation, so an agent can answer "what breaks if I change this, and what
   must I run?" in a single call instead of chaining `gristle_impact_score` +
-  `gristle_tests`. (33 MCP tools total.)
+  `gristle_tests`. (32 MCP tools total.)
 - **`gristle_changeset_impact` tool** — the pre-edit safety check for a whole diff.
   Pass every function/class an edit touches and get one aggregated, deduplicated
   view: `external_callers` (callers *outside* the changeset — co-edited symbols are
   excluded, so this is the real surface the edit might break), the de-duplicated
   union of covering `tests_to_run`, `affected_files` (excluding the files being
   edited), and the worst-case `overall_risk_level` / `max_blast_radius_score`.
-  Vets a multi-symbol change in a single call. (34 MCP tools total.)
+  Vets a multi-symbol change in a single call. (33 MCP tools total.)
 
 ### Fixed
 - **`gristle_conventions` errored on every Next.js repo.** The framework-detection

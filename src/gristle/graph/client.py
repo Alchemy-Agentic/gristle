@@ -107,6 +107,41 @@ class GraphClient:
         except Exception:
             return []
 
+    def describe_gristle_graphs(self) -> list[dict[str, Any]]:
+        """Describe every ``gristle_*`` graph on the server: identity + freshness.
+
+        Reads each graph's most recent ingest Snapshot for its source
+        ``repo_path`` and ``captured_at``, plus a node count — enough to tell
+        which repository a graph belongs to and whether it's stale, so orphaned
+        graphs (deleted checkouts, old worktrees) can be identified and dropped.
+        Fields are None for graphs that predate snapshots or can't be read; one
+        unreadable graph never hides the rest.
+        """
+        entries: list[dict[str, Any]] = []
+        for gname in sorted(self.list_gristle_graphs()):
+            entry: dict[str, Any] = {
+                "repo_id": gname.removeprefix("gristle_"),
+                "graph": gname,
+                "repo_path": None,
+                "last_ingested_at": None,
+                "nodes": None,
+            }
+            try:
+                g = self._db.select_graph(gname)
+                snap = g.query(
+                    "MATCH (s:Snapshot) RETURN s.repo_path, s.captured_at ORDER BY s.captured_at DESC LIMIT 1"
+                ).result_set
+                if snap:
+                    entry["repo_path"] = snap[0][0] or None
+                    entry["last_ingested_at"] = snap[0][1]
+                count = g.query("MATCH (n) RETURN count(n)").result_set
+                if count:
+                    entry["nodes"] = count[0][0]
+            except Exception:
+                logger.debug("Could not read metadata for graph %s", gname, exc_info=True)
+            entries.append(entry)
+        return entries
+
     # ------------------------------------------------------------------
     # Query execution
     # ------------------------------------------------------------------
@@ -302,3 +337,52 @@ class GraphClient:
     def repo_id_from_path(repo_path: str) -> str:
         """Derive a stable repo_id from a filesystem path."""
         return hashlib.sha256(repo_path.encode()).hexdigest()[:12]
+
+    @staticmethod
+    def canonical_repo_path(repo_path: str) -> str:
+        """Resolve a path to the repo root it should take its *identity* from.
+
+        A git worktree is a checkout OF a repository, not a separate repository:
+        its ``.git`` is a file pointing into the main repo's
+        ``.git/worktrees/<name>``. Hashing the worktree's own path would give
+        every worktree its own full graph (a repo with N worktrees ends up as N
+        near-identical graphs with no cleanup story), so worktrees map to the
+        main working tree and share its graph — a re-ingest from any worktree
+        refreshes it. Passing an explicit repo_id still isolates deliberately.
+
+        Submodules also have a ``.git`` file, but it points at
+        ``.git/modules/<name>`` — a genuinely different repository — so they
+        keep their own identity. So do worktrees of *bare* repos (their gitdir
+        is ``<name>.git/worktrees/...`` with no main working tree to map to)
+        and orphaned worktree dirs whose main repo is gone.
+        """
+        from pathlib import Path
+
+        resolved = Path(repo_path).resolve()
+        try:
+            dotgit = resolved / ".git"
+            if not dotgit.is_file():  # a normal repo has a .git *directory*
+                return str(resolved)
+            content = dotgit.read_text(encoding="utf-8", errors="replace")
+            match = re.search(r"^gitdir:\s*(.+)$", content, flags=re.MULTILINE)
+            if not match:
+                return str(resolved)
+            gitdir = Path(match.group(1).strip())
+            if not gitdir.is_absolute():
+                gitdir = (resolved / gitdir).resolve()
+            # A worktree's gitdir is <main>/.git/worktrees/<name>; recover <main>.
+            # Scan from the right for a ".git"/"worktrees" adjacent pair — a
+            # worktree may itself be named "worktrees", so matching the last
+            # bare "worktrees" component is not enough.
+            parts = [p.lower().rstrip("\\/") for p in gitdir.parts]
+            for idx in range(len(parts) - 1, 0, -1):
+                if parts[idx] == "worktrees" and parts[idx - 1] == ".git":
+                    main = Path(*gitdir.parts[: idx - 1])
+                    if main.is_dir():
+                        return str(main.resolve())
+                    break  # main repo gone (pruned worktree) — keep own identity
+        except (OSError, ValueError):
+            # ValueError covers undecodable/malformed .git contents; either way
+            # we can't attribute the checkout, so it keeps its own identity.
+            logger.debug("Could not inspect %s for worktree identity", repo_path, exc_info=True)
+        return str(resolved)

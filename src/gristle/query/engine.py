@@ -184,8 +184,6 @@ class QueryEngine:
                    f.return_type AS return_type,
                    file.path AS file_path,
                    cls.name AS class_name,
-                   collect(DISTINCT caller.qualified_name) AS callers,
-                   collect(DISTINCT callee.qualified_name) AS callees,
                    collect(DISTINCT {name: caller.qualified_name,
                                      resolution: cr.resolution}) AS caller_details,
                    collect(DISTINCT {name: callee.qualified_name,
@@ -197,8 +195,17 @@ class QueryEngine:
             return None
 
         rec = result.records[0]
-        rec["callers_detail"] = self._resolution_details(rec.pop("caller_details", None), "name")
-        rec["callees_detail"] = self._resolution_details(rec.pop("callee_details", None), "name")
+        for direction in ("caller", "callee"):
+            details = sorted(
+                self._resolution_details(rec.pop(f"{direction}_details", None), "name"),
+                key=lambda d: d["name"],
+            )
+            rec[f"{direction}s_detail"] = details
+            # Derive the plain list from the details (1:1 — one CALLS edge per
+            # pair) so both stay aligned when capped below.
+            rec[f"{direction}s"] = [d["name"] for d in details]
+            self._cap_list(rec, f"{direction}s_detail")
+            self._cap_list(rec, f"{direction}s")
         if include_source and self.repo_path:
             rec["source_code"] = self._load_source(rec["file_path"], rec["start_line"], rec["end_line"])
         return rec
@@ -328,6 +335,21 @@ class QueryEngine:
     # 4. Callers (transitive)
     # ------------------------------------------------------------------
 
+    # Default cap for unbounded list fields in tool outputs. On large repos a hub
+    # function can have hundreds of callers; returning them all floods an agent's
+    # context (measured: single impact calls >50k tokens). Lists are computed in
+    # full — every count/score uses the full data — and truncated only at the
+    # public projection, with a sibling `<field>_omitted: N` recording the cut.
+    _LIST_CAP = 25
+
+    @staticmethod
+    def _cap_list(record: dict[str, Any], field: str, cap: int = _LIST_CAP) -> None:
+        """Truncate ``record[field]`` to *cap* items, adding ``<field>_omitted``."""
+        items = record.get(field)
+        if isinstance(items, list) and len(items) > cap:
+            record[f"{field}_omitted"] = len(items) - cap
+            record[field] = items[:cap]
+
     @staticmethod
     def _resolution_details(entries: list[dict[str, Any]] | None, name_key: str) -> list[dict[str, Any]]:
         """Turn raw ``collect()``-ed ``{name, resolution}`` maps into rows carrying a
@@ -419,8 +441,43 @@ class QueryEngine:
     # 6. Impact analysis
     # ------------------------------------------------------------------
 
+    # Impact list fields that are unbounded on large repos (a hub function can
+    # have hundreds of callers). Public projections cap these; all counts and
+    # scores are computed from the full data first.
+    _IMPACT_LIST_FIELDS = (
+        "direct_callers",
+        "direct_callers_detail",
+        "low_confidence_callers",
+        "transitive_callers",
+        "affected_files",
+        "total_affected_files",
+        "test_files",
+        "test_functions",
+    )
+
+    def _capped_impact(self, rec: dict[str, Any] | None) -> dict[str, Any] | None:
+        if rec is None:
+            return None
+        rec = dict(rec)
+        # Preserve full totals as *_count before capping (setdefault: the scored
+        # variant computes its own counts, which win).
+        for field in ("direct_callers", "transitive_callers", "affected_files", "total_affected_files"):
+            if isinstance(rec.get(field), list):
+                rec.setdefault(f"{field}_count", len(rec[field]))
+        for field in self._IMPACT_LIST_FIELDS:
+            self._cap_list(rec, field)
+        return rec
+
     def impact_analysis(self, name: str) -> dict[str, Any] | None:
-        """Analyze what would be affected by changing a function or class."""
+        """Analyze what would be affected by changing a function or class.
+
+        List fields are capped at ``_LIST_CAP`` items (``<field>_omitted`` gives
+        the cut) — full counts are preserved in the ``*_count`` fields.
+        """
+        return self._capped_impact(self._impact_analysis_full(name))
+
+    def _impact_analysis_full(self, name: str) -> dict[str, Any] | None:
+        """Uncapped impact data — composites build on this so counts stay exact."""
         result = self.graph.execute(
             """
             MATCH (target)
@@ -432,7 +489,6 @@ class QueryEngine:
             RETURN target.qualified_name AS target,
                    labels(target)[0] AS target_type,
                    file.path AS target_file,
-                   collect(DISTINCT caller.qualified_name) AS direct_callers,
                    collect(DISTINCT {name: caller.qualified_name,
                                      resolution: cr.resolution}) AS caller_details,
                    collect(DISTINCT caller_file.path) AS affected_files
@@ -444,14 +500,23 @@ class QueryEngine:
 
         rec = result.records[0]
 
-        details = self._resolution_details(rec.pop("caller_details", None), "caller")
+        details = sorted(
+            self._resolution_details(rec.pop("caller_details", None), "caller"),
+            key=lambda d: d["caller"],
+        )
         rec["direct_callers_detail"] = details
+        # Derive the plain list from the details: one CALLS edge per caller pair,
+        # so they're 1:1 — deriving keeps the two lists aligned when both are
+        # capped at projection time (independent collects order arbitrarily).
+        rec["direct_callers"] = [d["caller"] for d in details]
         rec["low_confidence_callers"] = [d["caller"] for d in details if d["confidence"] == "low"]
 
         # Also get transitive callers (depth 2) for broader impact
         transitive = self.get_callers(name, max_depth=3)
         rec["transitive_callers"] = [r["caller"] for r in transitive]
-        rec["total_affected_files"] = list(
+        # sorted(): set iteration order is nondeterministic — capping an unsorted
+        # projection would return a different 25-file subset on every call.
+        rec["total_affected_files"] = sorted(
             {r["file_path"] for r in transitive if r.get("file_path")} | set(rec.get("affected_files") or [])
         )
 
@@ -500,9 +565,20 @@ class QueryEngine:
         - transitive_impact_score (0-100): Based on transitive callers, affected files
         - blast_radius_score (0-100): Combined weighted score
         - risk_level: low/medium/high/critical classification
+
+        List fields are capped at ``_LIST_CAP`` items (``<field>_omitted`` gives
+        the cut); the ``*_count`` fields always reflect the full data.
         """
+        return self._capped_impact(self._get_impact_analysis_full(name, include_source))
+
+    def _get_impact_analysis_full(
+        self,
+        name: str,
+        include_source: bool = False,
+    ) -> dict[str, Any] | None:
+        """Uncapped scored impact — counts and scores come from the full lists."""
         # Get base impact data
-        base = self.impact_analysis(name)
+        base = self._impact_analysis_full(name)
         if not base:
             return None
 
@@ -539,9 +615,9 @@ class QueryEngine:
         )
         passed_to_count = callback_count.records[0].get("count", 0) if callback_count.records else 0
 
-        # Transitive metrics
+        # Transitive metrics (scoring weighs the transitive file union)
         transitive_callers = base.get("transitive_callers") or []
-        affected_files = base.get("total_affected_files") or []
+        total_affected_files = base.get("total_affected_files") or []
         test_files = base.get("test_files") or []
         has_tests = len(test_files) > 0
 
@@ -561,7 +637,7 @@ class QueryEngine:
         # Calculate Transitive Impact Score (0-100)
         transitive_score = 0.0
         transitive_score += min(len(transitive_callers) * 2, 50)  # Max 50 for transitive callers
-        transitive_score += min(len(affected_files) * 5, 30)  # Max 30 for affected files
+        transitive_score += min(len(total_affected_files) * 5, 30)  # Max 30 for affected files
         if not has_tests:
             transitive_score += 20  # No tests = higher risk
 
@@ -580,13 +656,16 @@ class QueryEngine:
         else:
             risk_level = "low"
 
-        # Build result
+        # Build result. Each *_count counts the SAME-named list field (so
+        # len(field) + field_omitted == field_count always reconciles); the
+        # transitive union gets its own explicitly-named count.
         result = {
             **base,
             "direct_callers_count": direct_callers_count,
             "passed_to_count": passed_to_count,
             "transitive_callers_count": len(transitive_callers),
-            "affected_files_count": len(affected_files),
+            "affected_files_count": len(base.get("affected_files") or []),
+            "total_affected_files_count": len(total_affected_files),
             "has_route": has_route,
             "is_entry_point": is_entry_point,
             "is_exported": is_exported,
@@ -607,6 +686,15 @@ class QueryEngine:
 
         return result
 
+    # Change-impact list fields capped at the public projection (counts stay full).
+    _CHANGE_IMPACT_LIST_FIELDS = (
+        "direct_callers",
+        "direct_callers_detail",
+        "low_confidence_callers",
+        "affected_files",
+        "tests_to_run",
+    )
+
     def get_change_impact(self, name: str) -> dict[str, Any] | None:
         """One-call pre-edit safety check for an agent about to change an entity.
 
@@ -614,15 +702,31 @@ class QueryEngine:
         exact covering tests (:meth:`get_tests_for_entity`), so an agent can answer
         "what breaks, and what must I run?" in a single call instead of chaining
         impact -> tests -> trace. Returns None if the entity isn't found.
+
+        List fields are capped at ``_LIST_CAP`` items (``<field>_omitted`` gives
+        the cut); the ``*_count`` fields always reflect the full data.
         """
-        impact = self.get_impact_analysis(name)
+        full = self._change_impact_full(name)
+        if full is None:
+            return None
+        for field in self._CHANGE_IMPACT_LIST_FIELDS:
+            self._cap_list(full, field)
+        return full
+
+    def _change_impact_full(self, name: str) -> dict[str, Any] | None:
+        """Uncapped change impact — the changeset aggregation builds on this so
+        external-caller and test unions see every caller, not the capped view."""
+        impact = self._get_impact_analysis_full(name)
         if impact is None:
             return None
         tests = self.get_tests_for_entity(name)
         score = impact["blast_radius_score"]
         risk = impact["risk_level"]
         n_callers = impact["direct_callers_count"]
-        n_files = impact["affected_files_count"]
+        # The change-impact payload's affected_files IS the transitive union
+        # (a pre-edit check wants the full blast surface), so its count matches.
+        affected_files = impact.get("total_affected_files") or []
+        n_files = impact["total_affected_files_count"]
         if tests:
             test_advice = f"Run the {len(tests)} covering test(s) below before and after editing."
         else:
@@ -637,23 +741,25 @@ class QueryEngine:
             f"{risk.upper()} risk (blast radius {score}/100): {n_callers} direct caller(s), "
             f"{n_files} affected file(s). {test_advice}{confidence_advice}"
         )
+        # recommendation and scores lead: the actionable summary should be the
+        # first thing an agent reads, before the (capped) supporting lists.
         return {
+            "recommendation": recommendation,
             "entity": impact.get("target") or name,
             "entity_type": impact.get("target_type"),
             "file": impact.get("target_file"),
             "blast_radius_score": score,
             "risk_level": risk,
-            "direct_callers": impact.get("direct_callers") or [],
-            "direct_callers_detail": impact.get("direct_callers_detail") or [],
-            "low_confidence_callers": low_confidence,
             "direct_callers_count": n_callers,
-            "affected_files": impact.get("affected_files") or [],
             "affected_files_count": n_files,
             "is_entry_point": impact.get("is_entry_point"),
             "is_exported": impact.get("is_exported"),
             "has_route": impact.get("has_route"),
             "tests_to_run": tests,
-            "recommendation": recommendation,
+            "direct_callers": impact.get("direct_callers") or [],
+            "direct_callers_detail": impact.get("direct_callers_detail") or [],
+            "low_confidence_callers": low_confidence,
+            "affected_files": affected_files,
         }
 
     # Risk levels ordered worst-last, for taking the max across a changeset.
@@ -680,7 +786,9 @@ class QueryEngine:
         per_entity: list[dict[str, Any]] = []
         not_found: list[str] = []
         for name in names:
-            impact = self.get_change_impact(name)
+            # Full (uncapped) per-entity data: the external-caller and test unions
+            # must see every caller, not the capped projection.
+            impact = self._change_impact_full(name)
             if impact is None:
                 not_found.append(name)
             else:
@@ -741,7 +849,15 @@ class QueryEngine:
             f"{len(affected_files)} other affected file(s). {test_advice}{confidence_advice}"
         )
 
-        return {
+        result = {
+            "recommendation": recommendation,
+            "overall_risk_level": overall_risk,
+            "max_blast_radius_score": max_score,
+            "has_entry_point": any(ci.get("is_entry_point") for ci in per_entity),
+            "has_route": any(ci.get("has_route") for ci in per_entity),
+            "external_callers_count": len(external_callers),
+            "affected_files_count": len(affected_files),
+            "tests_to_run_count": len(tests_to_run),
             "requested": names,
             "not_found": not_found,
             "entities": [
@@ -757,19 +873,17 @@ class QueryEngine:
                 }
                 for ci in per_entity
             ],
-            "overall_risk_level": overall_risk,
-            "max_blast_radius_score": max_score,
-            "has_entry_point": any(ci.get("is_entry_point") for ci in per_entity),
-            "has_route": any(ci.get("has_route") for ci in per_entity),
             "external_callers": sorted(external_callers),
-            "external_callers_count": len(external_callers),
             "low_confidence_callers": sorted(low_confidence_callers),
             "affected_files": sorted(affected_files),
-            "affected_files_count": len(affected_files),
             "tests_to_run": tests_to_run,
-            "tests_to_run_count": len(tests_to_run),
-            "recommendation": recommendation,
         }
+        # Counts above reflect the full unions; only the list projections are
+        # capped — all at the union cap (tests_to_run included: it's the
+        # changeset's action list, don't cut it shorter than the other unions).
+        for field in ("external_callers", "low_confidence_callers", "affected_files", "tests_to_run"):
+            self._cap_list(result, field, cap=50)
+        return result
 
     # ------------------------------------------------------------------
     # 7. Search
@@ -868,13 +982,17 @@ class QueryEngine:
             """
         )
 
-        return {
+        overview = {
             "nodes": {r["type"]: r["count"] for r in node_stats.records},
             "relationships": {r["type"]: r["count"] for r in rel_stats.records},
             "files": [r["path"] for r in files.records],
             "languages": list({r["language"] for r in files.records}),
             "most_called_functions": top_functions.records,
         }
+        # `nodes.File` carries the true total; listing thousands of paths floods
+        # an agent's context without orienting it.
+        self._cap_list(overview, "files", cap=100)
+        return overview
 
     # ------------------------------------------------------------------
     # 9. Documentation queries
@@ -1262,7 +1380,8 @@ class QueryEngine:
             """
         )
 
-        # Entry points
+        # Entry points (deterministic order; the projection below is capped —
+        # component-heavy repos have a thousand-plus of these)
         entry_points = self.graph.execute(
             """
             MATCH (f:Function)
@@ -1270,6 +1389,7 @@ class QueryEngine:
             RETURN f.name AS name,
                    f.file_path AS file_path,
                    f.signature AS signature
+            ORDER BY f.file_path, f.name
             """
         )
 
@@ -1320,7 +1440,7 @@ class QueryEngine:
         # Framework detection
         frameworks = self._detect_frameworks()
 
-        return {
+        conventions = {
             "languages": {r["language"]: r["file_count"] for r in dir_stats.records},
             "route_methods": {r["method"]: r["count"] for r in route_stats.records},
             "component_locations": dict(sorted(component_dirs.items(), key=lambda x: -x[1])[:5]),
@@ -1335,6 +1455,10 @@ class QueryEngine:
             "layer_violations": layer_data,
             "frameworks": frameworks,
         }
+        # A component-heavy repo can have 1000+ entry points (every page/component
+        # is one) — the sample communicates the convention; the count carries scale.
+        self._cap_list(conventions, "entry_points", cap=20)
+        return conventions
 
     # ------------------------------------------------------------------
     # Framework detection
@@ -2190,12 +2314,15 @@ class QueryEngine:
         dep_result = self.graph.execute("MATCH (d:Dependency) RETURN count(d) AS total")
         dep_count = dep_result.records[0]["total"] if dep_result.records else 0
 
-        return {
+        setup = {
             "required_env_vars": required,
             "optional_env_vars": optional,
             "config_files": config_data["config_files"],
             "dependency_count": dep_count,
         }
+        self._cap_list(setup, "required_env_vars", cap=50)
+        self._cap_list(setup, "optional_env_vars", cap=50)
+        return setup
 
     # ------------------------------------------------------------------
     # Type flow analysis
@@ -2457,7 +2584,9 @@ class QueryEngine:
             }
             for r in result.records
         ]
-        return {"total": len(exports), "dead_exports": exports}
+        report: dict[str, Any] = {"total": len(exports), "dead_exports": exports}
+        self._cap_list(report, "dead_exports", cap=50)
+        return report
 
     def detect_import_cycles(self, max_length: int = 10) -> dict[str, Any]:
         """Find all import cycles up to max_length.

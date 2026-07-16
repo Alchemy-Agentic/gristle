@@ -184,7 +184,10 @@ async def gristle_ingest(repo_path: str, repo_id: str | None = None) -> dict:
     if not Path(repo_path_resolved).is_dir():
         return {"error": f"Directory not found: {repo_path}"}
 
-    rid = repo_id or GraphClient.repo_id_from_path(repo_path_resolved)
+    # Identity comes from the canonical repo root: a git worktree shares its main
+    # repo's graph (re-ingest refreshes it) instead of spawning one graph per
+    # worktree. The graph *content* is still this path's tree.
+    rid = repo_id or GraphClient.repo_id_from_path(GraphClient.canonical_repo_path(repo_path_resolved))
     graph = GraphClient(
         host=settings.falkordb_host,
         port=settings.falkordb_port,
@@ -501,6 +504,10 @@ async def gristle_impact(
       high / medium / low (see gristle://schema for the resolution strategies)
     - low_confidence_callers: the subset worth verifying by hand before you rely on it
 
+    List fields are capped (a hub function can have hundreds of callers); a
+    `<field>_omitted: N` sibling appears when items were cut, and the `*_count`
+    fields always reflect the full data.
+
     Args:
         entity_name: Name of the function or class to analyze.
         repo_id: Repository identifier.
@@ -565,7 +572,9 @@ async def gristle_change_impact(
     - recommendation: a one-line summary
 
     Saves chaining gristle_impact_score + gristle_tests — the whole "is this safe
-    to edit, and how do I verify it" question in a single call.
+    to edit, and how do I verify it" question in a single call. The recommendation
+    comes first; list fields are capped with `<field>_omitted: N` siblings, and
+    `*_count` fields always reflect the full data.
 
     Args:
         entity_name: Name of the function or class you're about to change.
@@ -601,7 +610,9 @@ async def gristle_changeset_impact(
     - entities: per-entity risk summary; not_found: names that didn't resolve
 
     Use this when an edit spans multiple functions/files to vet the combined
-    blast radius and the full test set in a single call.
+    blast radius and the full test set in a single call. Aggregation happens on
+    the FULL data (counts are exact); only the returned lists are capped, with
+    `<field>_omitted: N` siblings when items were cut.
 
     Args:
         entity_names: Names of the functions/classes your change touches.
@@ -981,33 +992,64 @@ async def gristle_drop(
     """Drop a repository's code graph from FalkorDB.
 
     Use this to clean up ephemeral graphs after analysis is complete.
-    Removes all graph data and frees memory.
+    Removes all graph data and frees memory. Accepts either the repo_id used at
+    ingest time or the (sanitized) repo_id shown by gristle_repos — both resolve
+    to the same graph.
 
     Args:
         repo_id: Repository identifier to drop.
     """
-    engine = _engines.pop(repo_id, None)
-    _pipelines.pop(repo_id, None)
-    _semantic_indexes.pop(repo_id, None)
-
-    # Remove any stored GitHub clone for this repo (kept by gristle_ingest_github).
     import shutil
 
+    graph = GraphClient(
+        host=settings.falkordb_host,
+        port=settings.falkordb_port,
+        repo_id=repo_id,
+        password=settings.falkordb_password,
+    )
+
+    # Evict by GRAPH name, not by dict key: engines are keyed by the ORIGINAL
+    # repo_id ("my-app") while gristle_repos reports the sanitized graph suffix
+    # ("my_app"). Matching on the graph name catches both spellings — otherwise
+    # a loaded engine survives the drop and resurrects the graph on next query.
+    evicted = [rid for rid, eng in _engines.items() if eng.graph.graph_name == graph.graph_name]
+    for rid in evicted:
+        _engines.pop(rid, None)
+        _pipelines.pop(rid, None)
+        _semantic_indexes.pop(rid, None)
+        shutil.rmtree(settings.repo_storage_path / rid, ignore_errors=True)
+    # Also remove a clone stored under the passed id (e.g. after a restart).
     shutil.rmtree(settings.repo_storage_path / repo_id, ignore_errors=True)
 
-    if engine is None:
-        # Still try to drop the graph directly (e.g. ingested before a restart)
-        graph = GraphClient(
+    graph.drop()
+    return {"status": "dropped", "repo_id": repo_id, "was_loaded": bool(evicted)}
+
+
+@mcp.tool()
+async def gristle_repos() -> dict:
+    """List every Gristle graph on the FalkorDB server, with identity and freshness.
+
+    Each entry shows which repository a graph belongs to (its source path), when
+    it was last ingested, and how big it is — so stale or orphaned graphs (e.g.
+    from deleted checkouts or old worktrees) can be identified and removed with
+    gristle_drop(repo_id).
+
+    Returns, per graph: repo_id, graph name, repo_path + last_ingested_at (from
+    the graph's own ingest snapshot; null if it predates snapshots), node count,
+    and whether it's loaded in this server process.
+    """
+    try:
+        probe = GraphClient(
             host=settings.falkordb_host,
             port=settings.falkordb_port,
-            repo_id=repo_id,
             password=settings.falkordb_password,
         )
-        graph.drop()
-        return {"status": "dropped", "repo_id": repo_id, "was_loaded": False}
+    except RedisConnectionError:
+        return {"error": "Cannot reach FalkorDB. Start it and try again."}
 
-    engine.graph.drop()
-    return {"status": "dropped", "repo_id": repo_id, "was_loaded": True}
+    loaded_graphs = {engine.graph.graph_name for engine in _engines.values()}
+    repos = [{**entry, "loaded": entry["graph"] in loaded_graphs} for entry in probe.describe_gristle_graphs()]
+    return {"repos": repos, "count": len(repos)}
 
 
 @mcp.tool()
@@ -1336,6 +1378,13 @@ async def gristle_subgraph(
     qualified_name. Returns meta.truncated when the result was capped at
     GRISTLE_VIZ_MAX_NODES.
 
+    OUTPUT SIZE: this is a rendering payload — at the default 300-node cap it can
+    run to tens of thousands of tokens on a large repo. If you're READING the
+    result rather than rendering it, keep it small: depth=1, a specific center,
+    and models_only=true for request_trace. For "who calls X / what breaks"
+    questions prefer gristle_impact or gristle_change_impact, which return capped,
+    summarized lists instead of a full graph.
+
     Args:
         view: Which subgraph to build (see above).
         center: Focal function/route — business id or qualified_name (path for routes).
@@ -1367,7 +1416,8 @@ async def list_repos() -> str:
     for rid, engine in _engines.items():
         repos.append({"repo_id": rid, "repo_path": engine.repo_path, "loaded": True})
     # Also surface graphs that exist in FalkorDB but aren't loaded in this
-    # process (e.g. ingested before a restart) so they're discoverable.
+    # process (e.g. ingested before a restart) so they're discoverable — with
+    # their identity metadata, so they aren't just opaque hashes.
     try:
         loaded_graph_names = {e.graph.graph_name for e in _engines.values()}
         probe = GraphClient(
@@ -1375,9 +1425,9 @@ async def list_repos() -> str:
             port=settings.falkordb_port,
             password=settings.falkordb_password,
         )
-        for gname in probe.list_gristle_graphs():
-            if gname not in loaded_graph_names:
-                repos.append({"graph_name": gname, "loaded": False})
+        for entry in probe.describe_gristle_graphs():
+            if entry["graph"] not in loaded_graph_names:
+                repos.append({**entry, "loaded": False})
     except Exception:
         logger.debug("Could not enumerate FalkorDB graphs", exc_info=True)
     return json.dumps(repos, indent=2)

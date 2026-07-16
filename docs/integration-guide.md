@@ -18,6 +18,22 @@ This returns a `repo_id` (a short hash). All other tools accept an optional `rep
 
 Ingestion parses all source files, builds a graph of functions, classes, imports, and their relationships, then processes documentation. It only needs to be run once per repo. Re-running it rebuilds the graph from scratch.
 
+**Git worktrees share their main repo's graph.** Identity comes from the canonical
+repo root: ingesting from a worktree refreshes the main repo's graph (with that
+worktree's tree) instead of creating a separate graph per worktree. Submodules keep
+their own identity. Pass an explicit `repo_id` if you deliberately want an isolated
+graph for a worktree.
+
+**Output caps.** Tool outputs are sized for an agent's context: unbounded list
+fields (callers, files, tests, entry points, dead exports, env vars) are capped,
+and a sibling `<field>_omitted: N` appears whenever items were cut. Counts and
+scores (`*_count`, blast radius, changeset unions) are always computed from the
+full data before capping — `len(field) + field_omitted` always equals
+`field_count`. For exhaustive listings, run raw Cypher yourself: `gristle query
+"<cypher>" --repo-id <id>` from the terminal, or `GraphClient.execute` from
+Python (there is no raw-query MCP tool by design — agents get the capped,
+summarized views).
+
 For GitHub repos (including private ones), use `gristle_ingest_github` instead:
 
 ```
@@ -606,11 +622,40 @@ gristle_ingest_github(repo_url="https://github.com/owner/private-repo", github_t
 
 ---
 
+### `gristle_repos()`
+
+List every Gristle graph on the FalkorDB server with its identity and freshness —
+the cleanup companion to `gristle_drop`.
+
+```json
+{
+  "repos": [
+    {
+      "repo_id": "a1b2c3d4e5f6",
+      "graph": "gristle_a1b2c3d4e5f6",
+      "repo_path": "D:/projects/my-app",
+      "last_ingested_at": "2026-06-30T10:00:00",
+      "nodes": 87332,
+      "loaded": true
+    }
+  ],
+  "count": 1
+}
+```
+
+`repo_path` / `last_ingested_at` come from each graph's own ingest snapshot
+(`null` for graphs ingested before snapshots existed — those are old and safe to
+re-ingest or drop). Same data from the terminal: `gristle repos`, then
+`gristle drop <repo_id>`.
+
+---
+
 ### `gristle_drop(repo_id)`
 
 Remove a repo's graph from FalkorDB entirely.
 
 **When to use:** You no longer need a repo's graph and want to free memory/storage.
+Use `gristle_repos` to see what exists and identify stale graphs.
 
 ```
 gristle_drop(repo_id="a1b2c3d4e5f6")

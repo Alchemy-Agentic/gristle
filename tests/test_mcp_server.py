@@ -824,12 +824,14 @@ class TestGristleDrop:
         from gristle.mcp.server import gristle_drop
 
         engine = _mock_engine()
+        engine.graph.graph_name = "gristle_r1"
         srv._engines["r1"] = engine
         srv._pipelines["r1"] = MagicMock()
+        MockGraphClient.return_value.graph_name = "gristle_r1"
         result = await gristle_drop(repo_id="r1")
         assert result["status"] == "dropped"
         assert result["was_loaded"] is True
-        engine.graph.drop.assert_called_once()
+        MockGraphClient.return_value.drop.assert_called_once()
         assert "r1" not in srv._engines
 
     @pytest.mark.asyncio
@@ -1236,3 +1238,75 @@ class TestMCPChangesetImpact:
         result = await gristle_changeset_impact(entity_names=["foo", "bar"])
         assert result["overall_risk_level"] == "high"
         engine.get_changeset_impact.assert_called_once_with(["foo", "bar"])
+
+
+class TestMCPDropEviction:
+    @pytest.mark.asyncio
+    async def test_drop_by_sanitized_id_evicts_engine_keyed_by_original(self):
+        # Ingested as "my-app" -> graph gristle_my_app; gristle_repos reports the
+        # sanitized suffix "my_app". Dropping via that spelling must still evict
+        # the loaded engine, or its next query resurrects the graph.
+        from unittest.mock import MagicMock, patch
+
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_drop
+
+        engine = _mock_engine()
+        engine.graph.graph_name = "gristle_my_app"
+        srv._engines["my-app"] = engine
+        srv._pipelines["my-app"] = MagicMock()
+
+        target = MagicMock()
+        target.graph_name = "gristle_my_app"
+        with patch("gristle.mcp.server.GraphClient", return_value=target):
+            result = await gristle_drop(repo_id="my_app")
+
+        assert result["was_loaded"] is True
+        assert "my-app" not in srv._engines
+        assert "my-app" not in srv._pipelines
+        target.drop.assert_called_once()
+
+
+class TestMCPRepos:
+    @pytest.mark.asyncio
+    async def test_lists_graphs_with_loaded_flag(self):
+        from unittest.mock import MagicMock, patch
+
+        import gristle.mcp.server as srv
+        from gristle.mcp.server import gristle_repos
+
+        engine = _mock_engine()
+        engine.graph.graph_name = "gristle_alpha"
+        srv._engines["alpha"] = engine
+
+        probe = MagicMock()
+        probe.describe_gristle_graphs.return_value = [
+            {
+                "repo_id": "alpha",
+                "graph": "gristle_alpha",
+                "repo_path": "D:/projects/alpha",
+                "last_ingested_at": "2026-06-30T10:00:00",
+                "nodes": 10,
+            },
+            {"repo_id": "stale", "graph": "gristle_stale", "repo_path": None, "last_ingested_at": None, "nodes": 5},
+        ]
+        with patch("gristle.mcp.server.GraphClient", return_value=probe):
+            result = await gristle_repos()
+
+        assert result["count"] == 2
+        by_id = {r["repo_id"]: r for r in result["repos"]}
+        assert by_id["alpha"]["loaded"] is True
+        assert by_id["stale"]["loaded"] is False
+        assert by_id["alpha"]["repo_path"] == "D:/projects/alpha"
+
+    @pytest.mark.asyncio
+    async def test_unreachable_falkordb_reports_error(self):
+        from unittest.mock import patch
+
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        from gristle.mcp.server import gristle_repos
+
+        with patch("gristle.mcp.server.GraphClient", side_effect=RedisConnectionError("down")):
+            result = await gristle_repos()
+        assert "error" in result

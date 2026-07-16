@@ -64,3 +64,52 @@ def test_ingest_falkordb_down_returns_one():
     g.ping.return_value = False
     with patch("gristle.cli._build_graph", return_value=g):
         assert cli.main(["ingest", "/some/path", "--repo-id", "demo"]) == 1
+
+
+def test_repos_lists_graphs(capsys):
+    g = MagicMock()
+    g.ping.return_value = True
+    g.describe_gristle_graphs.return_value = [
+        {
+            "repo_id": "alpha",
+            "graph": "gristle_alpha",
+            "repo_path": "D:/projects/alpha",
+            "last_ingested_at": "2026-06-30T10:00:00",
+            "nodes": 1234,
+        },
+        {"repo_id": "old", "graph": "gristle_old", "repo_path": None, "last_ingested_at": None, "nodes": None},
+    ]
+    with patch("gristle.cli._build_graph", return_value=g):
+        assert cli.main(["repos"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha" in out and "D:/projects/alpha" in out
+    assert "2 graph(s)" in out
+
+
+def test_repos_empty_server(capsys):
+    g = MagicMock()
+    g.ping.return_value = True
+    g.describe_gristle_graphs.return_value = []
+    with patch("gristle.cli._build_graph", return_value=g):
+        assert cli.main(["repos"]) == 0
+    assert "No Gristle graphs" in capsys.readouterr().out
+
+
+def test_drop_removes_existing_graph(capsys):
+    g = MagicMock()
+    g.ping.return_value = True
+    g.graph_exists.return_value = True
+    g.graph_name = "gristle_alpha"
+    with patch("gristle.cli._build_graph", return_value=g):
+        assert cli.main(["drop", "alpha"]) == 0
+    g.drop.assert_called_once()
+    assert "Dropped graph 'gristle_alpha'" in capsys.readouterr().out
+
+
+def test_drop_unknown_repo_id_errors():
+    g = MagicMock()
+    g.ping.return_value = True
+    g.graph_exists.return_value = False
+    with patch("gristle.cli._build_graph", return_value=g):
+        assert cli.main(["drop", "nope"]) == 1
+    g.drop.assert_not_called()

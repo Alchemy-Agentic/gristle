@@ -140,6 +140,164 @@ class TestRepoIdFromPath:
 
 
 # ------------------------------------------------------------------
+# canonical_repo_path (worktree-aware identity)
+# ------------------------------------------------------------------
+
+
+class TestCanonicalRepoPath:
+    """Worktrees map to the main repo's identity; everything else stays itself.
+
+    Without this, an agent running gristle_ingest from each worktree of one repo
+    creates one near-identical full graph per worktree, with no cleanup story.
+    """
+
+    def test_normal_repo_resolves_to_itself(self, tmp_path):
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)  # normal repo: .git is a directory
+        assert GraphClient.canonical_repo_path(str(repo)) == str(repo.resolve())
+
+    def test_plain_directory_resolves_to_itself(self, tmp_path):
+        assert GraphClient.canonical_repo_path(str(tmp_path)) == str(tmp_path.resolve())
+
+    def test_worktree_maps_to_main_repo(self, tmp_path):
+        main = tmp_path / "main-repo"
+        (main / ".git" / "worktrees" / "wt-feature").mkdir(parents=True)
+        wt = tmp_path / "wt-feature"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'wt-feature'}\n")
+
+        assert GraphClient.canonical_repo_path(str(wt)) == str(main.resolve())
+        # ...and therefore the same repo_id / graph as the main checkout
+        assert GraphClient.repo_id_from_path(GraphClient.canonical_repo_path(str(wt))) == GraphClient.repo_id_from_path(
+            GraphClient.canonical_repo_path(str(main))
+        )
+
+    def test_relative_gitdir_resolves_against_worktree(self, tmp_path):
+        main = tmp_path / "main-repo"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_text("gitdir: ../main-repo/.git/worktrees/wt\n")
+
+        assert GraphClient.canonical_repo_path(str(wt)) == str(main.resolve())
+
+    def test_submodule_keeps_its_own_identity(self, tmp_path):
+        # A submodule's .git file points at .git/modules/<name> — a genuinely
+        # different repository, so it must NOT map to the parent.
+        parent = tmp_path / "parent"
+        (parent / ".git" / "modules" / "sub").mkdir(parents=True)
+        sub = parent / "sub"
+        sub.mkdir()
+        (sub / ".git").write_text(f"gitdir: {parent / '.git' / 'modules' / 'sub'}\n")
+
+        assert GraphClient.canonical_repo_path(str(sub)) == str(sub.resolve())
+
+    def test_pruned_worktree_dir_keeps_its_own_identity(self, tmp_path):
+        # Main repo was deleted: the gitdir target no longer exists, so we can't
+        # attribute the checkout to anything — fall back to its own path.
+        wt = tmp_path / "orphan-wt"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {tmp_path / 'gone' / '.git' / 'worktrees' / 'orphan-wt'}\n")
+
+        assert GraphClient.canonical_repo_path(str(wt)) == str(wt.resolve())
+
+    def test_malformed_git_file_falls_back(self, tmp_path):
+        wt = tmp_path / "weird"
+        wt.mkdir()
+        (wt / ".git").write_text("not a gitdir line at all\n")
+
+        assert GraphClient.canonical_repo_path(str(wt)) == str(wt.resolve())
+
+    def test_worktree_named_worktrees_still_maps(self, tmp_path):
+        # gitdir ends .../.git/worktrees/worktrees — matching the LAST bare
+        # "worktrees" component would land on the worktree's own name and fail;
+        # the scan must find the ".git"/"worktrees" adjacent pair.
+        main = tmp_path / "main-repo"
+        (main / ".git" / "worktrees" / "worktrees").mkdir(parents=True)
+        wt = tmp_path / "worktrees"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'worktrees'}\n")
+
+        assert GraphClient.canonical_repo_path(str(wt)) == str(main.resolve())
+
+    def test_undecodable_git_file_falls_back(self, tmp_path):
+        # A .git file with invalid UTF-8 must not crash ingestion — the checkout
+        # just keeps its own identity.
+        wt = tmp_path / "binary"
+        wt.mkdir()
+        (wt / ".git").write_bytes(b"gitdir: \xff\xfe\x00broken")
+
+        assert GraphClient.canonical_repo_path(str(wt)) == str(wt.resolve())
+
+
+# ------------------------------------------------------------------
+# describe_gristle_graphs (graph lifecycle listing)
+# ------------------------------------------------------------------
+
+
+class TestDescribeGristleGraphs:
+    def _result(self, rows):
+        r = MagicMock()
+        r.result_set = rows
+        return r
+
+    def test_reads_snapshot_metadata_per_graph(self):
+        client, _ = _make_client()
+        client._db.list_graphs.return_value = ["gristle_alpha", "other_graph"]
+        g = MagicMock()
+        g.query.side_effect = [
+            self._result([["D:/projects/alpha", "2026-06-30T10:00:00"]]),  # snapshot
+            self._result([[1234]]),  # node count
+        ]
+        client._db.select_graph = MagicMock(return_value=g)
+
+        entries = client.describe_gristle_graphs()
+        assert entries == [
+            {
+                "repo_id": "alpha",
+                "graph": "gristle_alpha",
+                "repo_path": "D:/projects/alpha",
+                "last_ingested_at": "2026-06-30T10:00:00",
+                "nodes": 1234,
+            }
+        ]
+
+    def test_unreadable_graph_does_not_hide_the_rest(self):
+        client, _ = _make_client()
+        client._db.list_graphs.return_value = ["gristle_bad", "gristle_good"]
+
+        def select(name):
+            g = MagicMock()
+            if name == "gristle_bad":
+                g.query.side_effect = RuntimeError("boom")
+            else:
+                g.query.side_effect = [
+                    self._result([["D:/projects/good", "2026-06-30T10:00:00"]]),
+                    self._result([[7]]),
+                ]
+            return g
+
+        client._db.select_graph = MagicMock(side_effect=select)
+
+        entries = client.describe_gristle_graphs()
+        assert [e["repo_id"] for e in entries] == ["bad", "good"]
+        assert entries[0]["repo_path"] is None  # unreadable -> nulls, not an error
+        assert entries[1]["nodes"] == 7
+
+    def test_pre_snapshot_graph_reports_nulls(self):
+        client, _ = _make_client()
+        client._db.list_graphs.return_value = ["gristle_old"]
+        g = MagicMock()
+        g.query.side_effect = [self._result([]), self._result([[42]])]  # no Snapshot node
+        client._db.select_graph = MagicMock(return_value=g)
+
+        entries = client.describe_gristle_graphs()
+        assert entries[0]["repo_path"] is None
+        assert entries[0]["last_ingested_at"] is None
+        assert entries[0]["nodes"] == 42
+
+
+# ------------------------------------------------------------------
 # execute
 # ------------------------------------------------------------------
 
