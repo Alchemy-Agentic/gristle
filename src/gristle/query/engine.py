@@ -341,6 +341,12 @@ class QueryEngine:
     # full — every count/score uses the full data — and truncated only at the
     # public projection, with a sibling `<field>_omitted: N` recording the cut.
     _LIST_CAP = 25
+    # get_models: Supabase generated types put ~200 tables in one repo, and the
+    # uncapped list view measured 134k tokens on a real app. The list is a map
+    # (name/orm/fieldCount per model); per-model field detail is one
+    # get_model_detail call away.
+    _MODELS_CAP = 50
+    _MODEL_INLINE_CAP = 10
 
     @staticmethod
     def _cap_list(record: dict[str, Any], field: str, cap: int = _LIST_CAP) -> None:
@@ -349,6 +355,15 @@ class QueryEngine:
         if isinstance(items, list) and len(items) > cap:
             record[f"{field}_omitted"] = len(items) - cap
             record[field] = items[:cap]
+
+    @staticmethod
+    def _non_null_maps(record: dict[str, Any], field: str, name_key: str) -> None:
+        """Drop the all-null map FalkorDB emits when an OPTIONAL MATCH found
+        nothing — a map literal survives ``collect()`` where a plain null would
+        not, so a model with no relations would report a phantom one."""
+        entries = record.get(field)
+        if isinstance(entries, list):
+            record[field] = [e for e in entries if isinstance(e, dict) and e.get(name_key) is not None]
 
     @staticmethod
     def _resolution_details(entries: list[dict[str, Any]] | None, name_key: str) -> list[dict[str, Any]]:
@@ -2928,7 +2943,13 @@ class QueryEngine:
     # ------------------------------------------------------------------
 
     def get_models(self) -> dict:
-        """List all database models (excluding enums) with fields and relationships."""
+        """List all database models (excluding enums) with fields and relationships.
+
+        The list view is capped for agent consumption: at most ``_MODELS_CAP``
+        models (``models_omitted`` gives the cut, ``count`` stays exact) with at
+        most ``_MODEL_INLINE_CAP`` inline fields/relations each (``fieldCount``
+        carries the full field count; ``get_model_detail`` has everything).
+        """
         result = self.graph.execute(
             """
             MATCH (m:Model)
@@ -2958,7 +2979,22 @@ class QueryEngine:
             ORDER BY m.name
             """
         )
-        return {"models": result.records, "count": len(result.records)}
+        for record in result.records:
+            self._non_null_maps(record, "fields", "name")
+            self._non_null_maps(record, "relations", "targetModel")
+            # The list view is a map, not the full shape: drop null/false field
+            # attributes here (get_model_detail returns every attribute).
+            record["fields"] = [
+                {k: v for k, v in f.items() if v is not None and v is not False} for f in record["fields"]
+            ]
+            # RELATED_TO props were coerced to "" at write time (FalkorDB cannot
+            # MERGE nulls) — drop those along with nulls.
+            record["relations"] = [{k: v for k, v in r.items() if v not in (None, "")} for r in record["relations"]]
+            self._cap_list(record, "fields", self._MODEL_INLINE_CAP)
+            self._cap_list(record, "relations", self._MODEL_INLINE_CAP)
+        report = {"models": result.records, "count": len(result.records)}
+        self._cap_list(report, "models", self._MODELS_CAP)
+        return report
 
     def get_model_detail(self, model_name: str) -> dict:
         """Get detailed information about a specific database model."""
@@ -3004,7 +3040,11 @@ class QueryEngine:
         )
         if not result.records:
             return {"error": f"Model '{model_name}' not found."}
-        return result.records[0]
+        record = result.records[0]
+        self._non_null_maps(record, "fields", "name")
+        self._non_null_maps(record, "outgoingRelations", "targetModel")
+        self._non_null_maps(record, "incomingRelations", "sourceModel")
+        return record
 
     def get_model_relationships(self) -> dict:
         """Get all model-to-model relationships."""

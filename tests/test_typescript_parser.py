@@ -289,6 +289,62 @@ class TestCallExtraction:
         assert all(not c.startswith("select.from") for c in result.functions[0].calls_with_args)
 
 
+class TestSupabaseChains:
+    """Supabase/PostgREST `X.from('table').verb(...)` string-literal capture."""
+
+    def _refs(self, code: str) -> list[str]:
+        parser = TypeScriptParser()
+        result = parser.parse_file("test.ts", code)
+        return result.functions[0].calls_with_args
+
+    def test_captures_all_postgrest_verbs(self):
+        code = """async function f(id) {
+  const { data } = await supabase
+    .from('executions')
+    .select('id, status')
+    .eq('id', id);
+  await supabase.from('profiles').update({ name: 'x' }).eq('id', id);
+  await supabase.from('chats').insert({ id });
+  await supabase.from('runs').delete().eq('id', id);
+  await supabase.from('drafts').upsert({ id });
+}
+"""
+        refs = self._refs(code)
+        assert "select.from('executions')" in refs  # multi-line chain
+        assert "update.from('profiles')" in refs
+        assert "insert.from('chats')" in refs
+        assert "delete.from('runs')" in refs
+        assert "upsert.from('drafts')" in refs
+
+    def test_storage_buckets_are_not_tables(self):
+        """`supabase.storage.from('bucket')` and the common
+        `const storage = supabase.storage` idiom must not match — storage's own
+        `.update()` would otherwise read as a table write."""
+        code = """async function f(file) {
+  await supabase.storage.from('avatars').update('p.png', file);
+  await storage.from('avatars').upsert('p.png', file);
+}
+"""
+        assert all(".from('" not in c for c in self._refs(code))
+
+    def test_buffer_and_bare_from_do_not_match(self):
+        code = """function f() {
+  const b = Buffer.from('abcdef');
+  const q = supabase.from('orphans');
+}
+"""
+        assert all(".from('" not in c for c in self._refs(code))
+
+    def test_non_literal_tables_do_not_match(self):
+        """Identifier and template-literal args are not string-literal tables."""
+        code = """async function f(tableVar) {
+  await supabase.from(tableVar).select('*');
+  await supabase.from(`tmpl`).select('*');
+}
+"""
+        assert all(".from('" not in c for c in self._refs(code))
+
+
 class TestErrorFlow:
     def test_throws_new_error_type(self):
         parser = TypeScriptParser()

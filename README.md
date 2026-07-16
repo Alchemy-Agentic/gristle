@@ -47,15 +47,25 @@ Vue/Svelte/Astro single-file components are parsed by extracting the embedded
 parser, so the script's functions, classes, imports, and variables become graph
 nodes alongside the rest of the codebase.
 
+**Data models** are extracted from Prisma schemas, Drizzle table definitions,
+TypeORM entities, SQLAlchemy/Django classes, and Supabase generated types
+(`supabase gen types typescript` output) — Supabase repos get every table and
+view with columns and FK relationships, and `supabase.from('table')` calls are
+linked to the tables they read or write, so route→handler→DB tracing works
+without any ORM.
+
 ## Quick start
 
 **Prerequisites:** Python 3.11+ and Docker (with Docker Compose). FalkorDB runs in Docker; everything else is pip-installed.
 
 ### 1. Install
 
-> Once published, the fastest path will be `uvx gristle` / `pipx install gristle`, or `docker run ghcr.io/alchemy-agentic/gristle`.
+```bash
+pip install gristle          # or: uvx gristle / pipx install gristle
+# or: docker run ghcr.io/alchemy-agentic/gristle
+```
 
-For now (and for development), install from source:
+For development, install from source:
 
 ```bash
 git clone https://github.com/Alchemy-Agentic/gristle

@@ -258,7 +258,7 @@ Container for all entities parsed from a single source file.
 | `qualified_name` | `str` | `file_path::name` |
 | `file_path` | `str` | Source file path |
 | `line_start` / `line_end` | `int` | Source location |
-| `orm` | `str` | `prisma` / `drizzle` / `typeorm` / etc. |
+| `orm` | `str` | `prisma` / `drizzle` / `typeorm` / `supabase` / etc. |
 | `table_name` | `str \| None` | Explicit DB table name |
 | `primary_key` | `str \| None` | PK field name(s) |
 | `is_enum` | `bool` | True for enum definitions |
@@ -427,9 +427,10 @@ Runs after Config Phase (needs `INHERITS_FROM` edges for ORM base class detectio
 1. `SchemaExtractor` receives walked files and `_path_to_id` map from pipeline.
 2. **Prisma DSL** (`.prisma` files): Regex-based parser extracts `model` and `enum` blocks with brace-counting.
 3. **Drizzle ORM** (`.ts`/`.js` files): Detects `pgTable`/`mysqlTable`/`sqliteTable` calls, extracts columns and FK references.
-4. **ORM class promoter** (P1/P2 stub): Framework placeholder for TypeORM, SQLAlchemy, Django, etc.
-5. Creates `Model` and `ModelField` nodes, plus `CONTAINS`, `HAS_MODEL_FIELD`, `REFERENCES`, `RELATED_TO`, and `PROMOTED_FROM` edges.
-6. Creates `File` nodes for `.prisma` files (not created by Phase 1 since no parser registered).
+4. **Supabase generated types** (`.ts`/`.js` files): Detects `supabase gen types typescript` output (the `Database` type) and extracts every table/view with columns, nullability, and FK relationships — no ORM required. Repos often hold several copies of the generated file; one `Model` is kept per table (most complete copy wins). Code links via the TS parser's `"<verb>.from('table')"` descriptors from `supabase.from('table').select()/insert()/...` chains — table names are matched *only* through that string-literal descriptor (never bare identifiers) because lowercase table names like `users` collide with ordinary variable names.
+5. **ORM class promoter** (P1/P2 stub): Framework placeholder for TypeORM, SQLAlchemy, Django, etc.
+6. Creates `Model` and `ModelField` nodes, plus `CONTAINS`, `HAS_MODEL_FIELD`, `REFERENCES`, `RELATED_TO`, and `PROMOTED_FROM` edges.
+7. Creates `File` nodes for `.prisma` files (not created by Phase 1 since no parser registered).
 
 ### Phase 3: Process Documentation
 

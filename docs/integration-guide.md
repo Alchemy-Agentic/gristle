@@ -60,7 +60,7 @@ This clones the repo and runs full ingestion in one step.
 | `DocumentSection` | `id`, `file_path`, `heading`, `level`, `start_line`, `end_line` | Doc section |
 | `Dependency` | `id`, `name`, `version`, `latest_version`, `is_outdated`, `vulnerability_count`, `vulnerabilities`, `checked_at` | External package |
 | `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
-| `Model` | `id`, `name`, `qualified_name`, `file_path`, `line_start`, `line_end`, `orm`, `table_name`, `is_junction`, `is_enum`, `primary_key`, `field_count`, `docstring` | Database model/table definition (Prisma, Drizzle, ORM class) |
+| `Model` | `id`, `name`, `qualified_name`, `file_path`, `line_start`, `line_end`, `orm`, `table_name`, `is_junction`, `is_enum`, `primary_key`, `field_count`, `docstring` | Database model/table definition (Prisma, Drizzle, ORM class, Supabase generated types — `orm: "supabase"`, views carry `docstring: "Supabase view"`) |
 | `ModelField` | `id`, `name`, `field_type`, `db_type`, `is_primary_key`, `is_nullable`, `is_unique`, `is_indexed`, `has_default`, `default_value`, `is_foreign_key`, `references_model`, `references_field`, `line` | Column/field in a database model |
 | `Variable` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `end_line`, `kind`, `value_kind`, `is_exported` | Module-level const/let/var (TS/JS) or module assignment (Python) that isn't a function or class — config objects, validation schemas, registries, constants. `kind`: `const`/`let`/`var`/`assignment`; `value_kind`: `object`/`array`/`call`/`new`/`literal`/`reference` |
 
@@ -94,7 +94,7 @@ This clones the repo and runs full ingestion in one step.
 | `REFERENCES` | ModelField | Model | FK relationship (when `is_foreign_key: true`) |
 | `RELATED_TO` | Model | Model | High-level relationship (with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint` properties) |
 | `PROMOTED_FROM` | Model | Class | Link to source Class node (ORM class promoter) |
-| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma), model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`), and the TypeORM/NestJS repository pattern (a `Repository<Entity>`-typed field → `this.fooRepository.find()` links to `Entity`) |
+| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma), model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`), the TypeORM/NestJS repository pattern (a `Repository<Entity>`-typed field → `this.fooRepository.find()` links to `Entity`), and Supabase/PostgREST string-literal table access (`supabase.from('users').select()` → the `users` table model; `.storage.from('bucket')` is excluded) |
 
 ### Indexes
 
@@ -747,7 +747,9 @@ gristle_changelog(repo_id="a1b2c3d4") # For a specific repo
 
 ### `gristle_models(repo_id?)`
 
-**When to use:** You want to see all database models detected in the codebase. Returns models from Prisma schemas, Drizzle table definitions, and ORM class patterns.
+**When to use:** You want to see all database models detected in the codebase. Returns models from Prisma schemas, Drizzle table definitions, ORM class patterns, and Supabase generated types (`supabase gen types typescript` output — every table and view with columns and FK relationships, `orm: "supabase"`).
+
+This is the landscape view, sized for agent context windows: at most 50 models (`models_omitted` records the cut; `count` stays exact) with at most 10 inline `fields`/`relations` each (`fields_omitted`/`relations_omitted` siblings; `fieldCount` always carries the full count) and null/false field attributes dropped. `gristle_model_detail` returns the complete, uncompacted shape for one model.
 
 ```
 gristle_models()

@@ -1317,10 +1317,14 @@ async def gristle_models(repo_id: str | None = None) -> dict:
     """List all database models with their fields and relationships.
 
     Returns models detected from Prisma schemas, Drizzle table definitions,
-    and ORM class patterns (TypeORM, SQLAlchemy, Django, etc.).
+    ORM class patterns (TypeORM, SQLAlchemy, Django, etc.), and Supabase
+    generated types (every table and view, orm "supabase").
 
-    Each model includes: name, ORM framework, table name, fields with types
-    and constraints, and relationships to other models.
+    This is the landscape view, sized for agent context: at most 50 models
+    (models_omitted gives the cut; count stays exact) with at most 10 inline
+    fields/relations each, null/false attributes dropped. fieldCount always
+    carries the full field count — use gristle_model_detail for everything
+    about one model.
 
     Args:
         repo_id: Repository identifier (optional, uses most recent if omitted).

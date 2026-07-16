@@ -26,6 +26,9 @@ _READ_VERBS = frozenset(
 _IDENT_SPLIT = re.compile(r"[^A-Za-z0-9_]+")
 # Split a camelCase/PascalCase identifier into words (findOne -> find, one).
 _CAMEL_SPLIT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+# Supabase/PostgREST descriptor from the TS parser: "select.from('executions')".
+# The quotes mark a string-literal table (Drizzle descriptors carry identifiers).
+_SUPABASE_FROM_RE = re.compile(r"^(select|insert|update|upsert|delete)\.from\('([^']+)'\)$")
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,7 @@ class SchemaExtractor:
                     models.extend(parse_prisma_schema(wf.relative_path, content))
 
         # 2. Drizzle extraction (check .ts/.js files for drizzle-orm imports)
+        supabase_candidates: list[list[ParsedModel]] = []
         for wf in walked_files:
             if wf.extension in ("ts", "js", "mts", "mjs"):
                 content = self._read_file(wf)
@@ -72,6 +76,26 @@ class SchemaExtractor:
                     from gristle.parsers.orm_typescript import extract_typeorm_models
 
                     models.extend(extract_typeorm_models(wf.relative_path, content))
+
+                    from gristle.parsers.supabase import is_supabase_types, parse_supabase_types
+
+                    if is_supabase_types(content):
+                        found = parse_supabase_types(wf.relative_path, content)
+                        if found:
+                            supabase_candidates.append(found)
+
+        # Repos often hold several copies of the Supabase generated-types file
+        # (e.g. src/types/database.types.ts AND src/integrations/supabase/types.ts,
+        # generated at different times). Keep one model per table, preferring the
+        # most complete file, so Model nodes aren't duplicated.
+        if supabase_candidates:
+            supabase_candidates.sort(key=lambda ms: (-len(ms), ms[0].file_path))
+            seen_tables: set[str] = set()
+            for candidate in supabase_candidates:
+                for m in candidate:
+                    if m.name not in seen_tables:
+                        seen_tables.add(m.name)
+                        models.append(m)
 
         # 3. Python ORM detection (SQLAlchemy declarative + Django models).
         # Collected across all files so model base classes resolve transitively
@@ -215,7 +239,8 @@ class SchemaExtractor:
 
         # Phase D: Link code to the data layer (Function -> Model)
         if parsed_files and model_name_to_id:
-            self._link_code_to_models(parsed_files, model_name_to_id, batch)
+            supabase_names = {m.name for m in models if m.orm == "supabase"}
+            self._link_code_to_models(parsed_files, model_name_to_id, supabase_names, batch)
 
         counts = batch.flush()
         return SchemaExtractionResult(
@@ -230,12 +255,13 @@ class SchemaExtractor:
         self,
         parsed_files: list[ParsedFile],
         model_name_to_id: dict[str, str],
+        supabase_names: set[str],
         batch: BatchCollector,
     ) -> None:
         """Create USES_MODEL edges (Function -> Model) from a function's call chains.
 
         Precise by design: an edge is created only when a call references BOTH a
-        known model name AND a read/write verb. Two call shapes are recognised:
+        known model name AND a read/write verb. Three call shapes are recognised:
 
         - Method chains where the model is in the chain — ``User.objects.filter()``,
           ``Article.objects.create()``, ``user.save()``, ``prisma.user.create()``
@@ -244,6 +270,12 @@ class SchemaExtractor:
           SQLAlchemy ``session.query(User)``, and Drizzle reads
           ``db.select().from(chat)`` (the parser emits ``"select.from(chat)"`` for
           these) — all from ``func.calls_with_args``.
+        - Supabase/PostgREST string-literal table access —
+          ``supabase.from('executions').select()`` (the parser emits
+          ``"select.from('executions')"``, quotes kept). These match ONLY against
+          Supabase table models: lowercase table names like ``users`` collide with
+          ordinary variable names (``users.filter(...)`` on an array), so putting
+          them in the general token map would spray false edges.
 
         Also catches the TypeORM/NestJS repository pattern: a class field typed
         ``Repository<ArticleEntity>`` (usually a constructor param-property) is
@@ -257,18 +289,19 @@ class SchemaExtractor:
         incidental name reuse (a UI component referencing a ``Document`` *type*).
         The ``access`` property is "read" or "write".
         """
-        token_to_model = {name.lower(): mid for name, mid in model_name_to_id.items()}
+        token_to_model = {name.lower(): mid for name, mid in model_name_to_id.items() if name not in supabase_names}
+        table_to_model = {name.lower(): mid for name, mid in model_name_to_id.items() if name in supabase_names}
 
         # Best access per (func_id, model_id): write outranks read.
         edges: dict[tuple[str, str], str] = {}
 
         for pf in parsed_files:
             for func in pf.functions:
-                self._collect_model_edges(func, token_to_model, {}, edges)
+                self._collect_model_edges(func, token_to_model, table_to_model, {}, edges)
             for cls in pf.classes:
                 field_to_model = self._repo_field_models(cls, token_to_model)
                 for method in cls.methods:
-                    self._collect_model_edges(method, token_to_model, field_to_model, edges)
+                    self._collect_model_edges(method, token_to_model, table_to_model, field_to_model, edges)
 
         for (func_id, model_id), access in edges.items():
             batch.add_merge_relationship("USES_MODEL", func_id, model_id, {"access": access})
@@ -283,11 +316,26 @@ class SchemaExtractor:
         self,
         func: ParsedFunction,
         token_to_model: dict[str, str],
+        table_to_model: dict[str, str],
         field_to_model: dict[str, str],
         edges: dict[tuple[str, str], str],
     ) -> None:
         func_id = f"func::{func.qualified_name}"
-        for call in (*func.calls, *func.calls_with_args):
+        for call in func.calls:
+            match = self._match_call(call, token_to_model)
+            if match is not None:
+                model_id, access = match
+                self._record_edge(edges, func_id, model_id, access)
+        for call in func.calls_with_args:
+            supabase = _SUPABASE_FROM_RE.match(call)
+            if supabase is not None:
+                # A quoted table is definitively a PostgREST access — link it to
+                # the Supabase model or nothing (no general-map fallthrough).
+                model_id_opt = table_to_model.get(supabase.group(2).lower())
+                if model_id_opt is not None:
+                    access = "read" if supabase.group(1) == "select" else "write"
+                    self._record_edge(edges, func_id, model_id_opt, access)
+                continue
             match = self._match_call(call, token_to_model)
             if match is not None:
                 model_id, access = match

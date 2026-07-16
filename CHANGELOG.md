@@ -6,6 +6,45 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Supabase data-layer extraction.** Repos whose data layer is the Supabase
+  client (no ORM) previously produced zero `Model` nodes, so the route→handler→DB
+  story was empty exactly where Supabase apps live. Two new sources fix that:
+  - The generated types file (`supabase gen types typescript` output) is parsed
+    into `Model`/`ModelField` nodes — every table *and view* with columns,
+    nullability, and FK relationships (`REFERENCES` + `RELATED_TO` edges,
+    `orm: "supabase"`, views marked `docstring: "Supabase view"`). Duplicate
+    copies of the generated file are deduplicated: one Model per table,
+    preferring the most complete copy.
+  - `supabase.from('table').select()/insert()/update()/upsert()/delete()` chains
+    now create `USES_MODEL` edges with read/write access. Precision guards:
+    string-literal tables only, matched *only* via the chain descriptor (a
+    lowercase table name like `users` never links from an ordinary variable such
+    as `users.filter(...)`), and the storage API (`.storage.from('bucket')`,
+    including the `const storage = supabase.storage` idiom) is excluded.
+  Scope: TS/JS clients (`@supabase/supabase-js`); `.rpc('fn')` calls and the
+  Python client are not yet linked.
+
+### Changed
+- **`gristle_models` is now capped for agent consumption.** Supabase generated
+  types put ~200 tables in one repo, and the uncapped list view measured 134k
+  tokens on a real app. The list now returns at most 50 models
+  (`models_omitted` records the cut; `count` stays exact) with at most 10
+  inline `fields`/`relations` per model (`fields_omitted`/`relations_omitted`
+  siblings; `fieldCount` still carries the full count), and drops null/false
+  field attributes plus `""`-coerced relation props from the list view
+  (~11k tokens on the same repo). `gristle_model_detail` keeps the complete,
+  uncompacted shape for a single model.
+
+### Fixed
+- **Phantom relation on models without relationships.** `gristle_models` and
+  `gristle_model_detail` reported one all-null relation entry (`{targetModel:
+  null, ...}`) for every model with no `RELATED_TO` edges — 92 of 188 models on
+  a real repo. Same FalkorDB behavior as the phantom-caller fix in 0.3.0: a map
+  literal inside `collect()` survives an `OPTIONAL MATCH` that matched nothing.
+  All-null entries are now filtered from `fields`, `relations`, and
+  incoming/outgoing relations.
+
 ## [0.4.0] - 2026-07-16
 
 ### Added

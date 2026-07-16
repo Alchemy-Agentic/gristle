@@ -705,6 +705,107 @@ class TestOutputCaps:
         assert "test_files" not in result
 
 
+class TestGetModelsCaps:
+    """get_models is a *landscape* view: on Supabase repos (~200 generated
+    tables) the uncapped output measured 134k tokens. It is capped and its
+    inline maps compacted; get_model_detail keeps the full shape."""
+
+    @staticmethod
+    def _model_rec(name: str, n_fields: int = 2, relations: list | None = None) -> dict:
+        return {
+            "name": name,
+            "orm": "supabase",
+            "tableName": name,
+            "filePath": "database.types.ts",
+            "fieldCount": n_fields,
+            "primaryKey": None,
+            "isJunction": False,
+            "isEnum": False,
+            "fields": [
+                {
+                    "name": f"f{i}",
+                    "fieldType": "string",
+                    "dbType": None,
+                    "isPrimaryKey": False,
+                    "isNullable": True,
+                    "isUnique": False,
+                    "isForeignKey": False,
+                    "referencesModel": None,
+                }
+                for i in range(n_fields)
+            ],
+            "relations": relations
+            if relations is not None
+            else [{"targetModel": None, "relationType": None, "foreignKeyField": None, "throughModel": None}],
+        }
+
+    def test_models_list_is_capped_with_true_count(self):
+        n = QueryEngine._MODELS_CAP + 30
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([self._model_rec(f"table_{i:03}") for i in range(n)])
+        result = engine.get_models()
+        assert result["count"] == n
+        assert len(result["models"]) == QueryEngine._MODELS_CAP
+        assert result["models_omitted"] == 30
+
+    def test_inline_fields_capped_and_compacted(self):
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([self._model_rec("executions", n_fields=25)])
+        model = engine.get_models()["models"][0]
+        assert len(model["fields"]) == QueryEngine._MODEL_INLINE_CAP
+        assert model["fields_omitted"] == 25 - QueryEngine._MODEL_INLINE_CAP
+        assert model["fieldCount"] == 25  # full count preserved
+        # Null/false attributes are dropped from the list view.
+        assert model["fields"][0] == {"name": "f0", "fieldType": "string", "isNullable": True}
+
+    def test_phantom_null_relation_is_dropped(self):
+        """FalkorDB emits one all-null map when the RELATED_TO OPTIONAL MATCH
+        finds nothing — a model without relations must not report a phantom."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([self._model_rec("plain_table")])
+        model = engine.get_models()["models"][0]
+        assert model["relations"] == []
+
+    def test_relation_empty_string_coercions_dropped(self):
+        """RELATED_TO props were written as '' where null (FalkorDB MERGE) —
+        the list view drops them."""
+        rel = {"targetModel": "users", "relationType": "many-to-one", "foreignKeyField": "user_id", "throughModel": ""}
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr([self._model_rec("executions", relations=[rel])])
+        model = engine.get_models()["models"][0]
+        assert model["relations"] == [
+            {"targetModel": "users", "relationType": "many-to-one", "foreignKeyField": "user_id"}
+        ]
+
+    def test_model_detail_drops_phantom_maps_keeps_full_shape(self):
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {
+                    "name": "plain_table",
+                    "orm": "supabase",
+                    "tableName": "plain_table",
+                    "filePath": "database.types.ts",
+                    "lineStart": 1,
+                    "lineEnd": 5,
+                    "primaryKey": None,
+                    "docstring": None,
+                    "fields": [
+                        {"name": "id", "fieldType": "string", "dbType": None, "isPrimaryKey": False},
+                        {"name": None, "fieldType": None, "dbType": None, "isPrimaryKey": None},
+                    ],
+                    "outgoingRelations": [{"targetModel": None, "relationType": None, "foreignKeyField": None}],
+                    "incomingRelations": [{"sourceModel": None, "relationType": None, "foreignKeyField": None}],
+                }
+            ]
+        )
+        detail = engine.get_model_detail("plain_table")
+        assert detail["outgoingRelations"] == []
+        assert detail["incomingRelations"] == []
+        # Real field survives with its full (non-compacted) attribute shape.
+        assert detail["fields"] == [{"name": "id", "fieldType": "string", "dbType": None, "isPrimaryKey": False}]
+
+
 # ==================================================================
 # 6b. Impact Analysis with Scoring
 # ==================================================================

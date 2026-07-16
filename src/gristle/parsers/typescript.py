@@ -1008,6 +1008,9 @@ class TypeScriptParser(LanguageParser):
     # Drizzle select-builders whose table arrives via a later `.from(table)` call.
     _DRIZZLE_SELECT_METHODS = frozenset({"select", "selectDistinct", "selectDistinctOn"})
 
+    # PostgREST/Supabase table verbs chained after `.from('table')`.
+    _POSTGREST_VERBS = frozenset({"select", "insert", "update", "upsert", "delete"})
+
     def _walk_call_arg_refs(self, node: Node, src: bytes, out: list[str]) -> None:
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
@@ -1020,8 +1023,58 @@ class TypeScriptParser(LanguageParser):
                     call_name = self._select_from_chain_name(func_node, src) or self._resolve_call_name(func_node, src)
                     if call_name:
                         out.append(f"{call_name}({','.join(arg_idents)})")
+                supabase_ref = self._supabase_from_descriptor(func_node, src)
+                if supabase_ref:
+                    out.append(supabase_ref)
         for child in node.children:
             self._walk_call_arg_refs(child, src, out)
+
+    def _supabase_from_descriptor(self, func_node: Node, src: bytes) -> str | None:
+        """For Supabase/PostgREST ``X.from('table').verb(...)``, return
+        ``"<verb>.from('table')"`` — quotes kept so the schema linker can tell a
+        string-literal table access from a Drizzle identifier descriptor.
+
+        Fires only when the table is a plain string literal and the verb chained
+        directly after ``.from()`` is a PostgREST table verb. The receiver is
+        checked so ``supabase.storage.from('bucket')`` (a storage bucket, not a
+        table) and ``Buffer.from(...)``/``Array.from(...)`` never match.
+        """
+        if func_node.type != "member_expression":
+            return None
+        verb_node = func_node.child_by_field_name("property")
+        verb = self._text(verb_node, src) if verb_node else None
+        if verb not in self._POSTGREST_VERBS:
+            return None
+        from_call = func_node.child_by_field_name("object")
+        if from_call is None or from_call.type != "call_expression":
+            return None
+        from_fn = from_call.child_by_field_name("function")
+        if from_fn is None or from_fn.type != "member_expression":
+            return None
+        from_prop = from_fn.child_by_field_name("property")
+        if from_prop is None or self._text(from_prop, src) != "from":
+            return None
+        receiver = from_fn.child_by_field_name("object")
+        receiver_text = self._text(receiver, src) if receiver else None
+        if not receiver_text:
+            return None
+        # `const storage = supabase.storage` is the common idiom, so a bare
+        # `storage` receiver is treated as the storage API too.
+        if receiver_text in ("Buffer", "Array") or receiver_text.rsplit(".", 1)[-1] == "storage":
+            return None
+        args_node = from_call.child_by_field_name("arguments")
+        if args_node is None:
+            return None
+        named = args_node.named_children
+        if len(named) != 1 or named[0].type != "string":
+            return None
+        fragments = [c for c in named[0].children if c.type == "string_fragment"]
+        if len(fragments) != 1:
+            return None
+        table = self._text(fragments[0], src)
+        if not table:
+            return None
+        return f"{verb}.from('{table}')"
 
     def _select_from_chain_name(self, func_node: Node, src: bytes) -> str | None:
         """For Drizzle ``db.select().from(table)``, return ``"select.from"``.
