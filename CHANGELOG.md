@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-16
+
 ### Added
 - **Supabase data-layer extraction.** Repos whose data layer is the Supabase
   client (no ORM) previously produced zero `Model` nodes, so the route→handler→DB
