@@ -1092,7 +1092,7 @@ class QueryEngine:
             result = self.graph.execute(
                 """
                 MATCH (r:Route)
-                WHERE r.method = $method
+                WHERE r.method = $method OR r.method = 'ALL'
                 OPTIONAL MATCH (r)-[:HANDLES]->(f:Function)
                 RETURN r.method AS method,
                        r.path AS path,

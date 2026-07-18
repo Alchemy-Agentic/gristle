@@ -469,7 +469,8 @@ gristle_routes(method="POST")       # Only POST endpoints
 - **Python:** FastAPI/Flask/Django decorators (`@app.get("/path")`, `@router.post()`)
 - **TypeScript/JavaScript:** Express/Hono/Fastify method calls (`app.get('/path', handler)`)
 - **Next.js:** App router file conventions (`app/api/users/route.ts` → `GET /api/users`)
-- **Supabase/Deno:** Edge functions (`supabase/functions/<name>/index.ts` → `POST /<name>`) — the directory is the route regardless of how the handler registers (`serve()`/`Deno.serve()`, a `serve`-prefixed wrapper such as `serveWithInstrumentation(...)`, `export default { fetch }`, or `addEventListener('fetch', …)`). The handler is synthesized so `HANDLES` → handler → `CALLS` → `USES_MODEL` traces resolve into the data layer.
+- **Supabase/Deno:** Edge functions (`supabase/functions/<name>/index.ts` → `POST /<name>`) — the directory is the route regardless of how the handler registers (`serve()`/`Deno.serve()`, a `serve`-prefixed wrapper such as `serveWithInstrumentation(...)`, `export default { fetch }`, or `addEventListener('fetch', …)`). The handler is synthesized so `HANDLES` → handler → `CALLS` → `USES_MODEL`/`CALLS_RPC` traces resolve into the data layer.
+- **Cloudflare Workers / services:** Worker entry files (`workers/<name>/src/index.ts`, `services/<name>/src/index.ts`, `apps/<name>/worker/index.ts`) → `ALL /<name>`. Same handler detection as edge functions (`export default { fetch }`, `export default withWrapper(opts, { fetch })`, `const handler = {...}; export default …`), so a worker's DB access is traceable from its route. A worker that routes internally with Hono keeps its own routes.
 
 ---
 

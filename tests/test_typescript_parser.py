@@ -1422,6 +1422,130 @@ class TestEdgeHandlerDetectionIsScoped:
         assert "handleIt" in self._serve_entry_points("supabase/functions/f/index.ts", code)
 
 
+class TestWorkerRouteSynthesis:
+    """Cloudflare Workers / services (workers|services/<name>/src/index.ts,
+    apps/<name>/worker/index.ts) are HTTP endpoints via an `export default
+    { fetch }` (or a wrapper). They synthesize an `ALL /<name>` route so their
+    handler's DB-touching calls are traceable — reusing the edge-function
+    handler machinery, gated by path so frontend `export default` never matches."""
+
+    @staticmethod
+    def _routes(path: str, code: str):
+        return [(r.method, r.path, r.handler_name) for r in TypeScriptParser().parse_file(path, code).routes]
+
+    def test_plain_export_default_fetch(self):
+        code = (
+            "export default {\n  async fetch(request, env) { return handleReq(request); }\n}\nfunction handleReq(r){}\n"
+        )
+        result = TypeScriptParser().parse_file("workers/ziggy/src/index.ts", code)
+        assert ("ALL", "/ziggy", "ALL /ziggy") in [(r.method, r.path, r.handler_name) for r in result.routes]
+        synth = next(f for f in result.functions if f.name == "ALL /ziggy")
+        assert "handleReq" in synth.calls
+
+    def test_wrapper_with_inline_fetch_object(self):
+        """`export default Sentry.withSentry(opts, { async fetch(){} })`."""
+        code = (
+            "export default Sentry.withSentry(sentryOptions, {\n"
+            "  async fetch(request, env, ctx) { return proxy(request); }\n"
+            "});\n"
+            "function proxy(r){}\n"
+        )
+        result = TypeScriptParser().parse_file("workers/llm-proxy/src/index.ts", code)
+        synth = next(f for f in result.functions if f.name == "ALL /llm-proxy")
+        assert "proxy" in synth.calls
+
+    def test_satisfies_typed_fetch_handler(self):
+        """`export default wrap(opts, { fetch } satisfies ExportedHandler<Env>)` —
+        the object is wrapped in a TS `satisfies` (also `as`) type expression, the
+        idiomatic way to type a Cloudflare Worker handler."""
+        code = (
+            "export default Sentry.withSentry(sentryOptions, {\n"
+            "  async fetch(request, env, ctx) { return handle(request); }\n"
+            "} satisfies ExportedHandler<Env>);\n"
+            "function handle(r){}\n"
+        )
+        result = TypeScriptParser().parse_file("workers/llm-proxy/src/index.ts", code)
+        synth = next(f for f in result.functions if f.name == "ALL /llm-proxy")
+        assert "handle" in synth.calls  # the real fetch handler, not the options arg
+
+    def test_const_handler_indirection(self):
+        """`const handler = { fetch }; export default wrap(opts, handler)` — the
+        bare handler ref is resolved to its const initializer and synthesized."""
+        code = (
+            "const handler = { async fetch(request, env, ctx) { return go(request); } };\n"
+            "export default Sentry.withSentry(sentryOptions, handler);\n"
+            "function go(r){}\n"
+        )
+        result = TypeScriptParser().parse_file("workers/artifact-renderer/src/index.ts", code)
+        synth = next(f for f in result.functions if f.name == "ALL /artifact-renderer")
+        assert "go" in synth.calls
+
+    def test_service_and_apps_worker_paths(self):
+        code = "export default { async fetch(req, env) { return h(req); } }\nfunction h(r){}\n"
+        assert ("ALL", "/graph-api") in {(m, p) for m, p, _ in self._routes("services/graph-api/src/index.ts", code)}
+        assert ("ALL", "/fundraiser") in {(m, p) for m, p, _ in self._routes("apps/fundraiser/worker/index.ts", code)}
+
+    def test_worker_delegating_to_hono_keeps_its_routes(self):
+        code = "const app = new Hono();\napp.get('/health', (c) => c.json({}));\nexport default app;\n"
+        paths = {(m, p) for m, p, _ in self._routes("workers/api/src/index.ts", code)}
+        assert ("GET", "/health") in paths
+        assert ("ALL", "/api") not in paths
+
+    def test_frontend_export_default_not_a_worker(self):
+        """`export default {...}` outside a worker/service/app path is not a route."""
+        assert self._routes("src/pages/Home.tsx", "export default { foo: 1 }\n") == []
+        assert (
+            self._routes("src/lib/config.ts", "export default { async fetch(a, b) { return x(); } }\nfunction x(){}\n")
+            == []
+        )
+
+    def test_edge_function_method_still_post(self):
+        """Generalizing to workers must not change edge functions to ALL."""
+        code = "serveWithInstrumentation('plan', async (req) => h(req), {});\nfunction h(r){}\n"
+        assert self._routes("supabase/functions/plan/index.ts", code) == [("POST", "/plan", "POST /plan")]
+
+    def test_non_fetch_default_exports_are_not_worker_routes(self):
+        """`workers/`/`services/` are generic dirs — only a real `fetch`-bearing
+        default export is a worker. A bare identifier / factory call / plain
+        function package-entry default must NOT fabricate a route."""
+        parser = TypeScriptParser()
+
+        def routes_and_entries(path, code):
+            r = parser.parse_file(path, code)
+            eps = [f.name for f in r.functions if f.entry_point_reason in ("route_handler", "serve_handler")]
+            return [(x.method, x.path) for x in r.routes], eps
+
+        for path, code in [
+            ("services/auth/src/index.ts", "import {authService} from './svc';\nexport default authService;\n"),
+            ("services/queue/src/index.ts", "export default startConsumer;\nfunction startConsumer(){}\n"),
+            ("services/logger/src/index.ts", "export default createLogger(config);\nconst config = { level: 1 };\n"),
+            ("services/email/src/index.ts", "export default function(opts){ return doSend(); }\nfunction doSend(){}\n"),
+        ]:
+            rts, eps = routes_and_entries(path, code)
+            assert rts == [], f"{path} should not route: {rts}"
+            assert eps == [], f"{path} should mark no entry points: {eps}"
+
+    def test_browser_service_worker_addeventlistener_not_a_worker(self):
+        """`self.addEventListener('fetch', …)` (browser Service Worker API) under a
+        `workers/` dir is not a Cloudflare Worker — workers use `export default
+        { fetch }`, so addEventListener is not a worker signal."""
+        code = "self.addEventListener('fetch', handleFetch);\nfunction handleFetch(e){}\n"
+        assert self._routes("frontend/src/workers/image/src/index.ts", code) == []
+
+    def test_edge_function_arrow_const_handler_links_by_name_not_duplicated(self):
+        """Regression: a bare arrow/function const handler referenced by name
+        (`const h = async(req)=>{}; serve(h)`) must link by name to its real
+        Function node, not be resolved into a duplicate synthetic handler (which
+        would also steal its entry-point marking)."""
+        parser = TypeScriptParser()
+        code = "const handleRequest = async (req) => { supabase.from('t').select(); };\nserve(handleRequest);\n"
+        result = parser.parse_file("supabase/functions/orders/index.ts", code)
+        assert [(r.method, r.path, r.handler_name) for r in result.routes] == [("POST", "/orders", "handleRequest")]
+        # No synthetic "POST /orders" handler is created; the real function is the entry point.
+        assert not any(f.name.startswith("POST /orders") for f in result.functions)
+        assert "handleRequest" in [f.name for f in result.functions if f.entry_point_reason == "serve_handler"]
+
+
 class TestReexportExtraction:
     """Barrel file re-export statements should be captured as imports."""
 

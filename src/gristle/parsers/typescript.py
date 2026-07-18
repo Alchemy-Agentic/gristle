@@ -51,22 +51,36 @@ _ROUTE_METHODS = frozenset({"get", "post", "put", "delete", "patch", "all", "opt
 
 # Supabase edge function path pattern: supabase/functions/<name>/index.ts
 _SUPABASE_FUNC_RE = re.compile(r"(?:^|/)supabase/functions/([^/]+)/index\.[tj]sx?$")
+# Cloudflare Worker / service entry conventions: workers|services/<name>/src/index.ts
+# and apps/<name>/worker/index.ts. These are HTTP endpoints via an
+# `export default { fetch }` (or a wrapper thereof).
+_WORKER_ENTRY_RE = re.compile(
+    r"(?:^|/)(?:workers|services)/([^/]+)/src/index\.[tj]sx?$"
+    r"|(?:^|/)apps/([^/]+)/worker/index\.[tj]sx?$"
+)
 
 
-def _supabase_edge_function_name(file_path: str) -> str | None:
-    """Return the deployed function name for a Supabase edge-function file, or None.
+def _serverless_entry(file_path: str) -> tuple[str, str] | None:
+    """``(route_name, http_method)`` for a serverless entry file, else None.
 
-    Only ``supabase/functions/<name>/index.ts`` qualifies; ``_``-prefixed dirs are
-    Supabase shared code (never deployed). The edge-handler idioms
-    (``serve``-prefixed calls, ``export default { fetch }``, ``addEventListener``)
-    are only meaningful in these files, so all edge detection is gated on this —
-    the same idioms in ordinary app code (``export default MyComponent``, a HOC
-    call, a Cloudflare Worker's ``fetch``) must not be treated as edge handlers.
+    The gate for all serverless handler detection — the handler idioms
+    (``serve``-prefixed calls, ``export default { fetch }``, a wrapper thereof,
+    ``addEventListener``) also appear in ordinary app code (a default-exported
+    component, an HOC call), so they must only be recognized in these entry files.
+
+    - Supabase edge functions (``supabase/functions/<name>/index.ts``, non-``_``)
+      are invoked via POST → ``POST /<name>``.
+    - Cloudflare Workers / services serve all HTTP methods via one ``fetch``
+      handler → ``ALL /<name>``.
     """
-    m = _SUPABASE_FUNC_RE.search(file_path.replace("\\", "/"))
-    if not m or m.group(1).startswith("_"):
-        return None
-    return m.group(1)
+    p = file_path.replace("\\", "/")
+    m = _SUPABASE_FUNC_RE.search(p)
+    if m:
+        return None if m.group(1).startswith("_") else (m.group(1), "POST")
+    m = _WORKER_ENTRY_RE.search(p)
+    if m:
+        return ((m.group(1) or m.group(2)), "ALL")
+    return None
 
 
 # Storybook story files
@@ -1395,25 +1409,23 @@ class TypeScriptParser(LanguageParser):
         return None
 
     def _detect_serve_entry_points(self, root: Node, src: bytes, file_path: str) -> set[str]:
-        """Return the names of functions that are entry points via a Deno/Supabase
-        edge-function handler.
+        """Return the names of functions that are entry points via a serverless
+        request handler (Supabase edge function or Cloudflare Worker/service).
 
-        Gated to Supabase edge-function files — the handler idioms
-        (``serve``-prefixed calls, ``export default { fetch }``,
+        Gated to serverless entry files — the handler idioms (``serve``-prefixed
+        calls, ``export default { fetch }`` or a wrapper thereof,
         ``addEventListener``) also appear in ordinary app code (a default-exported
-        component, an HOC call, a Cloudflare Worker), and marking those as entry
-        points would corrupt dead-export/impact analysis repo-wide.
+        component, an HOC call), and marking those as entry points would corrupt
+        dead-export/impact analysis repo-wide.
 
-        If the handler is an inline arrow (``serve(async (req) => …)``,
-        ``export default { fetch: withSupabase(opts, async (req) => …) }``, a
-        wrapper such as ``serveWithInstrumentation('name', async (req) => …)``),
-        the *named functions it calls* are the entry points. If the handler is a
-        named reference (``serve(handleRequest)``), that name is the entry point.
-        See :meth:`_find_edge_handler`.
+        If the handler is inline, the *named functions it calls* are the entry
+        points; if it is a named reference (``serve(handleRequest)``), that name
+        is the entry point. See :meth:`_find_edge_handler`.
         """
-        if _supabase_edge_function_name(file_path) is None:
+        entry = _serverless_entry(file_path)
+        if entry is None:
             return set()
-        handler_node, handler_ref = self._find_edge_handler(root, src)
+        handler_node, handler_ref = self._find_serverless_handler(root, src, entry[1])
         callees: set[str] = set()
         if handler_node is not None:
             self._collect_call_names(handler_node, src, callees)
@@ -1454,20 +1466,15 @@ class TypeScriptParser(LanguageParser):
             # export default { fetch: <handler> }  |  export default <handler>
             if node.type == "export_statement":
                 for c in node.named_children:
-                    if c.type == "object":
-                        val = self._object_pair_value(c, "fetch", src)
-                        if val is not None:
-                            found = self._unwrap_handler(val, src)
-                            if found != (None, None):
-                                return found
-                    elif c.type in (
+                    if c.type in (
+                        "object",
                         "arrow_function",
                         "function_expression",
                         "function",
                         "call_expression",
                         "identifier",
                     ):
-                        found = self._unwrap_handler(c, src)
+                        found = self._unwrap_default_value(c, src)
                         if found != (None, None):
                             return found
                 continue
@@ -1492,6 +1499,97 @@ class TypeScriptParser(LanguageParser):
                 if handler is not None:
                     return self._unwrap_handler(handler, src)
         return (None, None)
+
+    def _find_serverless_handler(self, root: Node, src: bytes, method: str) -> tuple[Node | None, str | None]:
+        """The request handler for a serverless entry, by kind.
+
+        - Supabase edge function (``POST``): the permissive edge finder
+          (``serve``/``addEventListener``/``export default``/named ref) — the
+          ``supabase/functions/`` path is unambiguous, so any handler shape there
+          is a real handler.
+        - Cloudflare Worker / service (``ALL``): STRICT — only a ``fetch``-bearing
+          default export (an object, a wrapper call's ``{ fetch }`` object arg, or
+          a resolved ``const``). ``workers/`` and ``services/`` are generic
+          directories where a bare ``export default authService`` / factory call /
+          plain function (an ordinary package entry) would otherwise fabricate a
+          route; requiring a ``fetch`` member is the Cloudflare Worker contract.
+        """
+        if method != "POST":
+            return self._find_worker_handler(root, src)
+        return self._find_edge_handler(root, src)
+
+    def _find_worker_handler(self, root: Node, src: bytes) -> tuple[Node | None, str | None]:
+        """A Cloudflare Worker's request handler: the ``fetch`` member of the
+        default export (directly, via a wrapper call's object arg, or via a
+        resolved local const). Returns ``(None, None)`` when the default export
+        has no ``fetch`` handler — a bare identifier / plain function / factory
+        default is NOT a worker."""
+        for node in root.named_children:
+            if node.type == "export_statement":
+                for c in node.named_children:
+                    found = self._fetch_handler_from_value(c, root, src, 0)
+                    if found != (None, None):
+                        return found
+        return (None, None)
+
+    @staticmethod
+    def _strip_type_wrapper(node: Node) -> Node:
+        """Unwrap TS type wrappers around a value — ``x satisfies T``, ``x as T``,
+        ``(x)`` — to the value itself (``{ fetch } satisfies ExportedHandler`` is a
+        common way to type a Cloudflare Worker handler)."""
+        while (
+            node.type in ("satisfies_expression", "as_expression", "parenthesized_expression") and node.named_children
+        ):
+            node = node.named_children[0]
+        return node
+
+    def _fetch_handler_from_value(
+        self, val: Node, root: Node, src: bytes, depth: int
+    ) -> tuple[Node | None, str | None]:
+        """Resolve an export-default value to its ``fetch`` handler, requiring a
+        ``fetch`` member: an object → its ``fetch`` value; a call → the first arg
+        (reversed) that yields one (``withSentry(opts, { fetch })``); an identifier
+        → a resolved local const that yields one. Bounded to avoid a cyclic-const
+        loop."""
+        if depth > 4:
+            return (None, None)
+        val = self._strip_type_wrapper(val)
+        if val.type == "object":
+            fetch = self._object_pair_value(val, "fetch", src)
+            return self._unwrap_handler(fetch, src) if fetch is not None else (None, None)
+        if val.type == "call_expression":
+            args = val.child_by_field_name("arguments")
+            for cand in reversed(args.named_children if args else []):
+                found = self._fetch_handler_from_value(cand, root, src, depth + 1)
+                if found != (None, None):
+                    return found
+            return (None, None)
+        if val.type == "identifier":
+            resolved = self._resolve_local_const(root, self._text(val, src), src)
+            if resolved is not None:
+                return self._fetch_handler_from_value(resolved, root, src, depth + 1)
+        return (None, None)
+
+    def _unwrap_default_value(self, val: Node, src: bytes) -> tuple[Node | None, str | None]:
+        """Unwrap an ``export default``-style value: an object literal → its
+        ``fetch`` member; otherwise the value itself (arrow/function/wrapper-call/
+        named ref) via :meth:`_unwrap_handler`."""
+        if val.type == "object":
+            fetch = self._object_pair_value(val, "fetch", src)
+            return self._unwrap_handler(fetch, src) if fetch is not None else (None, None)
+        return self._unwrap_handler(val, src)
+
+    def _resolve_local_const(self, root: Node, name: str, src: bytes) -> Node | None:
+        """The initializer value of a top-level ``const/let/var <name> = <value>``."""
+        for node in root.named_children:
+            decl = node.named_children[0] if node.type == "export_statement" and node.named_children else node
+            if decl.type in ("lexical_declaration", "variable_declaration"):
+                for declarator in decl.named_children:
+                    if declarator.type == "variable_declarator":
+                        nm = declarator.child_by_field_name("name")
+                        if nm is not None and self._text(nm, src) == name:
+                            return declarator.child_by_field_name("value")
+        return None
 
     @staticmethod
     def _unwrap_to_call(node: Node) -> Node | None:
@@ -1554,6 +1652,7 @@ class TypeScriptParser(LanguageParser):
         named handler reference, ``serve(handleRequest)``). A bare
         identifier/member/shorthand is itself a named handler reference.
         """
+        expr = self._strip_type_wrapper(expr)
         if expr.type in self._INLINE_HANDLER_TYPES:
             return (expr, None)
         if expr.type == "call_expression":
@@ -1637,29 +1736,32 @@ class TypeScriptParser(LanguageParser):
         base = handler_ref.split(".")[0]
         return "." in handler_ref or base in getattr(self, "_dynamic_router_names", set())
 
-    def _extract_supabase_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
-        """Synthesize a route for a Supabase edge function.
+    def _extract_serverless_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
+        """Synthesize a route for a serverless entry file — a Supabase edge
+        function (``POST /<name>``) or a Cloudflare Worker/service (``ALL /<name>``).
 
-        Edge functions live at ``supabase/functions/<name>/index.ts`` and are
-        deployed at ``/<name>`` (invoked via POST) — the directory IS the route,
-        regardless of how the handler is registered inside. An inline handler
-        arrow is synthesised into a Function (reusing the inline-handler
-        machinery) so route → handler → …calls… → Model resolves; a named handler
-        is linked by name in Phase 2. Dirs starting with ``_`` are Supabase's
-        shared code, never deployed, so they are skipped.
+        The file's location IS the route, regardless of how the handler registers
+        inside. An inline handler is synthesised into a Function (reusing the
+        inline-handler machinery) so route → handler → …calls… → Model/DBFunction
+        resolves; a named handler is linked by name in Phase 2.
 
         When the handler delegates to a framework app (``Deno.serve(app.fetch)``,
-        ``export default app``), the app's own ``app.get(...)`` routes are the
-        real endpoints, so the directory envelope is skipped to avoid a dangling
-        or duplicate route.
+        ``export default app``), the app's own ``app.get(...)`` routes are the real
+        endpoints, so the envelope is skipped to avoid a dangling or duplicate
+        route. (Known limitation: a worker whose *inline* fetch handler forwards to
+        an in-file router — ``export default { fetch: (req) => app.fetch(req) }``
+        alongside ``app.get(...)`` — keeps both the ``ALL`` envelope and the app's
+        routes, since the delegation is inside the handler body rather than the
+        registration.)
         """
-        func_name = _supabase_edge_function_name(file_path)
-        if func_name is None:
+        entry = _serverless_entry(file_path)
+        if entry is None:
             return []
+        name, method = entry
 
-        handler_node, handler_ref = self._find_edge_handler(root, src)
+        handler_node, handler_ref = self._find_serverless_handler(root, src, method)
         if handler_node is not None:
-            synth = self._synthesize_arrow_handler(handler_node, src, "POST", f"/{func_name}", file_path)
+            synth = self._synthesize_arrow_handler(handler_node, src, method, f"/{name}", file_path)
             self._synth_route_handlers.append(synth)
             handler_name = synth.name
             line = handler_node.start_point[0] + 1
@@ -1674,8 +1776,8 @@ class TypeScriptParser(LanguageParser):
 
         return [
             ParsedRoute(
-                method="POST",
-                path=f"/{func_name}",
+                method=method,
+                path=f"/{name}",
                 handler_name=handler_name,
                 file_path=file_path,
                 line=line,
@@ -1753,11 +1855,12 @@ class TypeScriptParser(LanguageParser):
                 if route:
                     routes.append(route)
 
-        # Supabase edge function convention: the directory IS the endpoint. Always
-        # attempt it (a stray false framework route in the body must not suppress
-        # the real edge route); _extract_supabase_routes itself skips the envelope
-        # when the handler delegates to an internal Hono/Express app.
-        routes.extend(self._extract_supabase_routes(root, src, file_path))
+        # Serverless entry convention (Supabase edge functions, Cloudflare
+        # Workers/services): the file's location IS the endpoint. Always attempt it
+        # (a stray false framework route in the body must not suppress the real
+        # one); _extract_serverless_routes itself skips the envelope when the
+        # handler delegates to an internal Hono/Express app.
+        routes.extend(self._extract_serverless_routes(root, src, file_path))
 
         # NestJS: @Controller(base) classes with @Get/@Post/... decorated methods
         routes.extend(self._extract_nestjs_routes(root, src, file_path))

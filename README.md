@@ -38,8 +38,8 @@ Gristle is a **fast, build-free, framework-aware *structural* graph** built with
 | Language | Functions | Classes | Imports | Routes | Components | Tests |
 |----------|-----------|---------|---------|--------|------------|-------|
 | Python | Yes | Yes | Yes | FastAPI, Flask, Django | - | pytest |
-| TypeScript | Yes | Yes | Yes | Express, Hono, Fastify | React | jest, vitest |
-| JavaScript | Yes | Yes | Yes | Express, Hono, Fastify | React | jest, vitest |
+| TypeScript | Yes | Yes | Yes | Express, Hono, Fastify, NestJS, Next.js, Supabase edge fns, Cloudflare Workers | React | jest, vitest |
+| JavaScript | Yes | Yes | Yes | Express, Hono, Fastify, NestJS, Next.js, Supabase edge fns, Cloudflare Workers | React | jest, vitest |
 | Vue / Svelte / Astro | Yes | Yes | Yes | - | - | - |
 
 Vue/Svelte/Astro single-file components are parsed by extracting the embedded

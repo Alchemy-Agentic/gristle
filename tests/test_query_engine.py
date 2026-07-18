@@ -1231,6 +1231,16 @@ class TestGetRoutes:
         call_params = graph.execute.call_args[0][1]
         assert call_params["method"] == "GET"
 
+    def test_method_filter_includes_all_routes(self):
+        """An `ALL`-method route (a Cloudflare Worker envelope, `app.all(...)`)
+        serves every verb, so a concrete-verb filter must include it — the query
+        matches `r.method = $method OR r.method = 'ALL'`."""
+        engine, graph = _make_engine()
+        graph.execute.return_value = _empty()
+        engine.get_routes(method="GET")
+        query = graph.execute.call_args[0][0]
+        assert "'ALL'" in query and "OR r.method" in query
+
     def test_get_routes_empty(self):
         engine, graph = _make_engine()
         graph.execute.return_value = _empty()

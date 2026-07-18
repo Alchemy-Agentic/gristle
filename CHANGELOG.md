@@ -6,6 +6,20 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Cloudflare Workers and services are now recognized as routes.** The
+  edge-function route synthesis is generalized: a Worker/service entry file
+  (`workers/<name>/src/index.ts`, `services/<name>/src/index.ts`, or
+  `apps/<name>/worker/index.ts`) is an HTTP endpoint via its `fetch` handler, so
+  it synthesizes an `ALL /<name>` route. It reuses the same handler detection as
+  edge functions and adds the common `const handler = {...}; export default
+  wrap(opts, handler)` indirection (the handler ref is resolved to its const
+  initializer). Worker handlers that delegate to an internal Hono app keep their
+  own routes. Detection stays path-gated, so a frontend `export default {...}` is
+  never mistaken for a worker. On a real app this added 9 worker routes (all
+  handler-linked) and reconnected ~150 previously-islanded worker functions to
+  the data layer — `ALL /job-orchestrator` now traces to 16 tables and 7 RPCs.
+
 ## [0.6.0] - 2026-07-17
 
 ### Added
