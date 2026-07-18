@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-17
+
 ### Added
 - **Cloudflare Workers and services are now recognized as routes.** The
   edge-function route synthesis is generalized: a Worker/service entry file
