@@ -229,8 +229,8 @@ class IngestionPipeline:
         self._unlinked_middleware.clear()
         self._callback_target_ids.clear()
 
-        # Walk and collect source files (include .prisma for schema extraction)
-        schema_extensions = frozenset({"prisma"})
+        # Walk and collect source files (include .prisma/.sql for schema extraction)
+        schema_extensions = frozenset({"prisma", "sql"})
         files = walk_repo(repo_path, self.registry.supported_extensions | schema_extensions)
         logger.info("Found %d parseable files in %s", len(files), repo_path)
 

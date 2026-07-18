@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 from gristle.config import settings
 from gristle.ingestion.batch import BatchCollector
-from gristle.models import ParsedDBFunction, ParsedModel, SchemaExtractionResult
+from gristle.models import ParsedDBFunction, ParsedModel, ParsedSQLFunction, SchemaExtractionResult
 
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
@@ -118,8 +118,19 @@ class SchemaExtractor:
 
             models.extend(extract_python_orm_models_from_files(py_files))
 
-        # 4. Write to graph
-        return self._write_models(models, parsed_files, db_functions)
+        # 4. SQL migrations/functions: parse CREATE FUNCTION bodies for the tables
+        # each stored procedure reads/writes (links a DBFunction to its Models).
+        sql_functions: list[ParsedSQLFunction] = []
+        for wf in walked_files:
+            if wf.extension == "sql":
+                content = self._read_file(wf)
+                if content is not None:
+                    from gristle.parsers.sql import parse_sql_schema
+
+                    sql_functions.extend(parse_sql_schema(wf.relative_path, content))
+
+        # 5. Write to graph
+        return self._write_models(models, parsed_files, db_functions, sql_functions)
 
     @staticmethod
     def _dedupe_by_name(candidates: list[list[_T]]) -> list[_T]:
@@ -157,8 +168,10 @@ class SchemaExtractor:
         models: list[ParsedModel],
         parsed_files: list[ParsedFile] | None = None,
         db_functions: list[ParsedDBFunction] | None = None,
+        sql_functions: list[ParsedSQLFunction] | None = None,
     ) -> SchemaExtractionResult:
         db_functions = db_functions or []
+        sql_functions = sql_functions or []
         batch = BatchCollector(self.graph, settings.ingestion_batch_size)
         model_name_to_id: dict[str, str] = {}
 
@@ -296,6 +309,15 @@ class SchemaExtractor:
             if dbfunc_name_to_id:
                 self._link_code_to_db_functions(parsed_files, dbfunc_name_to_id, batch)
 
+        # Phase F: Link stored-procedure BODIES to the tables they touch, parsed from
+        # .sql migrations: DBFunction-[:USES_MODEL {access}]->Model. Completes the
+        # route -> handler -> CALLS_RPC -> DBFunction -> USES_MODEL -> Model chain, so a
+        # table written only by an RPC body is visible as a write target. Name-gated
+        # both ends: an edge is created only when the SQL function matches a declared
+        # DBFunction AND the table matches a known Model.
+        if dbfunc_name_to_id and model_name_to_id:
+            self._link_db_functions_to_models(sql_functions, dbfunc_name_to_id, model_name_to_id, batch)
+
         counts = batch.flush()
         return SchemaExtractionResult(
             models_found=len(models),
@@ -330,6 +352,43 @@ class SchemaExtractor:
                         edges.add((func_id, target_id))
         for func_id, dbfunc_id in edges:
             batch.add_merge_relationship("CALLS_RPC", func_id, dbfunc_id, {})
+
+    @staticmethod
+    def _link_db_functions_to_models(
+        sql_functions: list[ParsedSQLFunction],
+        dbfunc_name_to_id: dict[str, str],
+        model_name_to_id: dict[str, str],
+        batch: BatchCollector,
+    ) -> None:
+        """Create ``DBFunction-[:USES_MODEL {access}]->Model`` edges from parsed .sql
+        function bodies. Both ends are name-gated (the SQL function must match a
+        declared ``DBFunction``, the table a known ``Model``); ``write`` beats
+        ``read`` when a function both reads and writes the same table."""
+        # Migration dirs are append-only: a function is redefined via CREATE OR REPLACE
+        # across many files. Unioning every historical body would keep tables a function
+        # no longer touches as stale edges, so keep only the LATEST definition per name
+        # (max file_path — Supabase migrations are timestamp-prefixed), preferring the
+        # latest one that actually parsed a table (later definitions can fail to parse).
+        latest: dict[str, ParsedSQLFunction] = {}
+        for fn in sorted(sql_functions, key=lambda f: f.file_path):
+            if fn.name not in latest or fn.reads or fn.writes:
+                latest[fn.name] = fn
+
+        edges: dict[tuple[str, str], str] = {}
+        for fn in latest.values():
+            dbfunc_id = dbfunc_name_to_id.get(fn.name)
+            if dbfunc_id is None:
+                continue
+            for table in fn.writes:
+                model_id = model_name_to_id.get(table)
+                if model_id is not None:
+                    edges[(dbfunc_id, model_id)] = "write"
+            for table in fn.reads:
+                model_id = model_name_to_id.get(table)
+                if model_id is not None:
+                    edges.setdefault((dbfunc_id, model_id), "read")
+        for (dbfunc_id, model_id), access in edges.items():
+            batch.add_merge_relationship("USES_MODEL", dbfunc_id, model_id, {"access": access})
 
     def _link_code_to_models(
         self,

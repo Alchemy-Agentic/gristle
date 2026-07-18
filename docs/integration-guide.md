@@ -96,8 +96,8 @@ This clones the repo and runs full ingestion in one step.
 | `REFERENCES` | ModelField | Model | FK relationship (when `is_foreign_key: true`) |
 | `RELATED_TO` | Model | Model | High-level relationship (with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint` properties) |
 | `PROMOTED_FROM` | Model | Class | Link to source Class node (ORM class promoter) |
-| `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma), model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`), the TypeORM/NestJS repository pattern (a `Repository<Entity>`-typed field → `this.fooRepository.find()` links to `Entity`), and Supabase/PostgREST string-literal table access (`supabase.from('users').select()` → the `users` table model; `.storage.from('bucket')` is excluded) |
-| `CALLS_RPC` | Function | DBFunction | Code invokes a Postgres stored function via `supabase.rpc('name', {...})`. Created only when `'name'` matches a declared `DBFunction`, so a stray `.rpc()` on another client never links. Extends the route→DB path to stored procedures (they appear in a `request_trace` subgraph) |
+| `USES_MODEL` | Function, DBFunction | Model | Reads/writes a data model (with `access`: `read`/`write`). From a **`Function`**: method-chain access (Django/SQLAlchemy/Prisma), model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`), the TypeORM/NestJS repository pattern (a `Repository<Entity>`-typed field → `this.fooRepository.find()` links to `Entity`), and Supabase/PostgREST string-literal table access (`supabase.from('users').select()`; `.storage.from('bucket')` excluded). From a **`DBFunction`**: the tables a Postgres stored-procedure BODY touches, parsed from `.sql` migrations (`INSERT`/`UPDATE`/`DELETE` = `write`, `SELECT`/`FROM`/`JOIN` = `read`), so a table written only by an RPC is visible as a write target. `MATCH (x)-[:USES_MODEL]->(m:Model)` gets all accessors; pin `(x:Function)` for code-only |
+| `CALLS_RPC` | Function | DBFunction | Code invokes a Postgres stored function via `supabase.rpc('name', {...})`. Created only when `'name'` matches a declared `DBFunction`, so a stray `.rpc()` on another client never links. Extends the route→DB path to stored procedures — and with the `DBFunction-[:USES_MODEL]->Model` edges above, all the way to the tables the procedure mutates (they appear in a `request_trace` subgraph) |
 
 ### Indexes
 
@@ -806,7 +806,7 @@ gristle_model_detail(model_name="User")
 ---
 ### `gristle_db_functions(repo_id?)`
 
-**When to use:** You want the Postgres stored functions (Supabase RPCs) and who calls them — the `supabase.rpc('name', ...)` targets that often hold business-critical writes (credit deduction, entitlement checks) the table-access edges can't see, because their bodies live in SQL. Ordered by caller count (most-used first). Capped for context: at most 50 functions (`db_functions_omitted`, `count` exact), each with up to 15 inline callers (`callers_omitted`, `caller_count` exact). These also appear in a `request_trace` subgraph via `CALLS_RPC` edges.
+**When to use:** You want the Postgres stored functions (Supabase RPCs) and who calls them — the `supabase.rpc('name', ...)` targets that often hold business-critical writes (credit deduction, entitlement checks). Each function also carries the tables its **body** reads/writes (`writes_tables`/`reads_tables`), parsed from the `.sql` migrations — so you can see what a stored procedure actually mutates without reading the SQL. Ordered by caller count (most-used first). Capped for context: at most 50 functions (`db_functions_omitted`, `count` exact), each with up to 15 inline callers (`callers_omitted`, `caller_count` exact). These also appear in a `request_trace` subgraph via `CALLS_RPC` → `DBFunction` → `USES_MODEL` → the tables.
 
 ```
 gristle_db_functions()
@@ -822,7 +822,9 @@ gristle_db_functions()
       "returns": "boolean",
       "filePath": "src/types/database.types.ts",
       "callers": ["src/hooks/useCredits.ts::spend", "..."],
-      "caller_count": 9
+      "caller_count": 9,
+      "writes_tables": ["credit_ledger", "profiles"],
+      "reads_tables": ["subscription_tiers"]
     }
   ],
   "count": 103
@@ -849,7 +851,7 @@ gristle_subgraph(view="blast_radius", center="UserService.save")
 |--------|---------|-----------|
 | `call_hierarchy` | Who calls X, and what X calls (transitively)? | `CALLS` |
 | `blast_radius` | What breaks if X changes? (callers + renderers + covering tests + routes) | `CALLS`, `RENDERS`, `TESTS_FUNCTION`, `HANDLES` |
-| `request_trace` | How does a request flow route → handler → functions → DB model? (crosses JSX renders, so a page component reaches its children's data access) | `HANDLES`, `CALLS`, `RENDERS`, `USES_MODEL`, `CALLS_RPC` |
+| `request_trace` | How does a request flow route → handler → functions → DB model? (crosses JSX renders to a page's children, and RPC bodies — `CALLS_RPC` → `DBFunction` → `USES_MODEL` — to the tables a stored procedure mutates) | `HANDLES`, `CALLS`, `RENDERS`, `USES_MODEL`, `CALLS_RPC` |
 | `component_tree` | The JSX render tree around a component X: what X renders (children) and what renders X (parents), transitively | `RENDERS` |
 
 `center` accepts a business `id` (`func::…`) or a `qualified_name` (a route `path`

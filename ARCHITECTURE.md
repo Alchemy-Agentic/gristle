@@ -279,7 +279,7 @@ Container for all entities parsed from a single source file.
 
 ### ParsedDBFunction (Schema Extraction)
 
-A Postgres stored function / RPC — a `supabase.rpc('name', {...})` target. Declared in the Supabase generated types under `public.Functions`; its body lives in SQL (not parsed), so only the callable signature is captured.
+A Postgres stored function / RPC — a `supabase.rpc('name', {...})` target. Declared in the Supabase generated types under `public.Functions` (the callable signature: typed args/returns). Its **body** is parsed separately from the `.sql` migrations (see Schema Phase) to link the tables it reads/writes via `DBFunction-[:USES_MODEL]->Model`.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -444,9 +444,10 @@ Runs after Config Phase (needs `INHERITS_FROM` edges for ORM base class detectio
 2. **Prisma DSL** (`.prisma` files): Regex-based parser extracts `model` and `enum` blocks with brace-counting.
 3. **Drizzle ORM** (`.ts`/`.js` files): Detects `pgTable`/`mysqlTable`/`sqliteTable` calls, extracts columns and FK references.
 4. **Supabase generated types** (`.ts`/`.js` files): Detects `supabase gen types typescript` output (the `Database` type) and extracts every table/view with columns, nullability, and FK relationships — no ORM required. Repos often hold several copies of the generated file; one `Model` is kept per table (most complete copy wins). Code links via the TS parser's `"<verb>.from('table')"` descriptors from `supabase.from('table').select()/insert()/...` chains — table names are matched *only* through that string-literal descriptor (never bare identifiers) because lowercase table names like `users` collide with ordinary variable names. The same file's `public.Functions` block yields `DBFunction` nodes (Postgres stored functions with typed args/returns), and `supabase.rpc('name', {...})` calls create `Function-[:CALLS_RPC]->DBFunction` edges — matched only when the RPC name is a declared function, so a stray `.rpc()` on another client never links.
-5. **ORM class promoter** (P1/P2 stub): Framework placeholder for TypeORM, SQLAlchemy, Django, etc.
-6. Creates `Model` and `ModelField` nodes, plus `CONTAINS`, `HAS_MODEL_FIELD`, `REFERENCES`, `RELATED_TO`, and `PROMOTED_FROM` edges.
-7. Creates `File` nodes for `.prisma` files (not created by Phase 1 since no parser registered).
+5. **SQL migrations** (`.sql` files, tree-sitter-sql): `parse_sql_schema` extracts each `CREATE FUNCTION`'s body table access — `INSERT`/`UPDATE`/`DELETE` targets are `write`, `SELECT`/`FROM`/`JOIN` sources are `read` (write beats read; names schema-stripped). `_link_db_functions_to_models` then creates `DBFunction-[:USES_MODEL {access}]->Model`, name-gated on both ends (the SQL function must match a declared `DBFunction`, the table a known `Model`). This is where a stored procedure's real table mutations live — invisible to the generated types (signature only) — so a table written only by an RPC becomes a visible write target and `route → CALLS_RPC → DBFunction → USES_MODEL → Model` resolves end to end.
+6. **ORM class promoter** (P1/P2 stub): Framework placeholder for TypeORM, SQLAlchemy, Django, etc.
+7. Creates `Model` and `ModelField` nodes, plus `CONTAINS`, `HAS_MODEL_FIELD`, `REFERENCES`, `RELATED_TO`, and `PROMOTED_FROM` edges.
+8. Creates `File` nodes for `.prisma` files (not created by Phase 1 since no parser registered).
 
 ### Phase 3: Process Documentation
 

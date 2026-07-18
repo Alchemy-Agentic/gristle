@@ -52,7 +52,10 @@ TypeORM entities, SQLAlchemy/Django classes, and Supabase generated types
 (`supabase gen types typescript` output) — Supabase repos get every table and
 view with columns and FK relationships, and `supabase.from('table')` calls are
 linked to the tables they read or write, so route→handler→DB tracing works
-without any ORM.
+without any ORM. Postgres **stored procedures** are covered too: `.sql` migrations
+are parsed so a `CREATE FUNCTION` body's table reads/writes link the RPC to its
+tables — `route → CALLS_RPC → DBFunction → USES_MODEL → Model` resolves end to end,
+so a table written only by a stored procedure is still a visible write target.
 
 ## Quick start
 

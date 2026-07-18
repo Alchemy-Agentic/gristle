@@ -830,6 +830,40 @@ class TestGetDBFunctions:
         assert fn["caller_count"] == 0
         assert fn["callers"] == []
 
+    def test_surfaces_tables_touched_by_body(self):
+        # The tables a stored-procedure body reads/writes (parsed from .sql) are
+        # surfaced, sorted; missing values default to empty lists.
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {
+                    "name": "deduct_credits",
+                    "schema": "public",
+                    "args": ["p_user_id"],
+                    "argCount": 1,
+                    "returns": "boolean",
+                    "filePath": "db.ts",
+                    "callers": ["m::spend"],
+                    "writes_tables": ["profiles", "credit_ledger"],
+                    "reads_tables": ["subscription_tiers"],
+                },
+                {
+                    "name": "no_body",
+                    "schema": "public",
+                    "args": [],
+                    "argCount": 0,
+                    "returns": "void",
+                    "filePath": "db.ts",
+                    "callers": [],
+                },
+            ]
+        )
+        fns = {f["name"]: f for f in engine.get_db_functions()["db_functions"]}
+        assert fns["deduct_credits"]["writes_tables"] == ["credit_ledger", "profiles"]  # sorted
+        assert fns["deduct_credits"]["reads_tables"] == ["subscription_tiers"]
+        assert fns["no_body"]["writes_tables"] == []
+        assert fns["no_body"]["reads_tables"] == []
+
 
 class TestGetModelsCaps:
     """get_models is a *landscape* view: on Supabase repos (~200 generated

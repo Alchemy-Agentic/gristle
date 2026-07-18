@@ -27,6 +27,7 @@ dependencies = [
     "tree-sitter-python>=0.23.0",
     "tree-sitter-typescript>=0.23.0",
     "tree-sitter-javascript>=0.23.0",
+    "tree-sitter-sql>=0.3.8",
     "mcp[cli]>=1.20.0",
     "starlette>=0.37.0",
     "pydantic>=2.0.0",

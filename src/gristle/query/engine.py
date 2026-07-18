@@ -1955,8 +1955,9 @@ class QueryEngine:
             OPTIONAL MATCH (h)-[:CALLS|RENDERS*0..{depth}]->(fn:Function)
             OPTIONAL MATCH (fn)-[:USES_MODEL]->(m:Model)
             OPTIONAL MATCH (fn)-[:CALLS_RPC]->(df:DBFunction)
+            OPTIONAL MATCH (df)-[:USES_MODEL]->(dm:Model)
             WITH collect(DISTINCT rt) + collect(DISTINCT h) + collect(DISTINCT fn)
-                 + collect(DISTINCT m) + collect(DISTINCT df) AS seeds
+                 + collect(DISTINCT m) + collect(DISTINCT df) + collect(DISTINCT dm) AS seeds
             UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
         """,
         "component_tree": """
@@ -3130,10 +3131,15 @@ class QueryEngine:
             """
             MATCH (d:DBFunction)
             OPTIONAL MATCH (caller:Function)-[:CALLS_RPC]->(d)
-            WITH d, collect(DISTINCT caller.qualified_name) AS callers
+            OPTIONAL MATCH (d)-[w:USES_MODEL {access: 'write'}]->(wm:Model)
+            OPTIONAL MATCH (d)-[r:USES_MODEL {access: 'read'}]->(rm:Model)
+            WITH d, collect(DISTINCT caller.qualified_name) AS callers,
+                 collect(DISTINCT wm.name) AS writes, collect(DISTINCT rm.name) AS reads
             RETURN d.name AS name, d.schema AS schema, d.args AS args,
                    d.arg_count AS argCount, d.returns AS returns,
-                   d.file_path AS filePath, callers
+                   d.file_path AS filePath, callers,
+                   [t IN writes WHERE t IS NOT NULL] AS writes_tables,
+                   [t IN reads WHERE t IS NOT NULL] AS reads_tables
             ORDER BY size(callers) DESC, d.name
             """
         )
@@ -3142,6 +3148,9 @@ class QueryEngine:
             record["callers"] = callers
             record["caller_count"] = len(callers)
             self._cap_list(record, "callers", self._DBFUNC_CALLER_CAP)
+            # Tables the stored-procedure body touches (parsed from .sql migrations).
+            record["writes_tables"] = sorted(record.get("writes_tables") or [])
+            record["reads_tables"] = sorted(record.get("reads_tables") or [])
         report = {"db_functions": result.records, "count": len(result.records)}
         self._cap_list(report, "db_functions", self._MODELS_CAP)
         return report

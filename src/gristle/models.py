@@ -338,6 +338,23 @@ class ParsedDBFunction:
 
 
 @dataclass(slots=True)
+class ParsedSQLFunction:
+    """A Postgres function parsed from a ``.sql`` migration/definition file, with the
+    tables its body reads and writes. Unlike ``ParsedDBFunction`` (the callable
+    signature from the generated types), this parses the FUNCTION BODY — where the
+    stored procedure's actual table mutations live — so a DBFunction can be linked to
+    the tables it touches (``DBFunction-[:USES_MODEL]->Model``). Names are schema-
+    stripped (``public.deduct_credits`` -> ``deduct_credits``) to match DBFunction /
+    Model node names."""
+
+    name: str
+    file_path: str
+    line: int
+    reads: set[str] = field(default_factory=set)  # bare table names read (SELECT/FROM/JOIN)
+    writes: set[str] = field(default_factory=set)  # bare table names written (INSERT/UPDATE/DELETE)
+
+
+@dataclass(slots=True)
 class SchemaExtractionResult:
     """Result of schema extraction phase."""
 

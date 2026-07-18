@@ -596,6 +596,103 @@ export type Database = {
         assert ("func::api.ts::spend", "dbfunc::database.types.ts::deduct_credits") in pairs
         assert not any(tid.endswith("::not_a_function") for _, tid in pairs)
 
+    def test_sql_function_body_links_dbfunction_to_models(self, tmp_path):
+        """A .sql CREATE FUNCTION body links its DBFunction to the tables it touches
+        (DBFunction-[:USES_MODEL {access}]->Model), name-gated on both ends."""
+        types = """\
+export type Database = {
+  public: {
+    Tables: {
+      profiles: { Row: { id: string }, Relationships: [] }
+      credit_ledger: { Row: { id: string }, Relationships: [] }
+    }
+    Functions: {
+      deduct_credits: { Args: { p_user_id: string }; Returns: boolean }
+    }
+  }
+}
+"""
+        tp = tmp_path / "database.types.ts"
+        tp.write_text(types)
+        wf_types = WalkedFile(relative_path="database.types.ts", absolute_path=str(tp), extension="ts")
+
+        sql = """\
+CREATE OR REPLACE FUNCTION public.deduct_credits(p_user_id uuid) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE public.profiles SET credits = credits - 1 WHERE id = p_user_id;
+  INSERT INTO public.credit_ledger(user_id, delta) VALUES (p_user_id, -1);
+  PERFORM 1 FROM public.audit_log;  -- audit_log is NOT a declared Model
+  RETURN true;
+END; $$;
+
+-- an internal helper NOT declared in the types file -> no DBFunction, no edge
+CREATE FUNCTION public.internal_helper() RETURNS void LANGUAGE sql AS $$
+  UPDATE public.profiles SET seen = now()
+$$;
+"""
+        sp = tmp_path / "migration.sql"
+        sp.write_text(sql)
+        wf_sql = WalkedFile(relative_path="migration.sql", absolute_path=str(sp), extension="sql")
+
+        graph = _make_graph_mock()
+        extractor = SchemaExtractor(graph, file_path_to_id={})
+        extractor.extract([wf_types, wf_sql])
+
+        um = [c for c in graph.batch_merge_relationships.call_args_list if c.args[0] == "USES_MODEL"]
+        # add_merge_relationship flattens properties onto the item, so access is top-level.
+        edges = {(i["from_id"], i["to_id"]): i.get("access") for call in um for i in call.args[1]}
+        # DBFunction-sourced edges only (Function-sourced USES_MODEL also live here).
+        dbf_edges = {(f, t): a for (f, t), a in edges.items() if f.startswith("dbfunc::")}
+        dbf = "dbfunc::database.types.ts::deduct_credits"
+        # deduct_credits writes profiles and credit_ledger (matched by Model-name suffix)
+        assert any(f == dbf and t.endswith("::profiles") and a == "write" for (f, t), a in dbf_edges.items())
+        assert any(f == dbf and t.endswith("::credit_ledger") and a == "write" for (f, t), a in dbf_edges.items())
+        # audit_log is not a declared Model -> no edge
+        assert not any(t.endswith("::audit_log") for _, t in dbf_edges)
+        # internal_helper is not a declared DBFunction -> it creates no USES_MODEL edge
+        assert not any(f.endswith("::internal_helper") for f, _ in dbf_edges)
+
+    def test_latest_migration_definition_wins_no_stale_edges(self, tmp_path):
+        """Append-only migrations redefine a function; only the LATEST definition's
+        tables are linked (no stale union across history)."""
+        types = """\
+export type Database = {
+  public: {
+    Tables: {
+      inventory: { Row: { id: string }, Relationships: [] }
+      stock: { Row: { id: string }, Relationships: [] }
+    }
+    Functions: { process_order: { Args: { oid: string }; Returns: boolean } }
+  }
+}
+"""
+        tp = tmp_path / "types.ts"
+        tp.write_text(types)
+        wf_types = WalkedFile(relative_path="types.ts", absolute_path=str(tp), extension="ts")
+
+        old = tmp_path / "20240101000000_init.sql"
+        old.write_text(
+            "CREATE FUNCTION public.process_order(oid uuid) RETURNS boolean LANGUAGE sql AS $$ UPDATE public.inventory SET n=0 $$;"
+        )
+        new = tmp_path / "20250101000000_replace.sql"
+        new.write_text(
+            "CREATE OR REPLACE FUNCTION public.process_order(oid uuid) RETURNS boolean LANGUAGE sql AS $$ UPDATE public.stock SET n=0 $$;"
+        )
+        wfs = [
+            wf_types,
+            WalkedFile(relative_path="20240101000000_init.sql", absolute_path=str(old), extension="sql"),
+            WalkedFile(relative_path="20250101000000_replace.sql", absolute_path=str(new), extension="sql"),
+        ]
+
+        graph = _make_graph_mock()
+        SchemaExtractor(graph, file_path_to_id={}).extract(wfs)
+
+        um = [c for c in graph.batch_merge_relationships.call_args_list if c.args[0] == "USES_MODEL"]
+        dbf_targets = {i["to_id"] for call in um for i in call.args[1] if i["from_id"].startswith("dbfunc::")}
+        assert any(t.endswith("::stock") for t in dbf_targets)  # latest definition's table
+        assert not any(t.endswith("::inventory") for t in dbf_targets)  # stale table dropped
+
     def test_counts_accuracy(self, prisma_file_with_relations):
         """Verify models_found, fields_found, relations_found match actual data."""
         graph = _make_graph_mock()

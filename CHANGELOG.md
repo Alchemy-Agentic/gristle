@@ -6,6 +6,25 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **SQL migrations are parsed to reveal what stored procedures touch.** A new
+  tree-sitter-sql parser reads `.sql` files' `CREATE FUNCTION` bodies and links each
+  Postgres stored procedure to the tables it reads/writes via
+  `DBFunction-[:USES_MODEL {access}]->Model` (`INSERT`/`UPDATE`/`DELETE` = `write`,
+  `SELECT`/`FROM`/`JOIN` = `read`). This completes the data-layer trace:
+  `route → handler → CALLS_RPC → DBFunction → USES_MODEL → Model`, which previously
+  dead-ended at the `DBFunction` node — so a table written *only* by an RPC body
+  (credit deduction, entitlement grants) is now visible as a write target.
+  `request_trace` crosses RPC bodies to their tables; `gristle_db_functions` now
+  returns `writes_tables`/`reads_tables` per function. Both ends are name-gated
+  (the SQL function must match a declared `DBFunction`, the table a known `Model`).
+  On a real app (595 `.sql` files, 204 functions): 147 `DBFunction→USES_MODEL` edges,
+  86/102 functions linked, 48 routes now reach a table through an RPC body.
+  `USES_MODEL` edges may now originate from a `DBFunction` as well as a `Function` —
+  `MATCH (x)-[:USES_MODEL]->(m:Model)` returns all accessors; pin `(x:Function)` for
+  code-only (existing Function-source queries are unaffected). Adds the
+  `tree-sitter-sql` dependency.
+
 ## [0.8.0] - 2026-07-18
 
 ### Added
