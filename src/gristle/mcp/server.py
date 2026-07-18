@@ -1356,6 +1356,32 @@ async def gristle_model_detail(model_name: str, repo_id: str | None = None) -> d
 
 
 @mcp.tool()
+async def gristle_db_functions(repo_id: str | None = None) -> dict:
+    """List database stored functions (Supabase/Postgres RPCs) and who calls them.
+
+    These are the `supabase.rpc('name', ...)` targets — Postgres functions that
+    often hold the business-critical writes (credit deduction, entitlement checks)
+    the table-access edges can't see, because their bodies live in SQL. Each entry
+    has the declared signature (args, return type) and the code functions that
+    invoke it, so you can answer "who calls deduct_credits?" or "what does this
+    edit put at risk?". They also appear in a `request_trace` subgraph via
+    CALLS_RPC edges, extending the route -> DB path to stored procedures.
+
+    Ordered by caller count (most-used first). The list is capped for context:
+    at most 50 functions (`db_functions_omitted` gives the cut, `count` is exact),
+    each with up to 15 inline callers (`callers_omitted`, `caller_count` exact).
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    return engine.get_db_functions()
+
+
+@mcp.tool()
 async def gristle_subgraph(
     view: Literal["call_hierarchy", "blast_radius", "request_trace"],
     center: str | None = None,
@@ -1372,7 +1398,8 @@ async def gristle_subgraph(
 
     - call_hierarchy — who calls X and what X calls, transitively (center required)
     - blast_radius   — what breaks if X changes; includes covering tests + routes
-    - request_trace  — HTTP route -> handler -> functions -> DB model, end to end
+    - request_trace  — HTTP route -> handler -> functions -> DB (table models AND
+                       stored-procedure DBFunctions via CALLS_RPC), end to end
                        (center optional: a route path/id, or omit for all routes;
                        pass models_only=true to prune to just the route->DB paths)
 

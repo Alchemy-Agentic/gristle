@@ -5,16 +5,19 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from gristle.config import settings
 from gristle.ingestion.batch import BatchCollector
-from gristle.models import ParsedModel, SchemaExtractionResult
+from gristle.models import ParsedDBFunction, ParsedModel, SchemaExtractionResult
 
 if TYPE_CHECKING:
     from gristle.graph.client import GraphClient
     from gristle.ingestion.walker import WalkedFile
     from gristle.models import ParsedClass, ParsedFile, ParsedFunction
+
+# Both carry ``.name`` and ``.file_path`` for the shared dedup helper.
+_T = TypeVar("_T", ParsedModel, ParsedDBFunction)
 
 # Verbs in a call chain that indicate writing vs reading a model/table.
 _WRITE_VERBS = frozenset(
@@ -29,6 +32,8 @@ _CAMEL_SPLIT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 # Supabase/PostgREST descriptor from the TS parser: "select.from('executions')".
 # The quotes mark a string-literal table (Drizzle descriptors carry identifiers).
 _SUPABASE_FROM_RE = re.compile(r"^(select|insert|update|upsert|delete)\.from\('([^']+)'\)$")
+# Supabase RPC descriptor from the TS parser: "rpc('deduct_credits')".
+_SUPABASE_RPC_RE = re.compile(r"^rpc\('([^']+)'\)$")
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +66,7 @@ class SchemaExtractor:
 
         # 2. Drizzle extraction (check .ts/.js files for drizzle-orm imports)
         supabase_candidates: list[list[ParsedModel]] = []
+        supabase_fn_candidates: list[list[ParsedDBFunction]] = []
         for wf in walked_files:
             if wf.extension in ("ts", "js", "mts", "mjs"):
                 content = self._read_file(wf)
@@ -77,25 +83,26 @@ class SchemaExtractor:
 
                     models.extend(extract_typeorm_models(wf.relative_path, content))
 
-                    from gristle.parsers.supabase import is_supabase_types, parse_supabase_types
+                    from gristle.parsers.supabase import (
+                        is_supabase_types,
+                        parse_supabase_db_functions,
+                        parse_supabase_types,
+                    )
 
                     if is_supabase_types(content):
                         found = parse_supabase_types(wf.relative_path, content)
                         if found:
                             supabase_candidates.append(found)
+                        found_fns = parse_supabase_db_functions(wf.relative_path, content)
+                        if found_fns:
+                            supabase_fn_candidates.append(found_fns)
 
         # Repos often hold several copies of the Supabase generated-types file
         # (e.g. src/types/database.types.ts AND src/integrations/supabase/types.ts,
-        # generated at different times). Keep one model per table, preferring the
-        # most complete file, so Model nodes aren't duplicated.
-        if supabase_candidates:
-            supabase_candidates.sort(key=lambda ms: (-len(ms), ms[0].file_path))
-            seen_tables: set[str] = set()
-            for candidate in supabase_candidates:
-                for m in candidate:
-                    if m.name not in seen_tables:
-                        seen_tables.add(m.name)
-                        models.append(m)
+        # generated at different times). Keep one model/function per name, preferring
+        # the most complete file, so nodes aren't duplicated.
+        models.extend(self._dedupe_by_name(supabase_candidates))
+        db_functions = self._dedupe_by_name(supabase_fn_candidates)
 
         # 3. Python ORM detection (SQLAlchemy declarative + Django models).
         # Collected across all files so model base classes resolve transitively
@@ -112,7 +119,24 @@ class SchemaExtractor:
             models.extend(extract_python_orm_models_from_files(py_files))
 
         # 4. Write to graph
-        return self._write_models(models, parsed_files)
+        return self._write_models(models, parsed_files, db_functions)
+
+    @staticmethod
+    def _dedupe_by_name(candidates: list[list[_T]]) -> list[_T]:
+        """Flatten per-file candidate lists to one entry per ``.name``, preferring
+        the most complete file (then a stable path order). Used to collapse the
+        several copies of the Supabase generated-types file a repo often holds."""
+        if not candidates:
+            return []
+        candidates = sorted(candidates, key=lambda items: (-len(items), items[0].file_path))
+        seen: set[str] = set()
+        out: list[_T] = []
+        for group in candidates:
+            for item in group:
+                if item.name not in seen:
+                    seen.add(item.name)
+                    out.append(item)
+        return out
 
     @staticmethod
     def _read_file(wf: WalkedFile) -> str | None:
@@ -129,8 +153,12 @@ class SchemaExtractor:
         return name.lower() + "s"
 
     def _write_models(
-        self, models: list[ParsedModel], parsed_files: list[ParsedFile] | None = None
+        self,
+        models: list[ParsedModel],
+        parsed_files: list[ParsedFile] | None = None,
+        db_functions: list[ParsedDBFunction] | None = None,
     ) -> SchemaExtractionResult:
+        db_functions = db_functions or []
         batch = BatchCollector(self.graph, settings.ingestion_batch_size)
         model_name_to_id: dict[str, str] = {}
 
@@ -237,19 +265,71 @@ class SchemaExtractor:
                         },
                     )
 
-        # Phase D: Link code to the data layer (Function -> Model)
-        if parsed_files and model_name_to_id:
-            supabase_names = {m.name for m in models if m.orm == "supabase"}
-            self._link_code_to_models(parsed_files, model_name_to_id, supabase_names, batch)
+        # Phase D: Create DBFunction nodes (Supabase/Postgres stored functions).
+        dbfunc_name_to_id: dict[str, str] = {}
+        for fn in db_functions:
+            fn_id = f"dbfunc::{fn.file_path}::{fn.name}"
+            dbfunc_name_to_id[fn.name] = fn_id
+            batch.add_node(
+                "DBFunction",
+                {
+                    "id": fn_id,
+                    "name": fn.name,
+                    "qualified_name": fn.qualified_name,
+                    "file_path": fn.file_path,
+                    "line": fn.line,
+                    "args": fn.args,
+                    "arg_count": len(fn.args),
+                    "returns": fn.returns,
+                    "schema": fn.schema,
+                },
+            )
+            file_id = self._file_path_to_id.get(fn.file_path)
+            if file_id:
+                batch.add_relationship("CONTAINS", file_id, fn_id)
+
+        # Phase E: Link code to the data layer (Function -> Model, Function -> DBFunction)
+        if parsed_files:
+            if model_name_to_id:
+                supabase_names = {m.name for m in models if m.orm == "supabase"}
+                self._link_code_to_models(parsed_files, model_name_to_id, supabase_names, batch)
+            if dbfunc_name_to_id:
+                self._link_code_to_db_functions(parsed_files, dbfunc_name_to_id, batch)
 
         counts = batch.flush()
         return SchemaExtractionResult(
             models_found=len(models),
             fields_found=sum(len(m.fields) for m in models),
             relations_found=sum(len(m.relations) for m in models),
+            db_functions_found=len(db_functions),
             nodes_created=counts["nodes_created"],
             relationships_created=counts["relationships_created"],
         )
+
+    def _link_code_to_db_functions(
+        self,
+        parsed_files: list[ParsedFile],
+        dbfunc_name_to_id: dict[str, str],
+        batch: BatchCollector,
+    ) -> None:
+        """Create CALLS_RPC edges (Function -> DBFunction) from ``rpc('name')``
+        descriptors. Precise by design: an edge is created only when the RPC name
+        matches a DBFunction declared in the Supabase generated types, so a stray
+        ``.rpc()`` on some other client never links."""
+        edges: set[tuple[str, str]] = set()
+        for pf in parsed_files:
+            funcs = [*pf.functions, *(m for cls in pf.classes for m in cls.methods)]
+            for func in funcs:
+                func_id = f"func::{func.qualified_name}"
+                for call in func.calls_with_args:
+                    match = _SUPABASE_RPC_RE.match(call)
+                    if match is None:
+                        continue
+                    target_id = dbfunc_name_to_id.get(match.group(1))
+                    if target_id is not None:
+                        edges.add((func_id, target_id))
+        for func_id, dbfunc_id in edges:
+            batch.add_merge_relationship("CALLS_RPC", func_id, dbfunc_id, {})
 
     def _link_code_to_models(
         self,

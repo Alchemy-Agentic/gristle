@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from gristle.models import ParsedModel, ParsedModelField, ParsedModelRelation
+from gristle.models import ParsedDBFunction, ParsedModel, ParsedModelField, ParsedModelRelation
 from gristle.parsers.typescript import TypeScriptParser
 
 if TYPE_CHECKING:
@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 _parser = TypeScriptParser()
 
 # `Database["public"]["Enums"]["app_role"]` in a column type → just `app_role`.
-_ENUM_REF_RE = re.compile(r'Database\["[^"]+"\]\["Enums"\]\["([^"]+)"\]')
+# Codegen emits either quote style, so match both.
+_ENUM_REF_RE = re.compile(r"""Database\[['"][^'"]+['"]\]\[['"]Enums['"]\]\[['"]([^'"]+)['"]\]""")
 # Generated columns are `T | null` with null always the trailing branch.
 _NULLABLE_RE = re.compile(r"\s*\|\s*null\s*$")
 
@@ -88,6 +89,87 @@ def parse_supabase_types(file_path: str, content: str) -> list[ParsedModel]:
                     )
                 )
     return models
+
+
+def parse_supabase_db_functions(file_path: str, content: str) -> list[ParsedDBFunction]:
+    """Return Postgres stored functions (``supabase.rpc()`` targets) declared under
+    ``<schema>.Functions`` in a Supabase generated-types file (empty if none).
+
+    Identity is the bare function name: a function of the same name in two schemas
+    (``public.foo`` and ``analytics.foo``) collapses to one entry (first wins),
+    matching how tables are deduped and the ``.rpc('foo')`` default (the ``public``
+    schema). Cross-schema same-name functions are rare; this trades that edge case
+    for a simpler, name-keyed link that mirrors the table path."""
+    src = content.encode("utf-8")
+    root = _parser._ts_parser.parse(src).root_node
+    database = _find_database_type(root, src)
+    if database is None:
+        return []
+
+    functions: list[ParsedDBFunction] = []
+    seen: set[str] = set()
+    for schema_name, schema_node in _prop_entries(database, src):
+        if schema_name == "__InternalSupabase":
+            continue
+        section = dict(_prop_entries(schema_node, src)).get("Functions")
+        if section is None:
+            continue
+        for fn_name, fn_node in _prop_entries(section, src):
+            if fn_name in seen:
+                continue  # same bare name in two schemas: first wins (see dedup note)
+            seen.add(fn_name)
+            # Overloaded/polymorphic functions are emitted as a union of branch
+            # objects at the value level; take the first branch's signature.
+            value_node = _first_object_type(fn_node)
+            parts = dict(_prop_entries(value_node, src)) if value_node is not None else {}
+            functions.append(
+                ParsedDBFunction(
+                    name=fn_name,
+                    qualified_name=f"{file_path}::{schema_name}.{fn_name}",
+                    file_path=file_path,
+                    line=fn_node.start_point[0] + 1,
+                    args=_function_args(parts.get("Args"), src),
+                    returns=_function_returns(parts.get("Returns"), src),
+                    schema=schema_name,
+                )
+            )
+    return functions
+
+
+def _first_object_type(node: Node) -> Node | None:
+    """The first ``object_type`` in a (possibly left-nested) union, or the node
+    itself if it already is one. A leading-pipe union (``| {A} | {B}``) nests, so
+    the first branch is reached by recursing into the nested union *before* taking
+    a sibling — a shallow scan would return the second branch."""
+    if node.type == "object_type":
+        return node
+    if node.type == "union_type":
+        for child in node.named_children:
+            found = _first_object_type(child)
+            if found is not None:
+                return found
+    return None
+
+
+def _function_args(args_node: Node | None, src: bytes) -> list[str]:
+    """Parameter names of a function's ``Args`` type. Handles the plain object form
+    and overload unions (first branch's params). ``Record<string, never>`` (no
+    args) yields ``[]``."""
+    if args_node is None:
+        return []
+    obj = _first_object_type(args_node)
+    if obj is None:
+        return []
+    return [name for name, _type in _prop_entries(obj, src)]
+
+
+def _function_returns(ret_node: Node | None, src: bytes) -> str | None:
+    """Return-type text (whitespace collapsed), normalizing an ``Enums`` reference
+    to the enum name."""
+    if ret_node is None:
+        return None
+    text = " ".join((_parser._text(ret_node, src) or "").split())
+    return _ENUM_REF_RE.sub(r"\1", text) or None
 
 
 def _find_database_type(root: Node, src: bytes) -> Node | None:

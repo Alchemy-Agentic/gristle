@@ -31,6 +31,7 @@ _ID_PREFIX_TO_LABEL: dict[str, str] = {
     "typefield": "TypeField",
     "model": "Model",
     "mf": "ModelField",
+    "dbfunc": "DBFunction",
 }
 
 

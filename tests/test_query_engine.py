@@ -705,6 +705,55 @@ class TestOutputCaps:
         assert "test_files" not in result
 
 
+class TestGetDBFunctions:
+    """get_db_functions lists Postgres RPCs with capped inline callers, most-used
+    first, and exact counts."""
+
+    def test_capped_and_counts_exact(self):
+        n = QueryEngine._MODELS_CAP + 5
+        recs = [
+            {
+                "name": f"fn_{i:03}",
+                "schema": "public",
+                "args": ["a"],
+                "argCount": 1,
+                "returns": "boolean",
+                "filePath": "db.ts",
+                "callers": [f"mod::c{j}" for j in range(20)],  # 20 callers each
+            }
+            for i in range(n)
+        ]
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(recs)
+        result = engine.get_db_functions()
+        assert result["count"] == n
+        assert len(result["db_functions"]) == QueryEngine._MODELS_CAP
+        assert result["db_functions_omitted"] == 5
+        first = result["db_functions"][0]
+        assert first["caller_count"] == 20  # exact
+        assert len(first["callers"]) == QueryEngine._DBFUNC_CALLER_CAP
+        assert first["callers_omitted"] == 20 - QueryEngine._DBFUNC_CALLER_CAP
+
+    def test_uncalled_function_has_zero_callers(self):
+        engine, graph = _make_engine()
+        graph.execute.return_value = _qr(
+            [
+                {
+                    "name": "orphan",
+                    "schema": "public",
+                    "args": [],
+                    "argCount": 0,
+                    "returns": "void",
+                    "filePath": "db.ts",
+                    "callers": [],
+                }
+            ]
+        )
+        fn = engine.get_db_functions()["db_functions"][0]
+        assert fn["caller_count"] == 0
+        assert fn["callers"] == []
+
+
 class TestGetModelsCaps:
     """get_models is a *landscape* view: on Supabase repos (~200 generated
     tables) the uncapped output measured 134k tokens. It is capped and its

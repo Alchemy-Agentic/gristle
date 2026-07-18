@@ -1816,7 +1816,7 @@ class QueryEngine:
     _VIZ_VIEW_EDGE_TYPES: dict[str, list[str]] = {
         "call_hierarchy": ["CALLS"],
         "blast_radius": ["CALLS", "TESTS_FUNCTION", "HANDLES"],
-        "request_trace": ["HANDLES", "CALLS", "USES_MODEL"],
+        "request_trace": ["HANDLES", "CALLS", "USES_MODEL", "CALLS_RPC"],
     }
 
     _VIZ_LAYOUT_HINT: dict[str, str] = {
@@ -1830,7 +1830,7 @@ class QueryEngine:
     # would drop them first — gutting the view. They're force-kept before the
     # remaining node budget is filled by degree.
     _VIZ_PIN_LABELS: dict[str, set[str]] = {
-        "request_trace": {"Route", "Model"},
+        "request_trace": {"Route", "Model", "DBFunction"},
         "blast_radius": {"Route"},
         "call_hierarchy": set(),
     }
@@ -1880,6 +1880,7 @@ class QueryEngine:
         ],
         "Route": ["method", "path", "handler_name", "has_auth", "middleware", "file_path", "line"],
         "Model": ["name", "orm", "table_name", "is_junction", "is_enum", "field_count", "file_path"],
+        "DBFunction": ["name", "schema", "arg_count", "returns", "file_path"],
         "Variable": ["name", "kind", "value_kind", "is_exported", "file_path"],
     }
 
@@ -1912,7 +1913,9 @@ class QueryEngine:
             WITH rt, h LIMIT {route_cap}
             OPTIONAL MATCH (h)-[:CALLS*0..{depth}]->(fn:Function)
             OPTIONAL MATCH (fn)-[:USES_MODEL]->(m:Model)
-            WITH collect(DISTINCT rt) + collect(DISTINCT h) + collect(DISTINCT fn) + collect(DISTINCT m) AS seeds
+            OPTIONAL MATCH (fn)-[:CALLS_RPC]->(df:DBFunction)
+            WITH collect(DISTINCT rt) + collect(DISTINCT h) + collect(DISTINCT fn)
+                 + collect(DISTINCT m) + collect(DISTINCT df) AS seeds
             UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
         """,
     }
@@ -1949,9 +1952,11 @@ class QueryEngine:
         nodes are dropped and ``meta.truncated`` is set.
 
         ``models_only`` (request_trace only): prune the handler call-closure to just
-        the nodes on a path to a ``Model`` — the "route → DB" view. Default ``False``
-        keeps the full closure (every function the handler calls, models highlighted),
-        which stays honest when a ``USES_MODEL`` edge is unresolved.
+        the nodes on a path to a data-layer node — a ``Model`` (table/view) or a
+        ``DBFunction`` (stored procedure) — the "route → DB" view. Default ``False``
+        keeps the full closure (every function the handler calls, data nodes
+        highlighted), which stays honest when a ``USES_MODEL``/``CALLS_RPC`` edge is
+        unresolved.
         """
         if not isinstance(depth, int) or isinstance(depth, bool):
             return {"error": "depth must be an integer"}
@@ -1982,16 +1987,17 @@ class QueryEngine:
     def _viz_prune_to_model_paths(
         nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Keep only nodes on a path to a Model (request_trace ``models_only``).
+        """Keep only nodes on a path to a data endpoint (request_trace ``models_only``).
 
-        A node is kept iff it can reach a ``Model`` by following edges forward --
-        i.e. it is reverse-reachable from a Model node. Drops handler-closure
-        branches (validators, mappers, plumbing) that never touch the DB. Returns
-        ``([], [])`` when no Model is present (an honest "no resolved DB path").
+        A node is kept iff it can reach a ``Model`` or a ``DBFunction`` by following
+        edges forward -- i.e. it is reverse-reachable from a data-layer node. Drops
+        handler-closure branches (validators, mappers, plumbing) that never touch
+        the DB. Returns ``([], [])`` when neither is present (an honest "no resolved
+        DB path").
         """
         from collections import deque
 
-        model_ids = {n["id"] for n in nodes if n.get("label") == "Model"}
+        model_ids = {n["id"] for n in nodes if n.get("label") in ("Model", "DBFunction")}
         if not model_ids:
             return [], []
         reverse: dict[str, list[str]] = {}
@@ -3059,6 +3065,38 @@ class QueryEngine:
             """
         )
         return {"relationships": result.records, "count": len(result.records)}
+
+    # Only DB functions actually invoked from code carry an inline caller list; the
+    # list is capped for agent consumption (callers_omitted records the cut).
+    _DBFUNC_CALLER_CAP = 15
+
+    def get_db_functions(self) -> dict:
+        """List database stored functions (Supabase/Postgres RPCs) with their code
+        callers. Capped for agent consumption: at most ``_MODELS_CAP`` functions
+        (``db_functions_omitted`` gives the cut, ``count`` stays exact), each with
+        up to ``_DBFUNC_CALLER_CAP`` inline callers (``callers_omitted``,
+        ``caller_count`` is exact). Ordered by caller count so the most-used
+        functions (the ones a change is riskiest to touch) come first.
+        """
+        result = self.graph.execute(
+            """
+            MATCH (d:DBFunction)
+            OPTIONAL MATCH (caller:Function)-[:CALLS_RPC]->(d)
+            WITH d, collect(DISTINCT caller.qualified_name) AS callers
+            RETURN d.name AS name, d.schema AS schema, d.args AS args,
+                   d.arg_count AS argCount, d.returns AS returns,
+                   d.file_path AS filePath, callers
+            ORDER BY size(callers) DESC, d.name
+            """
+        )
+        for record in result.records:
+            callers = record.get("callers") or []
+            record["callers"] = callers
+            record["caller_count"] = len(callers)
+            self._cap_list(record, "callers", self._DBFUNC_CALLER_CAP)
+        report = {"db_functions": result.records, "count": len(result.records)}
+        self._cap_list(report, "db_functions", self._MODELS_CAP)
+        return report
 
     # ------------------------------------------------------------------
     # Source code loader

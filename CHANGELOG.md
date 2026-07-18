@@ -7,6 +7,20 @@ All notable changes to Gristle are documented here. This file is intended for co
 ## [Unreleased]
 
 ### Added
+- **Supabase/Postgres stored functions (RPCs) are now in the graph.** A
+  `supabase.rpc('name', {...})` call targets a Postgres function whose body lives
+  in SQL — invisible to the table-access edges, yet often where the
+  business-critical writes happen (credit deduction, entitlement checks). The
+  Supabase generated types' `public.Functions` block is now parsed into
+  **`DBFunction`** nodes (typed args, return type, schema), and `.rpc()` calls
+  create **`Function-[:CALLS_RPC]->DBFunction`** edges — matched only when the RPC
+  name is a declared function, so a stray `.rpc()` on another client never links.
+  A new **`gristle_db_functions`** tool lists them with their callers
+  (most-used first), and they join the `request_trace` subgraph via `CALLS_RPC`,
+  extending the route→DB path to stored procedures. New node type + edge type are
+  additive. On a real app: 103 `DBFunction` nodes, 81 `CALLS_RPC` edges across 54
+  functions; the most-called are exactly the credit/entitlement procedures. (35
+  MCP tools.)
 - **Supabase edge functions are now recognized as routes.** A file at
   `supabase/functions/<name>/index.ts` is deployed as an HTTP endpoint, but only
   the classic `serve(...)`/`Deno.serve(...)` form was detected — so on a real

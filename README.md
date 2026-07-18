@@ -173,9 +173,9 @@ Railway auto-injects `PORT` which Gristle picks up. The transport defaults to `s
 
 ## MCP tools
 
-Gristle exposes 34 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips. Outputs are sized for agent context windows: unbounded lists are capped with `<field>_omitted` markers, while counts and scores always reflect the full data.
+Gristle exposes 35 tools and 2 resources via MCP. See the [Integration Guide](docs/integration-guide.md) for the full reference with examples, workflows, and tips. Outputs are sized for agent context windows: unbounded lists are capped with `<field>_omitted` markers, while counts and scores always reflect the full data.
 
-Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_impact_score`, `gristle_change_impact`, `gristle_changeset_impact`, `gristle_trace`, `gristle_subgraph`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_models`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`. `gristle_subgraph` returns a `{nodes, edges, meta}` subgraph for the `call_hierarchy`, `blast_radius`, and `request_trace` views — the same data `gristle viz` renders to HTML.
+Key tools: `gristle_ingest`, `gristle_explore`, `gristle_impact`, `gristle_impact_score`, `gristle_change_impact`, `gristle_changeset_impact`, `gristle_trace`, `gristle_subgraph`, `gristle_search`, `gristle_conventions`, `gristle_tests`, `gristle_routes`, `gristle_models`, `gristle_db_functions`, `gristle_config`, `gristle_dead_exports`, `gristle_cycles`, `gristle_data_contract`, `gristle_type_usage`, `gristle_security`, `gristle_unauthenticated_routes`, `gristle_dependency_health`. `gristle_subgraph` returns a `{nodes, edges, meta}` subgraph for the `call_hierarchy`, `blast_radius`, and `request_trace` views — the same data `gristle viz` renders to HTML.
 
 ## Development
 

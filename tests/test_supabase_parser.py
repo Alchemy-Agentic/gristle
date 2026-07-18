@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from gristle.parsers.supabase import is_supabase_types, parse_supabase_types
+from gristle.parsers.supabase import (
+    is_supabase_types,
+    parse_supabase_db_functions,
+    parse_supabase_types,
+)
 
 # A trimmed `supabase gen types typescript` output: two tables (one with an FK
 # and an enum-typed column), a view, and the empty graphql_public schema.
@@ -104,6 +108,95 @@ class TestDetection:
         """A false-positive sniff is harmless: no Database structure, no models."""
         code = "// Database Tables: Row: nothing real here\nexport const Database = 1;\n"
         assert parse_supabase_types("x.ts", code) == []
+
+
+class TestDBFunctions:
+    def test_parses_functions_block(self):
+        fns = parse_supabase_db_functions("src/types/database.types.ts", GENERATED)
+        assert len(fns) == 1
+        fn = fns[0]
+        assert fn.name == "get_stats"
+        assert fn.args == ["uid"]
+        assert fn.returns == "Json"
+        assert fn.schema == "public"
+        assert fn.qualified_name == "src/types/database.types.ts::public.get_stats"
+
+    def test_multi_arg_and_no_arg_and_overload(self):
+        code = """\
+export type Database = {
+  public: {
+    Tables: { t: { Row: { id: string }, Relationships: [] } }
+    Functions: {
+      deduct_credits: {
+        Args: { p_user_id: string; p_amount: number }
+        Returns: boolean
+      }
+      housekeeping: {
+        Args: Record<string, never>
+        Returns: undefined
+      }
+      overloaded: {
+        Args: { a: string } | { b: number }
+        Returns: Json
+      }
+    }
+  }
+}
+"""
+        fns = {f.name: f for f in parse_supabase_db_functions("db.ts", code)}
+        assert fns["deduct_credits"].args == ["p_user_id", "p_amount"]
+        assert fns["housekeeping"].args == []  # Record<string, never> -> no params
+        assert fns["overloaded"].args == ["a"]  # first overload branch
+
+    def test_no_functions_block(self):
+        code = "export type Database = { public: { Tables: { t: { Row: { id: string } } } } }\n"
+        assert parse_supabase_db_functions("db.ts", code) == []
+
+    def test_overloaded_function_takes_first_branch(self):
+        """Overloaded/polymorphic functions are a union at the value level; the
+        first branch's signature is used (not empty). Leading-pipe unions nest, so
+        a shallow scan would wrongly take the second branch."""
+        code = """\
+export type Database = {
+  public: {
+    Tables: { t: { Row: { id: string }, Relationships: [] } }
+    Functions: {
+      get_messages:
+        | {
+            Args: { channel_row: number }
+            Returns: string[]
+          }
+        | {
+            Args: { other_row: string }
+            Returns: number
+          }
+    }
+  }
+}
+"""
+        fns = parse_supabase_db_functions("db.ts", code)
+        assert len(fns) == 1
+        assert fns[0].name == "get_messages"
+        assert fns[0].args == ["channel_row"]  # first branch, not "other_row"
+        assert fns[0].returns == "string[]"
+
+    def test_returns_enum_ref_single_quotes(self):
+        """Codegen may emit enum refs with single quotes; normalize to the name."""
+        code = """\
+export type Database = {
+  public: {
+    Tables: { t: { Row: { id: string }, Relationships: [] } }
+    Functions: {
+      current_status: {
+        Args: { p_id: string }
+        Returns: Database['public']['Enums']['user_status']
+      }
+    }
+  }
+}
+"""
+        fns = parse_supabase_db_functions("db.ts", code)
+        assert fns[0].returns == "user_status"
 
 
 class TestParsing:

@@ -538,6 +538,64 @@ export type Database = {
         # ...but the array variable never links to the Supabase table.
         assert not any(tid.endswith("::executions") for _, tid in items)
 
+    def test_supabase_db_functions_to_nodes_and_edges(self, tmp_path):
+        """A Supabase types file's `Functions` block creates DBFunction nodes, and
+        an `rpc('name')` call links via CALLS_RPC only for a declared name."""
+        content = """\
+export type Database = {
+  public: {
+    Tables: { users: { Row: { id: string }, Relationships: [] } }
+    Functions: {
+      deduct_credits: {
+        Args: { p_user_id: string; p_amount: number }
+        Returns: boolean
+      }
+      can_afford: {
+        Args: { p_user_id: string }
+        Returns: boolean
+      }
+    }
+  }
+}
+"""
+        p = tmp_path / "database.types.ts"
+        p.write_text(content)
+        wf = WalkedFile(relative_path="database.types.ts", absolute_path=str(p), extension="ts")
+
+        from gristle.models import ParsedFile, ParsedFunction
+
+        caller = ParsedFunction(
+            name="spend",
+            qualified_name="api.ts::spend",
+            file_path="api.ts",
+            start_line=1,
+            end_line=2,
+            signature="",
+            calls_with_args=["rpc('deduct_credits')", "rpc('not_a_function')"],
+        )
+        pf = ParsedFile(path="api.ts", language="typescript", functions=[caller], classes=[], imports=[], line_count=2)
+
+        graph = _make_graph_mock()
+        extractor = SchemaExtractor(graph, file_path_to_id={"database.types.ts": "file::database.types.ts"})
+        result = extractor.extract([wf], [pf])
+
+        assert result.db_functions_found == 2
+        dbfuncs = [
+            i for call in graph.batch_create_nodes.call_args_list if call.args[0] == "DBFunction" for i in call.args[1]
+        ]
+        by_name = {d["name"]: d for d in dbfuncs}
+        assert set(by_name) == {"deduct_credits", "can_afford"}
+        assert by_name["deduct_credits"]["args"] == ["p_user_id", "p_amount"]
+        assert by_name["deduct_credits"]["arg_count"] == 2
+        assert by_name["deduct_credits"]["returns"] == "boolean"
+        assert by_name["deduct_credits"]["schema"] == "public"
+
+        rpc_edges = [c for c in graph.batch_merge_relationships.call_args_list if c.args[0] == "CALLS_RPC"]
+        pairs = {(i["from_id"], i["to_id"]) for call in rpc_edges for i in call.args[1]}
+        # Declared function links; the undeclared name does not.
+        assert ("func::api.ts::spend", "dbfunc::database.types.ts::deduct_credits") in pairs
+        assert not any(tid.endswith("::not_a_function") for _, tid in pairs)
+
     def test_counts_accuracy(self, prisma_file_with_relations):
         """Verify models_found, fields_found, relations_found match actual data."""
         graph = _make_graph_mock()

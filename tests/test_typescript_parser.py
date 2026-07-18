@@ -344,6 +344,23 @@ class TestSupabaseChains:
 """
         assert all(".from('" not in c for c in self._refs(code))
 
+    def test_captures_rpc_string_literal(self):
+        """`supabase.rpc('fn', {...})` yields an `rpc('fn')` descriptor."""
+        code = """async function f(id) {
+  await supabase.rpc('deduct_credits', { p_amount: 5 });
+  const { data } = await supabase.rpc('can_afford', { p_user_id: id });
+}
+"""
+        refs = self._refs(code)
+        assert "rpc('deduct_credits')" in refs
+        assert "rpc('can_afford')" in refs
+
+    def test_rpc_non_literal_ignored(self):
+        """A dynamic/computed rpc name yields no descriptor (only a real name can
+        match a declared DBFunction)."""
+        code = "async function f(name) {\n  await supabase.rpc(name);\n  await supabase.rpc(`tmpl`);\n}\n"
+        assert all(not c.startswith("rpc(") for c in self._refs(code))
+
 
 class TestErrorFlow:
     def test_throws_new_error_type(self):

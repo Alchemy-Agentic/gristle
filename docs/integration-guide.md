@@ -62,6 +62,7 @@ This clones the repo and runs full ingestion in one step.
 | `EnvVar` | `id`, `name`, `default_value`, `required` | Environment variable |
 | `Model` | `id`, `name`, `qualified_name`, `file_path`, `line_start`, `line_end`, `orm`, `table_name`, `is_junction`, `is_enum`, `primary_key`, `field_count`, `docstring` | Database model/table definition (Prisma, Drizzle, ORM class, Supabase generated types — `orm: "supabase"`, views carry `docstring: "Supabase view"`) |
 | `ModelField` | `id`, `name`, `field_type`, `db_type`, `is_primary_key`, `is_nullable`, `is_unique`, `is_indexed`, `has_default`, `default_value`, `is_foreign_key`, `references_model`, `references_field`, `line` | Column/field in a database model |
+| `DBFunction` | `id`, `name`, `qualified_name`, `file_path`, `line`, `args`, `arg_count`, `returns`, `schema` | Postgres stored function / RPC (a `supabase.rpc('name')` target), from the Supabase generated types' `public.Functions` block. Body is SQL (not parsed); the callable signature is captured |
 | `Variable` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `end_line`, `kind`, `value_kind`, `is_exported` | Module-level const/let/var (TS/JS) or module assignment (Python) that isn't a function or class — config objects, validation schemas, registries, constants. `kind`: `const`/`let`/`var`/`assignment`; `value_kind`: `object`/`array`/`call`/`new`/`literal`/`reference` |
 
 ### Edge Types
@@ -95,10 +96,11 @@ This clones the repo and runs full ingestion in one step.
 | `RELATED_TO` | Model | Model | High-level relationship (with `relation_type`, `foreign_key_field`, `through_model`, `orm_hint` properties) |
 | `PROMOTED_FROM` | Model | Class | Link to source Class node (ORM class promoter) |
 | `USES_MODEL` | Function | Model | Code reads/writes a data model (with `access`: `read`/`write`). Catches method-chain access (Django/SQLAlchemy/Prisma), model/table passed as an argument (Drizzle `db.insert(x)` / `db.select().from(x)`, SQLAlchemy `session.query(X)`), the TypeORM/NestJS repository pattern (a `Repository<Entity>`-typed field → `this.fooRepository.find()` links to `Entity`), and Supabase/PostgREST string-literal table access (`supabase.from('users').select()` → the `users` table model; `.storage.from('bucket')` is excluded) |
+| `CALLS_RPC` | Function | DBFunction | Code invokes a Postgres stored function via `supabase.rpc('name', {...})`. Created only when `'name'` matches a declared `DBFunction`, so a stray `.rpc()` on another client never links. Extends the route→DB path to stored procedures (they appear in a `request_trace` subgraph) |
 
 ### Indexes
 
-33 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`, `orm`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
+36 property indexes on node `id`, `name`, `qualified_name`, `file_path`, `path`, `module_path`, `method`, `doc_type`, `orm`. Two full-text indexes on `Function.docstring` and `Class.docstring`.
 
 ---
 
@@ -796,6 +798,32 @@ gristle_model_detail(model_name="User")
   ],
   "outgoingRelations": [{"targetModel": "Post", "relationType": "one-to-many"}],
   "incomingRelations": [{"sourceModel": "Profile", "relationType": "one-to-one"}]
+}
+```
+
+---
+### `gristle_db_functions(repo_id?)`
+
+**When to use:** You want the Postgres stored functions (Supabase RPCs) and who calls them — the `supabase.rpc('name', ...)` targets that often hold business-critical writes (credit deduction, entitlement checks) the table-access edges can't see, because their bodies live in SQL. Ordered by caller count (most-used first). Capped for context: at most 50 functions (`db_functions_omitted`, `count` exact), each with up to 15 inline callers (`callers_omitted`, `caller_count` exact). These also appear in a `request_trace` subgraph via `CALLS_RPC` edges.
+
+```
+gristle_db_functions()
+```
+```json
+{
+  "db_functions": [
+    {
+      "name": "deduct_credits",
+      "schema": "public",
+      "args": ["p_user_id", "p_amount", "p_action"],
+      "argCount": 6,
+      "returns": "boolean",
+      "filePath": "src/types/database.types.ts",
+      "callers": ["src/hooks/useCredits.ts::spend", "..."],
+      "caller_count": 9
+    }
+  ],
+  "count": 103
 }
 ```
 

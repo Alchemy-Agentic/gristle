@@ -138,6 +138,7 @@ def _methods(ctx: dict[str, Any]) -> dict[str, Callable[[], Any]]:
         "get_snapshot_history": lambda: e.get_snapshot_history(),  # returned raw Node objects
         "get_models": lambda: e.get_models(),
         "get_model_relationships": lambda: e.get_model_relationships(),
+        "get_db_functions": lambda: e.get_db_functions(),
         "get_docs_for_entity": lambda: e.get_docs_for_entity(fn),
         "get_doc_staleness": lambda: e.get_doc_staleness(),
         "get_doc_overview": lambda: e.get_doc_overview(),

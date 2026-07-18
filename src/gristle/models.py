@@ -318,11 +318,28 @@ class ParsedModel:
 
 
 @dataclass(slots=True)
+class ParsedDBFunction:
+    """A database stored function / RPC — a Postgres function invoked from code via
+    ``supabase.rpc('name', {...})``. Declared in the Supabase generated types under
+    ``public.Functions`` with typed args and a return type. Its body lives in SQL
+    (not parsed), so this captures the callable signature only."""
+
+    name: str
+    qualified_name: str
+    file_path: str
+    line: int
+    args: list[str] = field(default_factory=list)  # parameter names (e.g. ["p_user_id", "p_amount"])
+    returns: str | None = None  # return type text (e.g. "boolean", "Json")
+    schema: str = "public"
+
+
+@dataclass(slots=True)
 class SchemaExtractionResult:
     """Result of schema extraction phase."""
 
     models_found: int = 0
     fields_found: int = 0
     relations_found: int = 0
+    db_functions_found: int = 0
     nodes_created: int = 0
     relationships_created: int = 0

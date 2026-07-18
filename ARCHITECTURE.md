@@ -277,6 +277,20 @@ Container for all entities parsed from a single source file.
 | `is_foreign_key` | `bool` | FK field |
 | `references_model` | `str \| None` | FK target model |
 
+### ParsedDBFunction (Schema Extraction)
+
+A Postgres stored function / RPC — a `supabase.rpc('name', {...})` target. Declared in the Supabase generated types under `public.Functions`; its body lives in SQL (not parsed), so only the callable signature is captured.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Function name |
+| `qualified_name` | `str` | `file_path::schema.name` |
+| `file_path` | `str` | Generated-types file path |
+| `line` | `int` | Source location |
+| `args` | `list[str]` | Parameter names |
+| `returns` | `str \| None` | Return-type text |
+| `schema` | `str` | Postgres schema (default `public`) |
+
 ### SchemaExtractionResult
 
 | Field | Type | Description |
@@ -284,6 +298,7 @@ Container for all entities parsed from a single source file.
 | `models_found` | `int` | Total models detected |
 | `fields_found` | `int` | Total fields across all models |
 | `relations_found` | `int` | Total relations detected |
+| `db_functions_found` | `int` | Total DB stored functions detected |
 | `nodes_created` | `int` | Graph nodes written |
 | `relationships_created` | `int` | Graph edges written |
 
@@ -427,7 +442,7 @@ Runs after Config Phase (needs `INHERITS_FROM` edges for ORM base class detectio
 1. `SchemaExtractor` receives walked files and `_path_to_id` map from pipeline.
 2. **Prisma DSL** (`.prisma` files): Regex-based parser extracts `model` and `enum` blocks with brace-counting.
 3. **Drizzle ORM** (`.ts`/`.js` files): Detects `pgTable`/`mysqlTable`/`sqliteTable` calls, extracts columns and FK references.
-4. **Supabase generated types** (`.ts`/`.js` files): Detects `supabase gen types typescript` output (the `Database` type) and extracts every table/view with columns, nullability, and FK relationships — no ORM required. Repos often hold several copies of the generated file; one `Model` is kept per table (most complete copy wins). Code links via the TS parser's `"<verb>.from('table')"` descriptors from `supabase.from('table').select()/insert()/...` chains — table names are matched *only* through that string-literal descriptor (never bare identifiers) because lowercase table names like `users` collide with ordinary variable names.
+4. **Supabase generated types** (`.ts`/`.js` files): Detects `supabase gen types typescript` output (the `Database` type) and extracts every table/view with columns, nullability, and FK relationships — no ORM required. Repos often hold several copies of the generated file; one `Model` is kept per table (most complete copy wins). Code links via the TS parser's `"<verb>.from('table')"` descriptors from `supabase.from('table').select()/insert()/...` chains — table names are matched *only* through that string-literal descriptor (never bare identifiers) because lowercase table names like `users` collide with ordinary variable names. The same file's `public.Functions` block yields `DBFunction` nodes (Postgres stored functions with typed args/returns), and `supabase.rpc('name', {...})` calls create `Function-[:CALLS_RPC]->DBFunction` edges — matched only when the RPC name is a declared function, so a stray `.rpc()` on another client never links.
 5. **ORM class promoter** (P1/P2 stub): Framework placeholder for TypeORM, SQLAlchemy, Django, etc.
 6. Creates `Model` and `ModelField` nodes, plus `CONTAINS`, `HAS_MODEL_FIELD`, `REFERENCES`, `RELATED_TO`, and `PROMOTED_FROM` edges.
 7. Creates `File` nodes for `.prisma` files (not created by Phase 1 since no parser registered).

@@ -1043,8 +1043,36 @@ class TypeScriptParser(LanguageParser):
                 supabase_ref = self._supabase_from_descriptor(func_node, src)
                 if supabase_ref:
                     out.append(supabase_ref)
+                rpc_ref = self._supabase_rpc_descriptor(func_node, args_node, src)
+                if rpc_ref:
+                    out.append(rpc_ref)
         for child in node.children:
             self._walk_call_arg_refs(child, src, out)
+
+    def _supabase_rpc_descriptor(self, func_node: Node, args_node: Node, src: bytes) -> str | None:
+        """For Supabase ``X.rpc('fn', {...})``, return ``"rpc('fn')"`` — a call to a
+        Postgres stored function whose name is the first string-literal argument.
+
+        No receiver check is needed: precision comes from the schema linker, which
+        only creates an edge when ``'fn'`` matches a DBFunction declared in the
+        Supabase generated types. A stray ``x.rpc('foo')`` on some other object
+        won't match unless ``foo`` is a real declared function.
+        """
+        if func_node.type != "member_expression":
+            return None
+        prop = func_node.child_by_field_name("property")
+        if prop is None or self._text(prop, src) != "rpc":
+            return None
+        named = args_node.named_children
+        if not named or named[0].type != "string":
+            return None
+        fragments = [c for c in named[0].children if c.type == "string_fragment"]
+        if len(fragments) != 1:
+            return None
+        name = self._text(fragments[0], src)
+        if not name:
+            return None
+        return f"rpc('{name}')"
 
     def _supabase_from_descriptor(self, func_node: Node, src: bytes) -> str | None:
         """For Supabase/PostgREST ``X.from('table').verb(...)``, return
