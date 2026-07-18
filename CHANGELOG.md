@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-18
+
 ### Added
 - **SQL migrations are parsed to reveal what stored procedures touch.** A new
   tree-sitter-sql parser reads `.sql` files' `CREATE FUNCTION` bodies and links each
