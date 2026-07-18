@@ -326,12 +326,12 @@ All parsers extend `LanguageParser` (abstract base in `parsers/base.py`) and are
 - **Functions:** Regular, arrow, async, generators
 - **Interfaces, Types, Enums:** TypeScript-specific constructs
 - **Components:** React components (PascalCase functions returning JSX)
-- **Routes:** Express/Hono/Fastify route patterns (`router.get()`, `app.post()`), Supabase/Deno edge functions (`serve()`)
+- **Routes:** Express/Hono/Fastify route patterns (`router.get()`, `app.post()`), Supabase/Deno edge functions (directory convention, below)
 - **Re-exports:** Barrel file patterns (`export { X } from`, `export * from`, `export { default as Y } from`)
 - **Tests:** Jest/Mocha/Vitest patterns (`describe`, `it`, `test`, `beforeAll`, etc.)
 - **Next.js:** App router detection (page, route, layout, loading, error files)
-- **Supabase/Deno:** `serve()` / `Deno.serve()` entry point detection and route extraction
-- **Entry points:** Next.js pages, Storybook stories, React components, serverless handlers (`handler` export), barrel-only hooks (`use*` in `index.ts`), `main()` exports, route handlers — each sets `entry_point_reason`
+- **Supabase/Deno edge functions:** A file at `supabase/functions/<name>/index.ts` is deployed as an endpoint at `/<name>`, so the *directory* is the route (`POST /<name>`) regardless of how the handler is registered internally. The request handler is located from the top-level registration — `serve(handler)` / `Deno.serve(handler)`, any wrapper whose name starts with `serve` (e.g. `serveWithInstrumentation('name', handler, {opts})`), `export default { fetch: handler }`, or `addEventListener('fetch', handler)` — taking the last *function-typed* argument (the handler is not always the last arg). An inline arrow handler is synthesized into a Function (so its calls chain to `USES_MODEL`); a named handler is linked by name. `_`-prefixed dirs are Supabase shared code and never deployed, so they are skipped, and edge functions that route internally with Hono/Express keep their specific routes instead of the directory envelope.
+- **Entry points:** Next.js pages, Storybook stories, React components, serverless handlers (`handler` export), barrel-only hooks (`use*` in `index.ts`), `main()` exports, route handlers, functions called by an edge-function handler — each sets `entry_point_reason`
 - **Module docstrings:** Leading JSDoc blocks, `@module`/`@fileoverview` tags, or `//` comments extracted as `module_docstring`
 - **Auth middleware paths:** Detects `app.use('/path', authMiddleware)` patterns where middleware names contain auth keywords (auth, jwt, clerk, guard, verify, etc.). Extracted as `ParsedFile.auth_middleware_paths` for route auth detection in the pipeline.
 - **Callback detection:** Identifies function references passed as arguments to known patterns: `.use(fn)` (middleware), `.get/.post(path, fn)` (route_handler), `.on/.addEventListener(event, fn)` (callback), `.then/.catch(fn)` (callback), `.map/.filter/.forEach/.reduce/.sort(fn)` (array_method). Each produces a `(callee_name, context)` tuple on `callback_refs`.

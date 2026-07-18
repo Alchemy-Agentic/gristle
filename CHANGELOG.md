@@ -6,6 +6,24 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Supabase edge functions are now recognized as routes.** A file at
+  `supabase/functions/<name>/index.ts` is deployed as an HTTP endpoint, but only
+  the classic `serve(...)`/`Deno.serve(...)` form was detected — so on a real
+  Supabase app the entire edge-function backend was invisible as routes, and the
+  handlers (which do the DB work) were disconnected from the route graph. Route
+  synthesis now keys on the **directory convention** (`POST /<name>`) and finds
+  the handler across every common registration style: `serve()`/`Deno.serve()`,
+  any `serve`-prefixed wrapper (e.g. `serveWithInstrumentation('name', handler,
+  {opts})`), `export default { fetch: handler }`, and `addEventListener('fetch',
+  handler)`. The inline handler is synthesized into a Function so
+  `(:Route)-[:HANDLES]->()-[:CALLS*]->()-[:USES_MODEL]->(:Model)` traces resolve
+  an edge function all the way to the Supabase tables it touches; a named handler
+  is linked by name. `_`-prefixed shared dirs are skipped, and edge functions
+  that route internally with Hono/Express keep their specific routes. On a real
+  2,335-file app this took routes from 63 → 190 (all 127 edge functions,
+  100% handler-linked) and routes reaching a DB table from 5 → 121.
+
 ## [0.5.0] - 2026-07-16
 
 ### Added

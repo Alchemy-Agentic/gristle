@@ -52,6 +52,23 @@ _ROUTE_METHODS = frozenset({"get", "post", "put", "delete", "patch", "all", "opt
 # Supabase edge function path pattern: supabase/functions/<name>/index.ts
 _SUPABASE_FUNC_RE = re.compile(r"(?:^|/)supabase/functions/([^/]+)/index\.[tj]sx?$")
 
+
+def _supabase_edge_function_name(file_path: str) -> str | None:
+    """Return the deployed function name for a Supabase edge-function file, or None.
+
+    Only ``supabase/functions/<name>/index.ts`` qualifies; ``_``-prefixed dirs are
+    Supabase shared code (never deployed). The edge-handler idioms
+    (``serve``-prefixed calls, ``export default { fetch }``, ``addEventListener``)
+    are only meaningful in these files, so all edge detection is gated on this —
+    the same idioms in ordinary app code (``export default MyComponent``, a HOC
+    call, a Cloudflare Worker's ``fetch``) must not be treated as edge handlers.
+    """
+    m = _SUPABASE_FUNC_RE.search(file_path.replace("\\", "/"))
+    if not m or m.group(1).startswith("_"):
+        return None
+    return m.group(1)
+
+
 # Storybook story files
 _STORYBOOK_RE = re.compile(r"\.stories\.[tj]sx?$")
 
@@ -88,7 +105,7 @@ class TypeScriptParser(LanguageParser):
         is_tsx = file_path.endswith(".tsx") or file_path.endswith(".jsx")
 
         # Detect serve() / Deno.serve() entry point patterns (Deno/Supabase edge functions)
-        serve_callees = self._detect_serve_entry_points(root, src)
+        serve_callees = self._detect_serve_entry_points(root, src, file_path)
 
         # Post-process: detect components, tests, entry points
         for func in functions:
@@ -1349,42 +1366,31 @@ class TypeScriptParser(LanguageParser):
 
         return None
 
-    @staticmethod
-    def _detect_serve_entry_points(root: Node, src: bytes) -> set[str]:
-        """Detect serve() / Deno.serve() calls and return names of functions called inside.
+    def _detect_serve_entry_points(self, root: Node, src: bytes, file_path: str) -> set[str]:
+        """Return the names of functions that are entry points via a Deno/Supabase
+        edge-function handler.
 
-        Deno/Supabase edge functions use ``serve(async (req) => { ... })`` or
-        ``Deno.serve(async (req) => { ... })`` as their entry point.  The handler
-        is typically an anonymous arrow function, so we can't mark it directly.
-        Instead we find named function calls made *inside* the handler body and
-        return their names so they can be flagged as entry points.
+        Gated to Supabase edge-function files — the handler idioms
+        (``serve``-prefixed calls, ``export default { fetch }``,
+        ``addEventListener``) also appear in ordinary app code (a default-exported
+        component, an HOC call, a Cloudflare Worker), and marking those as entry
+        points would corrupt dead-export/impact analysis repo-wide.
+
+        If the handler is an inline arrow (``serve(async (req) => …)``,
+        ``export default { fetch: withSupabase(opts, async (req) => …) }``, a
+        wrapper such as ``serveWithInstrumentation('name', async (req) => …)``),
+        the *named functions it calls* are the entry points. If the handler is a
+        named reference (``serve(handleRequest)``), that name is the entry point.
+        See :meth:`_find_edge_handler`.
         """
+        if _supabase_edge_function_name(file_path) is None:
+            return set()
+        handler_node, handler_ref = self._find_edge_handler(root, src)
         callees: set[str] = set()
-        for node in root.children:
-            # expression_statement wrapping a call_expression
-            if node.type != "expression_statement":
-                continue
-            call = None
-            for child in node.children:
-                if child.type == "call_expression":
-                    call = child
-                    break
-            if call is None:
-                continue
-
-            func_node = call.child_by_field_name("function")
-            if func_node is None:
-                continue
-            func_text = src[func_node.start_byte : func_node.end_byte].decode(errors="replace")
-            if func_text not in ("serve", "Deno.serve"):
-                continue
-
-            # Found a serve() call — collect named function calls inside the handler body
-            args = call.child_by_field_name("arguments")
-            if args is None:
-                continue
-            TypeScriptParser._collect_call_names(args, src, callees)
-
+        if handler_node is not None:
+            self._collect_call_names(handler_node, src, callees)
+        elif handler_ref:
+            callees.add(handler_ref)
         return callees
 
     @staticmethod
@@ -1398,42 +1404,245 @@ class TypeScriptParser(LanguageParser):
             TypeScriptParser._collect_call_names(child, src, out)
 
     # ------------------------------------------------------------------
-    # Supabase edge function route extraction
+    # Supabase edge function handler + route extraction
     # ------------------------------------------------------------------
+    #
+    # Registration idioms recognised (all top-level in
+    # supabase/functions/<name>/index.ts):
+    #   serve(handler) / Deno.serve(handler)              - Deno std / native
+    #   serveWithInstrumentation('name', handler)         - any wrapper whose name starts "serve"
+    #   export default { fetch: handler | wrapper(...) }  - modern default-export form
+    #   addEventListener('fetch', handler)                - service-worker form
+    # The handler is either an inline arrow (synthesised into a Function so its
+    # calls chain to the DB) or a named reference (linked by name in Phase 2).
+
+    def _find_edge_handler(self, root: Node, src: bytes) -> tuple[Node | None, str | None]:
+        """Locate a Supabase edge function's request handler from its top-level
+        registration. Returns ``(inline_handler_node, named_handler)`` with
+        exactly one set, or ``(None, None)`` if no registration is recognised.
+        Scans only top-level statements — edge functions register at module scope.
+        """
+        for node in root.named_children:
+            # export default { fetch: <handler> }  |  export default <handler>
+            if node.type == "export_statement":
+                for c in node.named_children:
+                    if c.type == "object":
+                        val = self._object_pair_value(c, "fetch", src)
+                        if val is not None:
+                            found = self._unwrap_handler(val, src)
+                            if found != (None, None):
+                                return found
+                    elif c.type in (
+                        "arrow_function",
+                        "function_expression",
+                        "function",
+                        "call_expression",
+                        "identifier",
+                    ):
+                        found = self._unwrap_handler(c, src)
+                        if found != (None, None):
+                            return found
+                continue
+
+            call = self._statement_call(node)
+            if call is None:
+                continue
+            name = self._callee_name(call.child_by_field_name("function"), src)
+            if name and name.lower().startswith("serve"):
+                node2, ref2 = self._unwrap_handler(call, src)
+                if node2 is not None:
+                    return (node2, None)  # inline handler arg — trust any serve* wrapper
+                # A named handler is trusted for the classic serve()/Deno.serve()
+                # forms, or a wrapper keyed by a function-name string
+                # (serveWithInstrumentation('name', handleRequest)) — but not a bare
+                # `server(app)` / `serveData(collectMetrics)` whose first arg is the
+                # value itself, nor `serveStatic('/x')` (no handler arg at all).
+                if ref2 is not None and (name == "serve" or self._first_arg_is_string(call, src)):
+                    return (None, ref2)
+            elif name == "addEventListener":
+                handler = self._event_listener_handler(call, "fetch", src)
+                if handler is not None:
+                    return self._unwrap_handler(handler, src)
+        return (None, None)
+
+    @staticmethod
+    def _unwrap_to_call(node: Node) -> Node | None:
+        """A call_expression, unwrapping a leading ``await``."""
+        if node.type == "call_expression":
+            return node
+        if node.type == "await_expression":
+            for c in node.named_children:
+                if c.type == "call_expression":
+                    return c
+        return None
+
+    @staticmethod
+    def _statement_call(node: Node) -> Node | None:
+        """The call_expression of a top-level statement, if any — handling a bare
+        call, ``await serve(...)``, and ``const s = Deno.serve(...)``."""
+        direct = TypeScriptParser._unwrap_to_call(node)
+        if direct is not None:
+            return direct
+        if node.type == "expression_statement":
+            for child in node.named_children:
+                call = TypeScriptParser._unwrap_to_call(child)
+                if call is not None:
+                    return call
+        if node.type == "lexical_declaration":
+            for decl in node.named_children:
+                if decl.type == "variable_declarator":
+                    value = decl.child_by_field_name("value")
+                    if value is not None:
+                        call = TypeScriptParser._unwrap_to_call(value)
+                        if call is not None:
+                            return call
+        return None
+
+    def _callee_name(self, callee: Node | None, src: bytes) -> str | None:
+        """Rightmost identifier of a call target: ``serve`` / ``Deno.serve`` → 'serve'."""
+        if callee is None:
+            return None
+        if callee.type == "identifier":
+            return self._text(callee, src)
+        if callee.type == "member_expression":
+            prop = callee.child_by_field_name("property")
+            return self._text(prop, src) if prop else None
+        return None
+
+    # Argument handler types (an arg is never a method_definition). The inline set
+    # additionally covers `method_definition` for the `{ async fetch(req){} }` form.
+    _HANDLER_FN_TYPES = ("arrow_function", "function_expression", "function")
+    _INLINE_HANDLER_TYPES = ("arrow_function", "function_expression", "function", "method_definition")
+
+    def _unwrap_handler(self, expr: Node, src: bytes) -> tuple[Node | None, str | None]:
+        """Resolve a handler expression to ``(inline_node, named)``.
+
+        An arrow/function/method is the handler itself; a call contributes its
+        handler argument — the *last function-typed* arg, since the handler is not
+        always the final argument (``withSupabase(opts, fn)`` puts it last but
+        ``serveWithInstrumentation('name', fn, {options})`` puts it in the
+        middle) — or, for a config-object call (``serve({ fetch: fn })``), the
+        object's ``fetch`` value; falling back to the last identifier/member arg (a
+        named handler reference, ``serve(handleRequest)``). A bare
+        identifier/member/shorthand is itself a named handler reference.
+        """
+        if expr.type in self._INLINE_HANDLER_TYPES:
+            return (expr, None)
+        if expr.type == "call_expression":
+            args = expr.child_by_field_name("arguments")
+            named = args.named_children if args else []
+            for cand in reversed(named):
+                if cand.type in self._HANDLER_FN_TYPES:
+                    return (cand, None)
+            for cand in reversed(named):
+                if cand.type == "object":
+                    val = self._object_pair_value(cand, "fetch", src)
+                    if val is not None:
+                        return self._unwrap_handler(val, src)
+            for cand in reversed(named):
+                if cand.type in ("identifier", "member_expression"):
+                    return (None, self._text(cand, src))
+            return (None, None)
+        if expr.type in ("identifier", "member_expression", "shorthand_property_identifier"):
+            return (None, self._text(expr, src))
+        return (None, None)
+
+    def _object_pair_value(self, obj: Node, key: str, src: bytes) -> Node | None:
+        """The handler node for ``<key>`` in an object literal, across the three
+        member forms: ``{ fetch: fn }`` (pair → value), ``{ async fetch(){} }``
+        (method_definition → the method itself), and ``{ fetch }`` (shorthand →
+        the shorthand identifier, a named ref). Returns None if absent.
+        """
+        for member in obj.named_children:
+            if member.type == "pair":
+                k = member.child_by_field_name("key")
+                if k is not None and self._object_key_text(k, src) == key:
+                    return member.child_by_field_name("value")
+            elif member.type == "method_definition":
+                name = member.child_by_field_name("name")
+                if name is not None and self._text(name, src) == key:
+                    return member
+            elif member.type == "shorthand_property_identifier":
+                if self._text(member, src) == key:
+                    return member
+        return None
+
+    def _object_key_text(self, key: Node, src: bytes) -> str | None:
+        """Property-key text, unwrapping a computed key (``['fetch']`` → 'fetch')."""
+        if key.type == "computed_property_name":
+            for c in key.named_children:
+                if c.type == "string":
+                    return self._string_value(c, src)
+            return None
+        return self._text(key, src).strip("'\"")
+
+    def _first_arg_is_string(self, call: Node, src: bytes) -> bool:
+        """True when the call's first argument is a string literal (a wrapper keyed
+        by a function-name string, e.g. ``serveWithInstrumentation('name', fn)``)."""
+        args = call.child_by_field_name("arguments")
+        named = args.named_children if args else []
+        return bool(named) and named[0].type == "string"
+
+    def _event_listener_handler(self, call: Node, event: str, src: bytes) -> Node | None:
+        """Second arg of ``addEventListener('<event>', handler)``, else None."""
+        args = call.child_by_field_name("arguments")
+        named = args.named_children if args else []
+        if len(named) >= 2 and named[0].type == "string" and self._string_value(named[0], src) == event:
+            return named[1]
+        return None
+
+    @staticmethod
+    def _string_value(node: Node, src: bytes) -> str | None:
+        """Text of a single-fragment string literal (``'fetch'`` → 'fetch')."""
+        fragments = [c for c in node.children if c.type == "string_fragment"]
+        if len(fragments) != 1:
+            return None
+        return src[fragments[0].start_byte : fragments[0].end_byte].decode(errors="replace")
+
+    def _is_router_delegate(self, handler_ref: str) -> bool:
+        """True when a named handler delegates to a framework app rather than being
+        a real function — ``app.fetch`` (a member reference) or a bare router
+        instance (``export default app`` where ``app`` is a detected Hono/Express
+        router). Such a handler can never resolve to a Function, and the app's own
+        routes are the real endpoints, so the directory envelope is skipped.
+        """
+        base = handler_ref.split(".")[0]
+        return "." in handler_ref or base in getattr(self, "_dynamic_router_names", set())
 
     def _extract_supabase_routes(self, root: Node, src: bytes, file_path: str) -> list[ParsedRoute]:
-        """Extract a POST route from a Supabase edge function.
+        """Synthesize a route for a Supabase edge function.
 
-        Supabase edge functions live at ``supabase/functions/<name>/index.ts``
-        and use ``serve(handler)`` as their entry.  The function name IS the
-        route path: ``supabase/functions/analyze-gaps/index.ts`` → ``POST /analyze-gaps``.
+        Edge functions live at ``supabase/functions/<name>/index.ts`` and are
+        deployed at ``/<name>`` (invoked via POST) — the directory IS the route,
+        regardless of how the handler is registered inside. An inline handler
+        arrow is synthesised into a Function (reusing the inline-handler
+        machinery) so route → handler → …calls… → Model resolves; a named handler
+        is linked by name in Phase 2. Dirs starting with ``_`` are Supabase's
+        shared code, never deployed, so they are skipped.
+
+        When the handler delegates to a framework app (``Deno.serve(app.fetch)``,
+        ``export default app``), the app's own ``app.get(...)`` routes are the
+        real endpoints, so the directory envelope is skipped to avoid a dangling
+        or duplicate route.
         """
-        m = _SUPABASE_FUNC_RE.search(file_path.replace("\\", "/"))
-        if not m:
+        func_name = _supabase_edge_function_name(file_path)
+        if func_name is None:
             return []
 
-        # Confirm the file actually calls serve() / Deno.serve()
-        serve_callees = self._detect_serve_entry_points(root, src)
-        has_serve = bool(serve_callees) or self._has_top_level_serve(root, src)
-        if not has_serve:
+        handler_node, handler_ref = self._find_edge_handler(root, src)
+        if handler_node is not None:
+            synth = self._synthesize_arrow_handler(handler_node, src, "POST", f"/{func_name}", file_path)
+            self._synth_route_handlers.append(synth)
+            handler_name = synth.name
+            line = handler_node.start_point[0] + 1
+            end_line = handler_node.end_point[0] + 1
+        elif handler_ref and not self._is_router_delegate(handler_ref):
+            handler_name, line, end_line = handler_ref, 1, 0
+        else:
+            # No handler, or a delegate to a framework app (member ref like
+            # app.fetch, or a bare router instance). Stay precise — emit no
+            # envelope route; the app's own routes (if any) already cover it.
             return []
-
-        func_name = m.group(1)  # e.g. "analyze-gaps"
-        handler_name = next(iter(serve_callees)) if serve_callees else "<serve>"
-
-        # Find the line of the serve() call for accurate positioning
-        serve_line = 1
-        for node in root.children:
-            if node.type != "expression_statement":
-                continue
-            for child in node.children:
-                if child.type == "call_expression":
-                    fn = child.child_by_field_name("function")
-                    if fn:
-                        text = src[fn.start_byte : fn.end_byte].decode(errors="replace")
-                        if text in ("serve", "Deno.serve"):
-                            serve_line = node.start_point[0] + 1
-                            break
 
         return [
             ParsedRoute(
@@ -1441,24 +1650,10 @@ class TypeScriptParser(LanguageParser):
                 path=f"/{func_name}",
                 handler_name=handler_name,
                 file_path=file_path,
-                line=serve_line,
+                line=line,
+                end_line=end_line,
             )
         ]
-
-    @staticmethod
-    def _has_top_level_serve(root: Node, src: bytes) -> bool:
-        """Check if the file has a top-level serve() or Deno.serve() call."""
-        for node in root.children:
-            if node.type != "expression_statement":
-                continue
-            for child in node.children:
-                if child.type == "call_expression":
-                    fn = child.child_by_field_name("function")
-                    if fn:
-                        text = src[fn.start_byte : fn.end_byte].decode(errors="replace")
-                        if text in ("serve", "Deno.serve"):
-                            return True
-        return False
 
     # ------------------------------------------------------------------
     # TODO/FIXME extraction
@@ -1530,7 +1725,10 @@ class TypeScriptParser(LanguageParser):
                 if route:
                     routes.append(route)
 
-        # Supabase edge function convention: path derived from directory name
+        # Supabase edge function convention: the directory IS the endpoint. Always
+        # attempt it (a stray false framework route in the body must not suppress
+        # the real edge route); _extract_supabase_routes itself skips the envelope
+        # when the handler delegates to an internal Hono/Express app.
         routes.extend(self._extract_supabase_routes(root, src, file_path))
 
         # NestJS: @Controller(base) classes with @Get/@Post/... decorated methods
@@ -2102,7 +2300,7 @@ class JavaScriptParser(LanguageParser):
         )
 
         # Detect serve() / Deno.serve() entry points
-        serve_callees = TypeScriptParser._detect_serve_entry_points(root, src)
+        serve_callees = self._ts_parser._detect_serve_entry_points(root, src, file_path)
 
         # Post-process functions for component/test/entry_point detection
         is_jsx = file_path.endswith(".jsx")

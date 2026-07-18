@@ -467,7 +467,7 @@ gristle_routes(method="POST")       # Only POST endpoints
 - **Python:** FastAPI/Flask/Django decorators (`@app.get("/path")`, `@router.post()`)
 - **TypeScript/JavaScript:** Express/Hono/Fastify method calls (`app.get('/path', handler)`)
 - **Next.js:** App router file conventions (`app/api/users/route.ts` → `GET /api/users`)
-- **Supabase/Deno:** Edge functions (`supabase/functions/<name>/index.ts` → `POST /<name>`)
+- **Supabase/Deno:** Edge functions (`supabase/functions/<name>/index.ts` → `POST /<name>`) — the directory is the route regardless of how the handler registers (`serve()`/`Deno.serve()`, a `serve`-prefixed wrapper such as `serveWithInstrumentation(...)`, `export default { fetch }`, or `addEventListener('fetch', …)`). The handler is synthesized so `HANDLES` → handler → `CALLS` → `USES_MODEL` traces resolve into the data layer.
 
 ---
 
@@ -947,7 +947,7 @@ gristle_explore(entity="<handler_name>")     # Explore a specific handler
 gristle_impact(entity_name="<handler>")      # See what depends on it
 ```
 
-Supabase edge functions at `supabase/functions/<name>/index.ts` are automatically detected as `POST /<name>` routes when they contain `serve()` or `Deno.serve()` calls.
+Supabase edge functions at `supabase/functions/<name>/index.ts` are automatically detected as `POST /<name>` routes. The handler is found across every common registration style (`serve()`/`Deno.serve()`, a `serve`-prefixed wrapper like `serveWithInstrumentation(...)`, `export default { fetch }`, or `addEventListener('fetch', …)`) and linked via `HANDLES`, so a `request_trace` subgraph (or a manual `(:Route)-[:HANDLES]->()-[:CALLS*]->()-[:USES_MODEL]->(:Model)` query) follows an edge function all the way to the Supabase tables it reads and writes.
 
 ---
 

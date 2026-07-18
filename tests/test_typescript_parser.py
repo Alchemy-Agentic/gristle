@@ -1162,7 +1162,13 @@ class TestSupabaseRouteExtraction:
         result = parser.parse_file("supabase/functions/my-func/index.ts", code)
         assert len(result.routes) == 1
         assert result.routes[0].path == "/my-func"
-        assert result.routes[0].handler_name == "handleRequest"
+        # The route HANDLES the synthesized inline handler; the named function it
+        # delegates to (handleRequest) is reached via that handler's calls, so
+        # route -> handler -> ...calls... -> Model resolves.
+        assert result.routes[0].handler_name == "POST /my-func"
+        synth = next(f for f in result.functions if f.name == "POST /my-func")
+        assert synth.entry_point_reason == "route_handler"
+        assert "handleRequest" in synth.calls
 
     def test_non_supabase_path_no_route(self):
         parser = TypeScriptParser()
@@ -1186,8 +1192,217 @@ class TestSupabaseRouteExtraction:
         )
         result = parser.parse_file("supabase/functions/process-data/index.ts", code)
         assert len(result.routes) == 1
-        assert result.routes[0].handler_name == "processRequest"
         assert result.routes[0].path == "/process-data"
+        # Inline arrow handler is synthesized; it calls processRequest (which does
+        # the work), so the route still reaches processRequest via the handler.
+        assert result.routes[0].handler_name == "POST /process-data"
+        synth = next(f for f in result.functions if f.name == "POST /process-data")
+        assert "processRequest" in synth.calls
+
+    def test_serve_wrapper_creates_route_and_handler(self):
+        """A custom wrapper whose name starts 'serve' (e.g. the common
+        serveWithInstrumentation) is recognized like serve()."""
+        parser = TypeScriptParser()
+        code = (
+            "import { serveWithInstrumentation } from '../_shared/serve.ts';\n"
+            "async function handleCompute(req) { await supabase.from('runs').insert({}); }\n"
+            "serveWithInstrumentation('plan', async (req, ctx) => {\n"
+            "  return handleCompute(req);\n"
+            "});\n"
+        )
+        result = parser.parse_file("supabase/functions/plan/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/plan"
+        assert result.routes[0].handler_name == "POST /plan"
+        synth = next(f for f in result.functions if f.name == "POST /plan")
+        assert "handleCompute" in synth.calls
+
+    def test_serve_wrapper_handler_not_last_arg(self):
+        """The handler is the last *function* arg, not the last arg — real
+        wrappers append an options object: serveWith('name', handler, {opts})."""
+        parser = TypeScriptParser()
+        code = (
+            "async function handleIt(req, ctx) { await supabase.from('t').select(); }\n"
+            "serveWithInstrumentation('analyze', async (req, ctx) => {\n"
+            "  return handleIt(req, ctx);\n"
+            "}, { timeout: 30 });\n"
+        )
+        result = parser.parse_file("supabase/functions/analyze/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/analyze"
+        synth = next(f for f in result.functions if f.name == "POST /analyze")
+        assert "handleIt" in synth.calls
+
+    def test_export_default_fetch_creates_route(self):
+        """The modern `export default { fetch: wrapper(opts, handler) }` form."""
+        parser = TypeScriptParser()
+        code = (
+            "export default {\n"
+            "  fetch: withSupabase({ auth: 'secret' }, async (req, ctx) => {\n"
+            "    return doEmbed(req);\n"
+            "  })\n"
+            "}\n"
+            "function doEmbed(r) { return supabase.from('docs').select('*'); }\n"
+        )
+        result = parser.parse_file("supabase/functions/generate-embedding/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/generate-embedding"
+        synth = next(f for f in result.functions if f.name == "POST /generate-embedding")
+        assert "doEmbed" in synth.calls
+
+    def test_add_event_listener_fetch_creates_route(self):
+        """Service-worker style `addEventListener('fetch', handler)`."""
+        parser = TypeScriptParser()
+        code = "addEventListener('fetch', (event) => event.respondWith(handleReq(event.request)));\n"
+        result = parser.parse_file("supabase/functions/worker/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/worker"
+        synth = next(f for f in result.functions if f.name == "POST /worker")
+        assert "handleReq" in synth.calls
+
+    def test_named_handler_reference_linked_by_name(self):
+        """`serve(handleRequest)` — a bare named handler is linked by name, not
+        synthesized (the function already exists as a node)."""
+        parser = TypeScriptParser()
+        code = "function handleRequest(req) { return supabase.from('t').select(); }\nserve(handleRequest);\n"
+        result = parser.parse_file("supabase/functions/named/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].handler_name == "handleRequest"
+        # No synthetic handler created for a named reference.
+        assert not any(f.name == "POST /named" for f in result.functions)
+
+    def test_shared_dir_is_not_an_endpoint(self):
+        """Supabase never deploys `_`-prefixed dirs (shared code)."""
+        parser = TypeScriptParser()
+        code = "export function serveWithInstrumentation(name, h) { serve(h); }\n"
+        result = parser.parse_file("supabase/functions/_shared/serve.ts", code)
+        assert len(result.routes) == 0
+
+    def test_internal_hono_routing_skips_directory_envelope(self):
+        """An edge function that routes internally (Hono/Express) keeps its
+        specific routes and does not also get a directory-envelope POST route."""
+        parser = TypeScriptParser()
+        code = "const app = new Hono();\napp.get('/health', (c) => c.json({ ok: 1 }));\nDeno.serve(app.fetch);\n"
+        result = parser.parse_file("supabase/functions/api/index.ts", code)
+        paths = {(r.method, r.path) for r in result.routes}
+        assert ("GET", "/health") in paths
+        assert ("POST", "/api") not in paths
+
+    def test_javascript_edge_function_creates_route(self):
+        """Edge-function synthesis also works via the JavaScript parser path."""
+        code = "Deno.serve(async (req) => handleIt(req));\nfunction handleIt(r) {}\n"
+        result = JavaScriptParser().parse_file("supabase/functions/js-func/index.js", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/js-func"
+        assert result.routes[0].handler_name == "POST /js-func"
+
+    def test_object_method_fetch_handler(self):
+        """The canonical modern Deno form `export default { async fetch(req){} }`
+        (a method_definition, not a `fetch:` pair)."""
+        parser = TypeScriptParser()
+        code = "export default {\n  async fetch(req) { return handle(req); }\n}\nfunction handle(r) {}\n"
+        result = parser.parse_file("supabase/functions/modern/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/modern"
+        synth = next(f for f in result.functions if f.name == "POST /modern")
+        assert "handle" in synth.calls
+
+    def test_computed_fetch_key(self):
+        """`export default { ['fetch']: handler }` — a computed property key."""
+        parser = TypeScriptParser()
+        code = "export default { ['fetch']: async (req) => go(req) };\nfunction go(r) {}\n"
+        result = parser.parse_file("supabase/functions/computed/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/computed"
+
+    def test_await_and_const_serve_forms(self):
+        """`await serve(...)` and `const s = Deno.serve(...)` register a handler."""
+        parser = TypeScriptParser()
+        for code, name in [
+            ("await serve(async (req) => aa(req));\nfunction aa(r) {}\n", "await-fn"),
+            ("const server = Deno.serve(async (req) => bb(req));\nfunction bb(r) {}\n", "const-fn"),
+        ]:
+            result = parser.parse_file(f"supabase/functions/{name}/index.ts", code)
+            assert len(result.routes) == 1, name
+            assert result.routes[0].path == f"/{name}"
+
+    def test_false_framework_route_does_not_suppress_envelope(self):
+        """A stray framework-looking call in the body (a false positive from the
+        static router-name set) must not suppress the real edge route."""
+        parser = TypeScriptParser()
+        code = (
+            "import { serveWithInstrumentation } from '../_shared/serve.ts';\n"
+            "api.get('/v1/x', h);\n"  # `api` is in the static router set -> false route
+            "serveWithInstrumentation('f4', async (req) => doIt(req), {});\n"
+            "function doIt(r) {}\n"
+        )
+        result = parser.parse_file("supabase/functions/f4/index.ts", code)
+        assert ("POST", "/f4") in {(r.method, r.path) for r in result.routes}
+
+    def test_internal_hono_export_default_app_no_dangling_envelope(self):
+        """`export default app` (a bare Hono instance) delegates to the app's own
+        routes; no directory envelope with an unresolvable handler is emitted."""
+        parser = TypeScriptParser()
+        code = "const app = new Hono();\napp.post('/x', (c) => c.json({}));\nexport default app;\n"
+        result = parser.parse_file("supabase/functions/deleg/index.ts", code)
+        paths = {(r.method, r.path) for r in result.routes}
+        assert ("POST", "/x") in paths
+        assert ("POST", "/deleg") not in paths
+
+    def test_wrapper_with_named_handler(self):
+        """`serveWithInstrumentation('name', handleRequest)` — a wrapper keyed by a
+        name string with a *named* (non-inline) handler. Linked by name."""
+        parser = TypeScriptParser()
+        code = (
+            "function handleRequest(req) { return supabase.from('t').select(); }\n"
+            "serveWithInstrumentation('my-fn', handleRequest);\n"
+        )
+        result = parser.parse_file("supabase/functions/my-fn/index.ts", code)
+        assert len(result.routes) == 1
+        assert result.routes[0].path == "/my-fn"
+        assert result.routes[0].handler_name == "handleRequest"
+
+    def test_serve_prefix_over_match_rejected(self):
+        """`server(app)` and `serveStatic(...)` start with 'serve' but are not
+        handler registrations — they must not create a route."""
+        parser = TypeScriptParser()
+        assert parser.parse_file("supabase/functions/s1/index.ts", "server(app);\n").routes == []
+        assert (
+            parser.parse_file("supabase/functions/s2/index.ts", "serveStatic('/public', { root: '.' });\n").routes == []
+        )
+
+
+class TestEdgeHandlerDetectionIsScoped:
+    """The edge-function handler idioms must NOT be recognized outside
+    supabase/functions/<name>/index.ts — otherwise ordinary default exports and
+    serve-prefixed calls would be sprayed with false `serve_handler` entry
+    points, corrupting dead-export/impact analysis (regression guard)."""
+
+    def _serve_entry_points(self, path: str, code: str) -> list[str]:
+        parser = TypeScriptParser()
+        result = parser.parse_file(path, code)
+        return sorted(f.name for f in result.functions if f.entry_point_reason == "serve_handler")
+
+    def test_default_export_identifier_not_flagged(self):
+        assert (
+            self._serve_entry_points("src/pages/Home.tsx", "function Home(){ return x(); }\nexport default Home;\n")
+            == []
+        )
+
+    def test_hoc_default_export_not_flagged(self):
+        assert self._serve_entry_points("src/App.tsx", "export default connect(mapState)(App);\n") == []
+
+    def test_cloudflare_worker_fetch_not_flagged(self):
+        code = "export default { fetch: (request, env) => processRequest(request) };\n"
+        assert self._serve_entry_points("src/worker.ts", code) == []
+
+    def test_local_serve_prefixed_call_not_flagged(self):
+        assert self._serve_entry_points("src/lib/data.ts", "serveData(collectMetrics);\n") == []
+
+    def test_edge_function_still_flags_its_callees(self):
+        """The gate must not disable legitimate edge-function entry-point marking."""
+        code = "serve(async (req) => handleIt(req));\nfunction handleIt(r){}\n"
+        assert "handleIt" in self._serve_entry_points("supabase/functions/f/index.ts", code)
 
 
 class TestReexportExtraction:
