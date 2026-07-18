@@ -206,6 +206,33 @@ class QueryEngine:
             rec[f"{direction}s"] = [d["name"] for d in details]
             self._cap_list(rec, f"{direction}s_detail")
             self._cap_list(rec, f"{direction}s")
+
+        # Component render relationships (JSX). Fetched separately to avoid a
+        # cartesian blow-up with the caller/callee collects above. `renders` =
+        # components this function renders; `rendered_by` = components that render it.
+        # Scoped to THIS function's qualified_name (not the possibly-ambiguous input
+        # name) so namesakes don't cross-contaminate. The render target may be a
+        # Function or a Class (a React class component), so `child` is untyped.
+        qn = rec["qualified_name"]
+        renders = self.graph.execute(
+            """
+            MATCH (f:Function {qualified_name: $qn})-[:RENDERS]->(child)
+            RETURN DISTINCT child.qualified_name AS n ORDER BY n
+            """,
+            {"qn": qn},
+        )
+        rendered_by = self.graph.execute(
+            """
+            MATCH (parent:Function)-[:RENDERS]->(f:Function {qualified_name: $qn})
+            RETURN DISTINCT parent.qualified_name AS n ORDER BY n
+            """,
+            {"qn": qn},
+        )
+        rec["renders"] = [r["n"] for r in renders.records]
+        rec["rendered_by"] = [r["n"] for r in rendered_by.records]
+        self._cap_list(rec, "renders")
+        self._cap_list(rec, "rendered_by")
+
         if include_source and self.repo_path:
             rec["source_code"] = self._load_source(rec["file_path"], rec["start_line"], rec["end_line"])
         return rec
@@ -373,16 +400,21 @@ class QueryEngine:
         Drops the all-null entry FalkorDB emits when an OPTIONAL MATCH found nothing:
         a map literal is itself non-null, so (unlike a plain ``collect()``, which drops
         nulls) it survives — and an entity with no callers would report a phantom one.
+
+        Deduplicates by name, keeping the highest-confidence resolution: the same node
+        can be reached by two edge types (e.g. a caller that both calls a component AND
+        renders it as `<Foo/>` yields a CALLS and a RENDERS edge with different
+        `resolution` values), which must not double-count in impact scoring.
         """
-        return [
-            {
-                name_key: e["name"],
-                "resolution": e.get("resolution"),
-                "confidence": resolution_confidence(e.get("resolution")),
-            }
-            for e in (entries or [])
-            if e.get("name")
-        ]
+        best: dict[str, str | None] = {}
+        for e in entries or []:
+            nm = e.get("name")
+            if not nm:
+                continue
+            res = e.get("resolution")
+            if nm not in best or RESOLUTION_RANK.get(res or "", 0) > RESOLUTION_RANK.get(best[nm] or "", 0):
+                best[nm] = res
+        return [{name_key: nm, "resolution": res, "confidence": resolution_confidence(res)} for nm, res in best.items()]
 
     @staticmethod
     def _best_route_confidence(paths: list[list[str | None]]) -> tuple[str | None, str]:
@@ -398,15 +430,20 @@ class QueryEngine:
         best = max(weakest_per_path, key=lambda r: RESOLUTION_RANK.get(r or "", 0))
         return best, resolution_confidence(best)
 
-    def get_callers(self, name: str, max_depth: int = 2) -> list[dict[str, Any]]:
+    def get_callers(self, name: str, max_depth: int = 2, include_renders: bool = False) -> list[dict[str, Any]]:
         """Find all functions that call a given function, up to max_depth.
 
         Each result carries `resolution` / `confidence`: how reliably the call path
         was resolved (weakest edge on the best route). See :func:`resolution_confidence`.
+
+        With ``include_renders`` the traversal also follows RENDERS edges, so a
+        component's JSX renderers count as dependents — used by impact analysis,
+        where changing a component affects whoever renders it.
         """
+        rels = "CALLS|RENDERS" if include_renders else "CALLS"
         result = self.graph.execute(
             f"""
-            MATCH path = (caller:Function)-[:CALLS*1..{max_depth}]->(target:Function)
+            MATCH path = (caller:Function)-[:{rels}*1..{max_depth}]->(target:Function)
             WHERE target.name = $name OR target.qualified_name = $name
             WITH caller, length(path) AS d, [r IN relationships(path) | r.resolution] AS res
             RETURN caller.qualified_name AS caller,
@@ -499,7 +536,7 @@ class QueryEngine:
             WHERE (target:Function OR target:Class)
               AND (target.name = $name OR target.qualified_name = $name)
             OPTIONAL MATCH (target)-[:DEFINED_IN]->(file:File)
-            OPTIONAL MATCH (caller:Function)-[cr:CALLS]->(target)
+            OPTIONAL MATCH (caller:Function)-[cr:CALLS|RENDERS]->(target)
             OPTIONAL MATCH (caller)-[:DEFINED_IN]->(caller_file:File)
             RETURN target.qualified_name AS target,
                    labels(target)[0] AS target_type,
@@ -526,8 +563,9 @@ class QueryEngine:
         rec["direct_callers"] = [d["caller"] for d in details]
         rec["low_confidence_callers"] = [d["caller"] for d in details if d["confidence"] == "low"]
 
-        # Also get transitive callers (depth 2) for broader impact
-        transitive = self.get_callers(name, max_depth=3)
+        # Also get transitive callers (depth 3) for broader impact. Include RENDERS
+        # so a component's renderers count as affected by a change to it.
+        transitive = self.get_callers(name, max_depth=3, include_renders=True)
         rec["transitive_callers"] = [r["caller"] for r in transitive]
         # sorted(): set iteration order is nondeterministic — capping an unsorted
         # projection would return a different 25-file subset on every call.
@@ -1815,14 +1853,16 @@ class QueryEngine:
     # which edges appear in the output. P1/P2 add more views (see the spec).
     _VIZ_VIEW_EDGE_TYPES: dict[str, list[str]] = {
         "call_hierarchy": ["CALLS"],
-        "blast_radius": ["CALLS", "TESTS_FUNCTION", "HANDLES"],
-        "request_trace": ["HANDLES", "CALLS", "USES_MODEL", "CALLS_RPC"],
+        "blast_radius": ["CALLS", "RENDERS", "TESTS_FUNCTION", "HANDLES"],
+        "request_trace": ["HANDLES", "CALLS", "RENDERS", "USES_MODEL", "CALLS_RPC"],
+        "component_tree": ["RENDERS"],
     }
 
     _VIZ_LAYOUT_HINT: dict[str, str] = {
         "call_hierarchy": "dagre-tb",
         "blast_radius": "dagre-tb",
         "request_trace": "dagre-lr",
+        "component_tree": "dagre-tb",
     }
 
     # Anchor labels a view exists to show. These are typically LOW-degree (a Route
@@ -1833,6 +1873,7 @@ class QueryEngine:
         "request_trace": {"Route", "Model", "DBFunction"},
         "blast_radius": {"Route"},
         "call_hierarchy": set(),
+        "component_tree": set(),
     }
 
     # Per-label display-prop allowlist — keeps the payload lean. A node keeps only
@@ -1901,7 +1942,7 @@ class QueryEngine:
         """,
         "blast_radius": """
             MATCH (target:Function) WHERE target.id = $center OR target.qualified_name = $center
-            OPTIONAL MATCH (caller:Function)-[:CALLS*1..{depth}]->(target)
+            OPTIONAL MATCH (caller:Function)-[:CALLS|RENDERS*1..{depth}]->(target)
             OPTIONAL MATCH (tf:Function)-[:TESTS_FUNCTION]->(target)
             OPTIONAL MATCH (rt:Route)-[:HANDLES]->(target)
             WITH collect(DISTINCT target) + collect(DISTINCT caller) + collect(DISTINCT tf) + collect(DISTINCT rt) AS seeds
@@ -1911,11 +1952,18 @@ class QueryEngine:
             MATCH (rt:Route)-[:HANDLES]->(h:Function)
             WHERE ($center IS NULL OR rt.path = $center OR rt.id = $center)
             WITH rt, h LIMIT {route_cap}
-            OPTIONAL MATCH (h)-[:CALLS*0..{depth}]->(fn:Function)
+            OPTIONAL MATCH (h)-[:CALLS|RENDERS*0..{depth}]->(fn:Function)
             OPTIONAL MATCH (fn)-[:USES_MODEL]->(m:Model)
             OPTIONAL MATCH (fn)-[:CALLS_RPC]->(df:DBFunction)
             WITH collect(DISTINCT rt) + collect(DISTINCT h) + collect(DISTINCT fn)
                  + collect(DISTINCT m) + collect(DISTINCT df) AS seeds
+            UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
+        """,
+        "component_tree": """
+            MATCH (f) WHERE (f:Function OR f:Class) AND (f.id = $center OR f.qualified_name = $center)
+            OPTIONAL MATCH (f)-[:RENDERS*1..{depth}]->(child)
+            OPTIONAL MATCH (parent:Function)-[:RENDERS*1..{depth}]->(f)
+            WITH collect(DISTINCT f) + collect(DISTINCT child) + collect(DISTINCT parent) AS seeds
             UNWIND seeds AS n WITH collect(DISTINCT n) AS ns
         """,
     }

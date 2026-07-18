@@ -166,6 +166,7 @@ def test_cypher_method_executes(ctx: dict[str, Any], method_name: str) -> None:
         ("call_hierarchy", "func"),
         ("blast_radius", "func"),
         ("request_trace", None),  # all routes; empty on this fixture but must execute
+        ("component_tree", "func"),  # JSX render tree; empty on a Python fixture but must execute
     ],
 )
 def test_get_subgraph_view_executes(ctx: dict[str, Any], view: str, center_key: str | None) -> None:

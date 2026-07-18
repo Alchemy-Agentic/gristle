@@ -105,6 +105,10 @@ class IngestionPipeline:
         self._file_entities: dict[str, dict[str, str]] = {}
         # file_path -> {local_name -> node_id} (exported entities only)
         self._exported_file_entities: dict[str, dict[str, str]] = {}
+        # class node ids whose kind is a concrete "class" (React class components can
+        # render), NOT interface/type/enum. A JSX `<Foo/>` is never a TS type, so
+        # render resolution accepts a Class target only if it's in this set.
+        self._renderable_class_ids: set[str] = set()
         # Pre-built path resolution maps (populated during Phase 1)
         self._path_to_id: dict[str, str] = {}
         self._stem_to_id: dict[str, str] = {}
@@ -195,6 +199,7 @@ class IngestionPipeline:
         self._short_to_candidates.clear()
         self._file_entities.clear()
         self._exported_file_entities.clear()
+        self._renderable_class_ids.clear()
         self._path_to_id.clear()
         self._stem_to_id.clear()
         self._dir_index_to_id.clear()
@@ -499,6 +504,9 @@ class IngestionPipeline:
                 candidates.remove(node_id)
                 if not candidates:
                     del self._short_to_candidates[local_name]
+            # Drop any renderable-class membership so a class refactored into an
+            # interface/type/enum (same id, kind!='class') can't stay a render target.
+            self._renderable_class_ids.discard(node_id)
 
         # Remove test file tracking
         self._test_file_paths.discard(file_path)
@@ -841,6 +849,8 @@ class IngestionPipeline:
         self._qualified_map[cls.qualified_name] = class_id
         self._short_to_candidates.setdefault(cls.name, []).append(class_id)
         self._file_entities.setdefault(cls.file_path, {})[cls.name] = class_id
+        if cls.kind == "class":
+            self._renderable_class_ids.add(class_id)
         if cls.is_exported:
             self._exported_file_entities.setdefault(cls.file_path, {})[cls.name] = class_id
 
@@ -1478,6 +1488,21 @@ class IngestionPipeline:
         for callee_id, method in best.items():
             batch.add_merge_relationship("CALLS", caller_id, callee_id, {"resolution": method})
 
+        # RENDERS: JSX `<Foo/>` renders -> the component Function/Class. De-conflated
+        # from CALLS. Resolved to a component node only (never a shadowing Variable).
+        rendered: dict[str, str] = {}
+        for comp_name in func.renders:
+            match = self._find_render_target(comp_name, func, pf)
+            if match is None:
+                continue
+            target_id, method = match
+            if target_id == caller_id:
+                continue  # a component doesn't render itself; skip self-loops
+            if target_id not in rendered or self._RESOLUTION_RANK[method] > self._RESOLUTION_RANK[rendered[target_id]]:
+                rendered[target_id] = method
+        for target_id, method in rendered.items():
+            batch.add_merge_relationship("RENDERS", caller_id, target_id, {"resolution": method})
+
         # Resolve callback/handler references -> PASSED_TO edges
         for ref_name, context in func.callback_refs:
             match = self._find_callee(ref_name, func, pf)
@@ -1582,6 +1607,59 @@ class IngestionPipeline:
         # 6. Single-candidate short name (only if unambiguous)
         candidates = self._short_to_candidates.get(call_name)
         if candidates and len(candidates) == 1:
+            return candidates[0], "unique_global"
+
+        return None
+
+    def _is_component_node(self, node_id: str) -> bool:
+        """A render target must be a component: a Function, or a concrete Class (a
+        React class component). Never a Variable, and never a TS interface/type/enum
+        (a `<Foo/>` cannot be a type — that would mis-resolve `<Route/>` to a local
+        `type Route`)."""
+        if node_id.startswith("func::"):
+            return True
+        if node_id.startswith("class::"):
+            return node_id in self._renderable_class_ids
+        return False
+
+    def _find_render_target(
+        self,
+        name: str,
+        caller: ParsedFunction,
+        context_file: ParsedFile,
+    ) -> tuple[str, str] | None:
+        """Resolve a JSX-rendered component name to a component ``(node_id, method)``.
+
+        Renders point at a component (Function/Class), never a Variable. This
+        deliberately SKIPS the file-scoped qualified match that :meth:`_find_callee`
+        uses first, because a lazy ``const X = lazy(() => import('./X'))`` creates a
+        shadowing Variable ``file::X`` in the rendering file — the file-scoped match
+        would bind the render to that dead variable instead of the real component.
+        Instead it resolves via the import map (the wildcard import a dynamic
+        ``import()`` produces already carries the real component), same-file
+        components, and an unambiguous global name.
+        """
+        # 1. Import-aware: explicit static import, or the wildcard import produced by
+        #    a lazy `import('./X')` — both map the name to the real component.
+        imported = self._get_imported_entities(context_file)
+        tid = imported.get(name)
+        if tid and self._is_component_node(tid):
+            return tid, "import"
+
+        # 2. Namespaced component `<NS.Member/>` (e.g. `<Tabs.Trigger/>`).
+        if "." in name:
+            result = self._resolve_dotted_call(name, caller, context_file, allow_method_fallback=False)
+            if result and self._is_component_node(result):
+                return result, "dotted"
+
+        # 3. Same-file component definition.
+        tid = self._file_entities.get(context_file.path, {}).get(name)
+        if tid and self._is_component_node(tid):
+            return tid, "same_file"
+
+        # 4. Unambiguous global: exactly one component with this name repo-wide.
+        candidates = [c for c in self._short_to_candidates.get(name, []) if self._is_component_node(c)]
+        if len(candidates) == 1:
             return candidates[0], "unique_global"
 
         return None
@@ -1952,23 +2030,32 @@ class IngestionPipeline:
         ext_map: dict[str, str],
         batch: BatchCollector,
     ) -> None:
-        """Check each call in a function against external imports."""
+        """Check each call/render in a function against external imports."""
         caller_id = f"func::{func.qualified_name}"
         seen_deps: set[str] = set()
+
+        def link(name: str, dep_id: str | None) -> None:
+            if dep_id and dep_id not in seen_deps:
+                seen_deps.add(dep_id)
+                batch.add_merge_relationship("USES_DEPENDENCY", caller_id, dep_id)
 
         for call_name in func.calls:
             # Skip calls that resolved to internal entities
             if self._find_callee(call_name, func, context_file):
                 continue
-
-            # Check bare name against external imports
             bare = call_name.split(".")[-1] if "." in call_name else call_name
             obj = call_name.split(".")[0] if "." in call_name else call_name
+            link(call_name, ext_map.get(bare) or ext_map.get(obj))
 
-            dep_id = ext_map.get(bare) or ext_map.get(obj)
-            if dep_id and dep_id not in seen_deps:
-                seen_deps.add(dep_id)
-                batch.add_merge_relationship("USES_DEPENDENCY", caller_id, dep_id)
+        # Render-only usage of a package: `import { Button } from '@mui/material'`
+        # consumed purely as `<Button/>` (never called). The JSX tag is in `renders`,
+        # not `calls`, so link it to the dependency too (unresolved => external).
+        for comp_name in func.renders:
+            if self._find_render_target(comp_name, func, context_file):
+                continue
+            bare = comp_name.split(".")[-1] if "." in comp_name else comp_name
+            obj = comp_name.split(".")[0] if "." in comp_name else comp_name
+            link(comp_name, ext_map.get(bare) or ext_map.get(obj))
 
     def _resolve_base(self, base_name: str, context_file: ParsedFile) -> str | None:
         """Resolve a base/extends name to a known class node ID.

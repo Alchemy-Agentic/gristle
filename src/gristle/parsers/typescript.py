@@ -616,6 +616,7 @@ class TypeScriptParser(LanguageParser):
         qualified = f"{file_path}::{class_name}.{name}"
 
         calls = self._extract_calls(body, src) if body else []
+        renders = self._extract_renders(body, src) if body else []
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
         raises, catches = self._extract_error_flow(body, src) if body else ([], [])
@@ -635,6 +636,7 @@ class TypeScriptParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            renders=renders,
             calls_with_args=calls_with_args,
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
@@ -694,6 +696,7 @@ class TypeScriptParser(LanguageParser):
         sig = f"{'async ' if is_async else ''}function {name}{params_text}{f': {return_text}' if return_text else ''}"
 
         calls = self._extract_calls(body, src) if body else []
+        renders = self._extract_renders(body, src) if body else []
         calls_with_args = self._extract_call_arg_refs(body, src) if body else []
         callback_refs = self._extract_callback_refs(body, src) if body else []
         raises, catches = self._extract_error_flow(body, src) if body else ([], [])
@@ -712,6 +715,7 @@ class TypeScriptParser(LanguageParser):
             return_type=return_text,
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=calls,
+            renders=renders,
             calls_with_args=calls_with_args,
             callback_refs=callback_refs,
             parameters=[p[0] for p in typed_params],
@@ -749,6 +753,7 @@ class TypeScriptParser(LanguageParser):
                 )
 
                 calls = self._extract_calls(body, src) if body else []
+                renders = self._extract_renders(body, src) if body else []
                 calls_with_args = self._extract_call_arg_refs(body, src) if body else []
                 callback_refs = self._extract_callback_refs(body, src) if body else []
                 raises, catches = self._extract_error_flow(body, src) if body else ([], [])
@@ -767,6 +772,7 @@ class TypeScriptParser(LanguageParser):
                     return_type=return_text,
                     complexity=self._cyclomatic_complexity(body) if body else 1,
                     calls=calls,
+                    renders=renders,
                     calls_with_args=calls_with_args,
                     callback_refs=callback_refs,
                     parameters=[p[0] for p in typed_params],
@@ -994,16 +1000,38 @@ class TypeScriptParser(LanguageParser):
                 call_name = self._resolve_call_name(func_node, src)
                 if call_name:
                     out.append(call_name)
-        # JSX elements are component calls
+        for child in node.children:
+            self._walk_calls(child, src, out)
+
+    def _extract_renders(self, node: Node, src: bytes) -> list[str]:
+        """Component names rendered as JSX in a function body (de-conflated from calls).
+
+        A ``<Foo/>`` is a render, not a call, so it is tracked separately and
+        resolved to a RENDERS edge. Only PascalCase tags are custom components;
+        lowercase tags are HTML/host elements and are ignored.
+        """
+        renders: list[str] = []
+        self._walk_renders(node, src, renders)
+        seen: set[str] = set()
+        unique: list[str] = []
+        for r in renders:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    def _walk_renders(self, node: Node, src: bytes, out: list[str]) -> None:
         if node.type in ("jsx_self_closing_element", "jsx_opening_element"):
             tag = node.child_by_field_name("name")
             if tag:
                 tag_text = self._text(tag, src)
-                # Only capture PascalCase (custom components), not HTML tags
+                # Only capture PascalCase custom components (`<Foo/>`, `<Foo.Bar/>`),
+                # not HTML host tags (`<div>`) or member tags on a lowercase base
+                # (`<motion.div>`), which start lowercase.
                 if tag_text and tag_text[0].isupper():
                     out.append(tag_text)
         for child in node.children:
-            self._walk_calls(child, src, out)
+            self._walk_renders(child, src, out)
 
     def _resolve_call_name(self, node: Node, src: bytes) -> str | None:
         if node.type == "identifier":
@@ -2147,6 +2175,7 @@ class TypeScriptParser(LanguageParser):
             visibility="public",
             complexity=self._cyclomatic_complexity(body) if body else 1,
             calls=self._extract_calls(body, src) if body else [],
+            renders=self._extract_renders(body, src) if body else [],
             calls_with_args=self._extract_call_arg_refs(body, src) if body else [],
         )
 

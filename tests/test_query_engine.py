@@ -24,6 +24,20 @@ def _empty() -> QueryResult:
     return _qr([])
 
 
+def _ctx_effect(
+    main_rec: dict[str, Any],
+    renders: list[str] | None = None,
+    rendered_by: list[str] | None = None,
+) -> list[QueryResult]:
+    """execute() side_effect for get_function_context: the main record query,
+    then the separate `renders` and `rendered_by` component-edge queries."""
+    return [
+        _qr([main_rec]),
+        _qr([{"n": r} for r in (renders or [])]),
+        _qr([{"n": r} for r in (rendered_by or [])]),
+    ]
+
+
 def _make_engine(execute_side_effect=None, repo_path=None) -> tuple[QueryEngine, MagicMock]:
     """Create a QueryEngine with a mock graph client."""
     graph = MagicMock()
@@ -63,11 +77,56 @@ class TestGetFunctionContext:
             "callee_details": [{"name": "baz", "resolution": "same_file"}],
         }
         engine, graph = _make_engine()
-        graph.execute.return_value = _qr([rec])
+        graph.execute.side_effect = _ctx_effect(rec, renders=["mod.Child"], rendered_by=["mod.Parent"])
         result = engine.get_function_context("foo", include_source=False)
         assert result["qualified_name"] == "mod.foo"
         assert result["callers"] == ["bar"]  # derived from the details
         assert result["callees"] == ["baz"]
+        assert result["renders"] == ["mod.Child"]
+        assert result["rendered_by"] == ["mod.Parent"]
+
+    def test_render_queries_scoped_to_qualified_name_and_allow_class(self):
+        # Render queries must key off THIS function's qualified_name (not the bare,
+        # possibly-ambiguous input) and allow a Class child (React class component).
+        rec = {
+            "qualified_name": "ui/Card.tsx::Card",
+            "name": "Card",
+            "signature": "() => JSX",
+            "docstring": None,
+            "start_line": 1,
+            "end_line": 2,
+            "is_async": False,
+            "complexity": 1,
+            "decorators": None,
+            "visibility": "public",
+            "return_type": None,
+            "file_path": "ui/Card.tsx",
+            "class_name": None,
+            "caller_details": [],
+            "callee_details": [],
+        }
+        engine, graph = _make_engine()
+        graph.execute.side_effect = _ctx_effect(rec)
+        engine.get_function_context("Card", include_source=False)
+        renders_call = graph.execute.call_args_list[1]  # [0]=main, [1]=renders, [2]=rendered_by
+        assert renders_call.args[1] == {"qn": "ui/Card.tsx::Card"}  # scoped, not bare "Card"
+        assert "->(child)" in renders_call.args[0]  # untyped child so a :Class target is included
+        assert "child:Function" not in renders_call.args[0]
+
+    def test_resolution_details_dedupes_by_name_keeping_best_confidence(self):
+        # A caller reached by both CALLS and RENDERS yields two maps with different
+        # resolution; they must collapse to one row (best confidence), or impact
+        # double-counts and inflates the blast-radius score.
+        engine, _ = _make_engine()
+        entries = [
+            {"name": "mod.Widget", "resolution": "same_file"},  # low
+            {"name": "mod.Widget", "resolution": "import"},  # medium — should win
+        ]
+        out = engine._resolution_details(entries, "caller")
+        assert len(out) == 1
+        assert out[0]["caller"] == "mod.Widget"
+        assert out[0]["resolution"] == "import"
+        assert out[0]["confidence"] == "medium"
 
     def test_includes_source_when_repo_path_set(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -94,7 +153,7 @@ class TestGetFunctionContext:
                 "callees": [],
             }
             engine, graph = _make_engine(repo_path=tmpdir)
-            graph.execute.return_value = _qr([rec])
+            graph.execute.side_effect = _ctx_effect(rec)
             result = engine.get_function_context("foo", include_source=True)
             assert result["source_code"] is not None
             assert "line 3" in result["source_code"]
@@ -120,7 +179,7 @@ class TestGetFunctionContext:
             "callee_details": [{"name": "mod.baz", "resolution": "unique_global"}],
         }
         engine, graph = _make_engine()
-        graph.execute.return_value = _qr([rec])
+        graph.execute.side_effect = _ctx_effect(rec)
         result = engine.get_function_context("foo", include_source=False)
 
         assert result["callers"] == ["mod.bar"]  # plain lists unchanged
@@ -149,11 +208,13 @@ class TestGetFunctionContext:
             "callee_details": [{"name": None, "resolution": None}],
         }
         engine, graph = _make_engine()
-        graph.execute.return_value = _qr([rec])
+        graph.execute.side_effect = _ctx_effect(rec)
         result = engine.get_function_context("orphan", include_source=False)
 
         assert result["callers_detail"] == []
         assert result["callees_detail"] == []
+        assert result["renders"] == []
+        assert result["rendered_by"] == []
 
     def test_no_source_when_include_source_false(self):
         engine, graph = _make_engine(repo_path="/some/path")
@@ -174,7 +235,7 @@ class TestGetFunctionContext:
             "callers": [],
             "callees": [],
         }
-        graph.execute.return_value = _qr([rec])
+        graph.execute.side_effect = _ctx_effect(rec)
         result = engine.get_function_context("f", include_source=False)
         assert "source_code" not in result
 
@@ -341,6 +402,22 @@ class TestGetCallers:
         engine, graph = _make_engine()
         graph.execute.return_value = _empty()
         assert engine.get_callers("isolated") == []
+
+    def test_pure_callers_traverse_only_calls(self):
+        engine, graph = _make_engine()
+        graph.execute.return_value = _empty()
+        engine.get_callers("foo")
+        query = graph.execute.call_args.args[0]
+        assert "CALLS*" in query
+        assert "RENDERS" not in query
+
+    def test_include_renders_traverses_calls_and_renders(self):
+        # Impact analysis needs a component's JSX renderers to count as dependents.
+        engine, graph = _make_engine()
+        graph.execute.return_value = _empty()
+        engine.get_callers("MyComponent", include_renders=True)
+        query = graph.execute.call_args.args[0]
+        assert "CALLS|RENDERS*" in query
 
     def test_surfaces_weakest_link_confidence(self):
         # One caller reachable by two routes: a 2-hop route whose weakest edge is
@@ -674,7 +751,7 @@ class TestOutputCaps:
             "callee_details": [],
         }
         engine, graph = _make_engine()
-        graph.execute.return_value = _qr([rec])
+        graph.execute.side_effect = _ctx_effect(rec)
 
         out = engine.get_function_context("hub", include_source=False)
         assert len(out["callers"]) == QueryEngine._LIST_CAP

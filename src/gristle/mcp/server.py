@@ -1383,7 +1383,7 @@ async def gristle_db_functions(repo_id: str | None = None) -> dict:
 
 @mcp.tool()
 async def gristle_subgraph(
-    view: Literal["call_hierarchy", "blast_radius", "request_trace"],
+    view: Literal["call_hierarchy", "blast_radius", "request_trace", "component_tree"],
     center: str | None = None,
     depth: int = 2,
     edge_types: list[str] | None = None,
@@ -1401,7 +1401,12 @@ async def gristle_subgraph(
     - request_trace  — HTTP route -> handler -> functions -> DB (table models AND
                        stored-procedure DBFunctions via CALLS_RPC), end to end
                        (center optional: a route path/id, or omit for all routes;
-                       pass models_only=true to prune to just the route->DB paths)
+                       pass models_only=true to prune to just the route->DB paths).
+                       Follows JSX RENDERS too, so a page component traces through
+                       the child components it renders down to their data access.
+    - component_tree — the JSX render tree around a component X: what X renders
+                       (children, transitively) and what renders X (parents). Center
+                       required — a component function id or qualified_name.
 
     Each node carries {id, label, props}; each edge {source, target, type} plus
     edge metadata where it applies (CALLS `resolution` confidence, USES_MODEL

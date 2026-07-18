@@ -235,12 +235,38 @@ class TestCallExtraction:
         assert "console.log" in result.functions[0].calls
         assert "api.fetch" in result.functions[0].calls
 
-    def test_extracts_jsx_component_calls(self):
+    def test_jsx_renders_are_deconflated_from_calls(self):
+        # A `<Foo/>` is a render, not a call: it lands in `renders`, never `calls`.
         parser = TypeScriptParser()
         code = "function App() {\n  return <div><Header /><Footer /></div>;\n}\n"
         result = parser.parse_file("test.tsx", code)
-        assert "Header" in result.functions[0].calls
-        assert "Footer" in result.functions[0].calls
+        app = result.functions[0]
+        assert "Header" in app.renders
+        assert "Footer" in app.renders
+        assert "Header" not in app.calls
+        assert "Footer" not in app.calls
+
+    def test_renders_exclude_html_and_lowercase_member_tags(self):
+        # Host/HTML tags (`<div>`) and lowercase-base member tags (`<motion.div>`)
+        # are not custom components and must not be recorded as renders.
+        parser = TypeScriptParser()
+        code = "function App() {\n  return <div><span /><motion.div /><Card /></div>;\n}\n"
+        app = parser.parse_file("test.tsx", code).functions[0]
+        assert app.renders == ["Card"]
+
+    def test_renders_capture_namespaced_component(self):
+        # `<Tabs.Trigger/>` is a namespaced custom component (PascalCase base).
+        parser = TypeScriptParser()
+        code = "function App() {\n  return <Tabs><Tabs.Trigger /></Tabs>;\n}\n"
+        app = parser.parse_file("test.tsx", code).functions[0]
+        assert "Tabs" in app.renders
+        assert "Tabs.Trigger" in app.renders
+
+    def test_renders_deduplicated(self):
+        parser = TypeScriptParser()
+        code = "function List() {\n  return <div><Row /><Row /><Row /></div>;\n}\n"
+        app = parser.parse_file("test.tsx", code).functions[0]
+        assert app.renders.count("Row") == 1
 
     def test_deduplicates_calls(self):
         parser = TypeScriptParser()

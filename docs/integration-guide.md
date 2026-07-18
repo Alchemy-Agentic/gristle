@@ -72,7 +72,8 @@ This clones the repo and runs full ingestion in one step.
 | `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase, Variable, Model | Container relationship |
 | `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
 | `EXPORTS` | File | Function, Class, Variable | Module exports |
-| `CALLS` | Function | Function | Function call. Carries a `resolution` property recording how the callee was resolved, by confidence: `exact` / `file_scoped` / `import` / `typed_receiver` / `dotted` / `same_file` / `unique_global` — lets consumers weight or filter by reliability |
+| `CALLS` | Function | Function | Function call. Carries a `resolution` property recording how the callee was resolved, by confidence: `exact` / `file_scoped` / `import` / `typed_receiver` / `dotted` / `same_file` / `unique_global` — lets consumers weight or filter by reliability. JSX renders are **not** CALLS — see `RENDERS` |
+| `RENDERS` | Function | Function, Class | JSX component render (`<Foo/>` in a component's body → `Foo`). De-conflated from `CALLS` so the call graph and the render tree stay separate — a `<Foo/>` never appears as a CALLS edge. Targets a component only: a `Function`, or a concrete `Class` (a React class component), never a `Variable` or a TS interface/type/enum. Carries a `resolution` confidence like CALLS. Resolves lazy/dynamic-imported components (`const X = lazy(() => import('./X'))`) to the real component, not the local lazy binding. Query the render tree with the `component_tree` subgraph view |
 | `PASSED_TO` | Function | Function | Function reference passed as argument (with `context` property: middleware, route_handler, callback, array_method, argument, jsx_callback) |
 | `USES_HOOK` | Function | Function | React hook usage (subset of CALLS) |
 | `RAISES` | Function | Class | Function raises/throws a locally-defined exception class (Python `raise`, JS/TS `throw new`). Builtin/library exceptions (no Class node) stay in the function's `raises` property |
@@ -847,8 +848,9 @@ gristle_subgraph(view="blast_radius", center="UserService.save")
 | `view` | Answers | Traverses |
 |--------|---------|-----------|
 | `call_hierarchy` | Who calls X, and what X calls (transitively)? | `CALLS` |
-| `blast_radius` | What breaks if X changes? (callers + covering tests + routes) | `CALLS`, `TESTS_FUNCTION`, `HANDLES` |
-| `request_trace` | How does a request flow route → handler → functions → DB model? | `HANDLES`, `CALLS`, `USES_MODEL` |
+| `blast_radius` | What breaks if X changes? (callers + renderers + covering tests + routes) | `CALLS`, `RENDERS`, `TESTS_FUNCTION`, `HANDLES` |
+| `request_trace` | How does a request flow route → handler → functions → DB model? (crosses JSX renders, so a page component reaches its children's data access) | `HANDLES`, `CALLS`, `RENDERS`, `USES_MODEL`, `CALLS_RPC` |
+| `component_tree` | The JSX render tree around a component X: what X renders (children) and what renders X (parents), transitively | `RENDERS` |
 
 `center` accepts a business `id` (`func::…`) or a `qualified_name` (a route `path`
 or `id` for `request_trace`; omit it to get all routes). `depth` is clamped to

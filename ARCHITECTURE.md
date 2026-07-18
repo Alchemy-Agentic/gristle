@@ -416,6 +416,7 @@ This phase creates all relationship edges that require cross-file knowledge:
 1. **Detect Python source roots** (e.g., `src/`, `lib/`) for module path resolution.
 2. **Register stripped module keys** so `from mypackage.utils import x` resolves correctly.
 3. **Resolve CALLS edges** for every function's `calls` list using a 6-step strategy (see below).
+3b. **Resolve RENDERS edges** for every function's `renders` list (JSX `<Foo/>` components, de-conflated from `calls` — a render is not a call). Resolution accepts a **component** target only (a `Function`, or a concrete `Class` for a React class component) — never a `Variable` or a TS interface/type/enum. It deliberately skips the file-scoped match `_find_callee` uses first, because a lazy `const X = lazy(() => import('./X'))` creates a shadowing `Variable X` in the rendering file; the render must bind the real component (via the import map, same-file, or an unambiguous global name) instead of the dead local binding.
 4. **Resolve PASSED_TO edges** for every function's `callback_refs` list using the same 6-step resolution. Each edge carries a `context` property (middleware, route_handler, callback, array_method, argument). Target functions are marked `is_callback=true` via batch update.
 5. **Resolve INHERITS_FROM edges** between classes, populating `_class_bases` for MRO walking.
 6. **Resolve IMPORTS edges** (File -> File) based on import statements. Each import is tracked as `resolved=True` (internal) or `resolved=False` (external/unresolved).

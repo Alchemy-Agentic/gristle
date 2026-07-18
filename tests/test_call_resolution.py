@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.pipeline import IngestionPipeline, IngestionResult
-from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport
+from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedVariable
 
 
 def _make_graph_mock() -> MagicMock:
@@ -62,6 +62,7 @@ def _make_func(
     is_fixture: bool = False,
     parameters: list[str] | None = None,
     typed_parameters: list[tuple[str, str | None]] | None = None,
+    renders: list[str] | None = None,
 ) -> ParsedFunction:
     qn = qualified_name or f"{file_path}::{name}"
     return ParsedFunction(
@@ -77,6 +78,7 @@ def _make_func(
         is_fixture=is_fixture,
         parameters=parameters or [],
         typed_parameters=typed_parameters or [],
+        renders=renders or [],
     )
 
 
@@ -86,6 +88,7 @@ def _make_class(
     methods: list[ParsedFunction] | None = None,
     is_exported: bool = False,
     bases: list[str] | None = None,
+    kind: str = "class",
 ) -> ParsedClass:
     return ParsedClass(
         name=name,
@@ -97,6 +100,20 @@ def _make_class(
         methods=methods or [],
         is_exported=is_exported,
         bases=bases or [],
+        kind=kind,
+    )
+
+
+def _make_variable(name: str, file_path: str, is_exported: bool = False) -> ParsedVariable:
+    return ParsedVariable(
+        name=name,
+        qualified_name=f"{file_path}::{name}",
+        file_path=file_path,
+        start_line=1,
+        end_line=1,
+        kind="const",
+        is_exported=is_exported,
+        value_kind="call",
     )
 
 
@@ -107,6 +124,7 @@ def _make_file(
     classes: list[ParsedClass] | None = None,
     imports: list[ParsedImport] | None = None,
     is_test_file: bool = False,
+    variables: list[ParsedVariable] | None = None,
 ) -> ParsedFile:
     return ParsedFile(
         path=path,
@@ -116,6 +134,7 @@ def _make_file(
         imports=imports or [],
         line_count=100,
         is_test_file=is_test_file,
+        variables=variables or [],
     )
 
 
@@ -641,6 +660,17 @@ class TestDependencyUsageEdges:
         assert result.dependencies_found == 1
         rels = _extract_batch_merge_rels(pipeline.graph)
         assert ("func::src/cache.ts::initCache", "dep::redis", "USES_DEPENDENCY") in rels
+
+    def test_render_only_external_component_gets_dep_edge(self):
+        """A package consumed purely as JSX (`<Button/>`, never called) still links."""
+        imp = _make_import("@mui/material", imported_names=["Button"], is_relative=False)
+        comp = _make_func("Toolbar", "src/Toolbar.tsx", renders=["Button"])
+        toolbar_file = _make_file("src/Toolbar.tsx", functions=[comp], imports=[imp])
+
+        pipeline, result = self._run_dependency_resolution([toolbar_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert ("func::src/Toolbar.tsx::Toolbar", "dep::@mui/material", "USES_DEPENDENCY") in rels
 
     def test_function_calling_internal_gets_no_dep_edge(self):
         """A function calling an internal function should NOT create USES_DEPENDENCY."""
@@ -2587,3 +2617,114 @@ class TestUsesVariable:
         pipeline = _setup_pipeline_with_resolution([api_file])
         uses = [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "USES_VARIABLE"]
         assert uses == []
+
+
+class TestRenderResolution:
+    """JSX `<Foo/>` renders resolve to a component via a RENDERS edge (not CALLS),
+    targeting a Function/concrete-Class only — never a Variable or a TS type."""
+
+    def _renders(self, pipeline: IngestionPipeline) -> list[tuple[str, str, str]]:
+        return [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "RENDERS"]
+
+    def _calls(self, pipeline: IngestionPipeline) -> list[tuple[str, str, str]]:
+        return [r for r in _extract_batch_merge_rels(pipeline.graph) if r[2] == "CALLS"]
+
+    def test_render_resolves_static_import(self):
+        child = _make_func("Child", "src/Child.tsx", is_exported=True)
+        parent = _make_func("Parent", "src/Parent.tsx", renders=["Child"])
+        child_file = _make_file("src/Child.tsx", functions=[child])
+        parent_file = _make_file("src/Parent.tsx", functions=[parent], imports=[_make_import("./Child", ["Child"])])
+        pipeline = _setup_pipeline_with_resolution([child_file, parent_file])
+        assert ("func::src/Parent.tsx::Parent", "func::src/Child.tsx::Child", "RENDERS") in self._renders(pipeline)
+
+    def test_render_creates_no_calls_edge(self):
+        # De-conflation: a render is a RENDERS edge, never a CALLS edge.
+        child = _make_func("Child", "src/Child.tsx", is_exported=True)
+        parent = _make_func("Parent", "src/Parent.tsx", renders=["Child"])
+        child_file = _make_file("src/Child.tsx", functions=[child])
+        parent_file = _make_file("src/Parent.tsx", functions=[parent], imports=[_make_import("./Child", ["Child"])])
+        pipeline = _setup_pipeline_with_resolution([child_file, parent_file])
+        assert ("func::src/Parent.tsx::Parent", "func::src/Child.tsx::Child", "CALLS") not in self._calls(pipeline)
+
+    def test_render_resolves_same_file_component(self):
+        child = _make_func("Row", "src/Table.tsx")
+        parent = _make_func("Table", "src/Table.tsx", renders=["Row"])
+        f = _make_file("src/Table.tsx", functions=[child, parent])
+        pipeline = _setup_pipeline_with_resolution([f])
+        assert ("func::src/Table.tsx::Table", "func::src/Table.tsx::Row", "RENDERS") in self._renders(pipeline)
+
+    def test_render_resolves_unique_global(self):
+        # No import, but exactly one component with that name repo-wide.
+        child = _make_func("Widget", "src/Widget.tsx")
+        parent = _make_func("Page", "src/Page.tsx", renders=["Widget"])
+        pipeline = _setup_pipeline_with_resolution(
+            [_make_file("src/Widget.tsx", functions=[child]), _make_file("src/Page.tsx", functions=[parent])]
+        )
+        assert ("func::src/Page.tsx::Page", "func::src/Widget.tsx::Widget", "RENDERS") in self._renders(pipeline)
+
+    def test_render_skips_lazy_variable_shadow(self):
+        # `const Panel = lazy(() => import('./Panel'))` makes a Variable that shadows
+        # the real component in the rendering file. The render must skip it and bind
+        # to the component Function.
+        component = _make_func("Panel", "src/Panel.tsx")
+        shadow = _make_variable("Panel", "src/Home.tsx")
+        home = _make_func("Home", "src/Home.tsx", renders=["Panel"])
+        pipeline = _setup_pipeline_with_resolution(
+            [
+                _make_file("src/Panel.tsx", functions=[component]),
+                _make_file("src/Home.tsx", functions=[home], variables=[shadow]),
+            ]
+        )
+        renders = self._renders(pipeline)
+        assert ("func::src/Home.tsx::Home", "func::src/Panel.tsx::Panel", "RENDERS") in renders
+        # never binds the render to the shadowing Variable
+        assert not any(to_id.startswith("var::") for _, to_id, _ in renders)
+
+    def test_render_rejects_interface_and_type(self):
+        # `<Route/>` must NOT resolve to a local `type Route` / `interface Foo`.
+        route_type = _make_class("Route", "src/types.ts", kind="type")
+        page = _make_func("App", "src/App.tsx", renders=["Route"])
+        pipeline = _setup_pipeline_with_resolution(
+            [_make_file("src/types.ts", classes=[route_type]), _make_file("src/App.tsx", functions=[page])]
+        )
+        assert self._renders(pipeline) == []
+
+    def test_render_resolves_class_component(self):
+        # A concrete class (kind='class') IS a valid render target (React class component).
+        boundary = _make_class("ErrorBoundary", "src/ErrorBoundary.tsx", kind="class")
+        page = _make_func("App", "src/App.tsx", renders=["ErrorBoundary"])
+        pipeline = _setup_pipeline_with_resolution(
+            [_make_file("src/ErrorBoundary.tsx", classes=[boundary]), _make_file("src/App.tsx", functions=[page])]
+        )
+        assert (
+            "func::src/App.tsx::App",
+            "class::src/ErrorBoundary.tsx::ErrorBoundary",
+            "RENDERS",
+        ) in self._renders(pipeline)
+
+    def test_self_render_skipped(self):
+        # A recursive component that renders itself gets no self-loop.
+        tree = _make_func("Tree", "src/Tree.tsx", renders=["Tree"])
+        pipeline = _setup_pipeline_with_resolution([_make_file("src/Tree.tsx", functions=[tree])])
+        assert self._renders(pipeline) == []
+
+    def test_purge_discards_renderable_class_id(self):
+        # A class component refactored into an interface/type of the same name must
+        # not keep a stale 'renderable' entry (else RENDERS would target a TS type).
+        boundary = _make_class("ErrorBoundary", "src/EB.tsx", kind="class")
+        pipeline = _setup_pipeline([_make_file("src/EB.tsx", classes=[boundary])])
+        assert "class::src/EB.tsx::ErrorBoundary" in pipeline._renderable_class_ids
+        pipeline._purge_maps_for_file("src/EB.tsx")
+        assert "class::src/EB.tsx::ErrorBoundary" not in pipeline._renderable_class_ids
+
+    def test_render_resolution_rejects_stale_then_reinterface(self):
+        # After purge, a same-named interface (kind='interface', same node id) is NOT
+        # a renderable target.
+        boundary = _make_class("Panel", "src/Panel.tsx", kind="class")
+        pipeline = _setup_pipeline([_make_file("src/Panel.tsx", classes=[boundary])])
+        pipeline._purge_maps_for_file("src/Panel.tsx")
+        iface = _make_class("Panel", "src/Panel.tsx", kind="interface")
+        pipeline._build_class("file::src/Panel.tsx", iface, MagicMock())
+        assert "class::src/Panel.tsx::Panel" not in pipeline._renderable_class_ids
+        page = _make_func("App", "src/App.tsx", renders=["Panel"])
+        assert pipeline._find_render_target("Panel", page, _make_file("src/App.tsx", functions=[page])) is None

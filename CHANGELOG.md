@@ -6,6 +6,33 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **JSX component rendering is now a first-class `RENDERS` edge.** A `<Foo/>` in a
+  component's body creates `Function-[:RENDERS]->Function|Class` to the rendered
+  component, so the frontend component tree is finally connected in the graph.
+  Resolution targets a **component** only (a `Function`, or a concrete `Class` for a
+  React class component) — never a `Variable` or a TS interface/type/enum. Crucially
+  it resolves **lazy/dynamic-imported** components (`const X = lazy(() => import('./X'))`),
+  which previously left every code-split panel islanded. New `component_tree`
+  subgraph view (`gristle_subgraph(view="component_tree", center=...)`) walks the
+  render tree both directions (what X renders / what renders X). `gristle_explore`
+  on a component now returns `renders` and `rendered_by`; impact/blast-radius count a
+  component's renderers as dependents; `request_trace` crosses renders so a page
+  component reaches its children's data access. On a real app (2,917 files) this
+  added 2,325 RENDERS edges and reconnected ~80 previously-islanded components
+  (islanded app components 248 → 169).
+
+### Changed (breaking for raw-Cypher consumers)
+- **A JSX `<Foo/>` is no longer a `CALLS` edge — it is a `RENDERS` edge.** Renders
+  were previously conflated into `CALLS` (a component render appeared as a call).
+  They are now de-conflated: `CALLS` is the call graph, `RENDERS` is the render tree.
+  Queries that relied on `(:Function)-[:CALLS]->(:Function)` reaching a rendered
+  child component must add `|RENDERS` to the relationship pattern (e.g.
+  `-[:CALLS|RENDERS]->`). Gristle's own traversal tools (`gristle_impact`,
+  `gristle_change_impact`, `blast_radius`/`request_trace` subgraphs) were updated to
+  traverse both, so their results do not regress; `gristle_callers`/`gristle_callees`
+  stay pure call-graph by design.
+
 ## [0.7.0] - 2026-07-17
 
 ### Added

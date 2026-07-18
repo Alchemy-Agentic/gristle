@@ -87,12 +87,25 @@ class TestSubgraphQuery:
         engine, graph = _make_engine(_qr([{"nodes": [], "edges": []}]))
         engine.get_subgraph("blast_radius", center="func::x")
         params = graph.execute.call_args.args[1]
-        assert params["edge_types"] == ["CALLS", "TESTS_FUNCTION", "HANDLES"]
+        assert params["edge_types"] == ["CALLS", "RENDERS", "TESTS_FUNCTION", "HANDLES"]
 
     def test_edge_types_override_respected(self):
         engine, graph = _make_engine(_qr([{"nodes": [], "edges": []}]))
         engine.get_subgraph("request_trace", center=None, edge_types=["HANDLES"])
         assert graph.execute.call_args.args[1]["edge_types"] == ["HANDLES"]
+
+    def test_component_tree_view_uses_renders(self):
+        engine, graph = _make_engine(_qr([{"nodes": [], "edges": []}]))
+        engine.get_subgraph("component_tree", center="func::App.tsx::App")
+        query = graph.execute.call_args.args[0]
+        assert "RENDERS" in query
+        assert graph.execute.call_args.args[1]["edge_types"] == ["RENDERS"]
+
+    def test_request_trace_traverses_renders(self):
+        # The frontend story: a page component traces through its rendered children.
+        engine, graph = _make_engine(_qr([{"nodes": [], "edges": []}]))
+        engine.get_subgraph("request_trace", center=None)
+        assert "CALLS|RENDERS" in graph.execute.call_args.args[0]
 
 
 # ======================================================================

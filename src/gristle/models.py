@@ -83,6 +83,10 @@ class ParsedFunction:
     # model passed as an argument (the model name is dropped from `calls`, which
     # keeps only the callee name). Consumed in-memory by SchemaExtractor.
     calls_with_args: list[str] = field(default_factory=list)
+    # JSX components rendered in this function's body, e.g. ["UsersPanel", "Tabs.Trigger"].
+    # De-conflated from `calls`: a `<Foo/>` is a render, not a call. Resolved to a
+    # Function/Class component (never a Variable) as a RENDERS edge by the pipeline.
+    renders: list[str] = field(default_factory=list)
     callback_refs: list[tuple[str, str]] = field(default_factory=list)  # (callee_name, context)
     parameters: list[str] = field(default_factory=list)  # Parameter names
     typed_parameters: list[tuple[str, str | None]] = field(default_factory=list)  # (name, type) pairs
