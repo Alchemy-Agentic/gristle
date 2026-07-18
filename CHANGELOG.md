@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-18
+
 ### Added
 - **JSX component rendering is now a first-class `RENDERS` edge.** A `<Foo/>` in a
   component's body creates `Function-[:RENDERS]->Function|Class` to the rendered
