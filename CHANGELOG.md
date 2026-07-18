@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-17
+
 ### Added
 - **Supabase/Postgres stored functions (RPCs) are now in the graph.** A
   `supabase.rpc('name', {...})` call targets a Postgres function whose body lives
