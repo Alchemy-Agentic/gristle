@@ -13,6 +13,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Version of the graph's contents/shape. BUMP THIS whenever an ingestion change means
+# existing graphs should be re-ingested to benefit — a new node/edge type, or new
+# extraction that adds edges to existing types (e.g. the 0.9.0 SQL parser added
+# DBFunction-[:USES_MODEL]->Model without a new label). It is NOT the package version:
+# a query-only or perf release does not bump it. Consumers stamp this on their own
+# graph record at ingest and re-ingest when the running service reports a higher value,
+# so a gristle upgrade auto-refreshes stale graphs. Reported by /health, /ready, and
+# gristle_ingest_github. History: 1 = first stamped schema (post-0.9.0 SQL edges).
+GRAPH_SCHEMA_VERSION = 1
+
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).
 _INDEXES: list[tuple[str, str]] = [

@@ -125,12 +125,14 @@ mcp.tool = _tool  # type: ignore[method-assign]
 async def health_check(request: Request) -> JSONResponse:
     """Liveness: the process is up and serving. Does not touch FalkorDB."""
     from gristle import __version__
+    from gristle.graph.schema import GRAPH_SCHEMA_VERSION
 
     return JSONResponse(
         {
             "status": "ok",
             "server": "gristle",
             "version": __version__,
+            "schema_version": GRAPH_SCHEMA_VERSION,
             "transport": settings.transport,
             "repos_loaded": len(_engines),
             "repos": list(_engines.keys()),
@@ -142,6 +144,7 @@ async def health_check(request: Request) -> JSONResponse:
 async def readiness_check(request: Request) -> JSONResponse:
     """Readiness: returns 503 unless FalkorDB is reachable (orchestrator gate)."""
     from gristle import __version__
+    from gristle.graph.schema import GRAPH_SCHEMA_VERSION
 
     reachable = await asyncio.to_thread(
         lambda: GraphClient(
@@ -151,11 +154,19 @@ async def readiness_check(request: Request) -> JSONResponse:
         ).ping()
     )
     if reachable:
-        return JSONResponse({"status": "ready", "version": __version__, "falkordb": "reachable"})
+        return JSONResponse(
+            {
+                "status": "ready",
+                "version": __version__,
+                "schema_version": GRAPH_SCHEMA_VERSION,
+                "falkordb": "reachable",
+            }
+        )
     return JSONResponse(
         {
             "status": "unavailable",
             "version": __version__,
+            "schema_version": GRAPH_SCHEMA_VERSION,
             "falkordb": f"unreachable at {settings.falkordb_host}:{settings.falkordb_port}",
         },
         status_code=503,
@@ -271,6 +282,8 @@ async def gristle_ingest_github(
 
     from git import Repo
 
+    from gristle.graph.schema import GRAPH_SCHEMA_VERSION
+
     # Normalize repo_url to a clone-able HTTPS URL
     if repo_url.startswith(("http://", "https://")):
         clone_url = repo_url
@@ -350,6 +363,7 @@ async def gristle_ingest_github(
             "status": "success",
             "repo_id": rid,
             "graph_name": graph.graph_name,
+            "schema_version": GRAPH_SCHEMA_VERSION,
             "files_processed": result.files_processed,
             "files_skipped": result.files_skipped,
             "docs_processed": result.docs_processed,

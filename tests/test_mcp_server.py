@@ -996,6 +996,10 @@ class TestHealthCheck:
         assert body["server"] == "gristle"
         assert body["version"] == __version__  # track the package version, not a literal
         assert "repos_loaded" in body
+        # schema_version lets consumers detect a graph-shape change and re-ingest.
+        from gristle.graph.schema import GRAPH_SCHEMA_VERSION
+
+        assert body["schema_version"] == GRAPH_SCHEMA_VERSION
 
 
 # ==================================================================

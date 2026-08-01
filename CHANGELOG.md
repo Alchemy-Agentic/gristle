@@ -6,6 +6,21 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-18
+
+### Added
+- **`schema_version` reported by `/health`, `/ready`, and `gristle_ingest_github`.**
+  A `GRAPH_SCHEMA_VERSION` integer (in `graph/schema.py`) that bumps only when an
+  ingestion change means existing graphs should be re-ingested to benefit (a new
+  node/edge type, or new extraction like the 0.9.0 SQL→table edges). Consumers can
+  stamp it on their own graph record and re-ingest when the running service reports a
+  higher value, so a Gristle upgrade auto-refreshes stale graphs.
+
+### Fixed
+- **Capped `mcp[cli]` to `<2`.** `mcp` 2.0 removed `mcp.server.fastmcp` (FastMCP moved
+  to the standalone `fastmcp` package), which would break the server import on a fresh
+  install/rebuild. Pinned to the 1.x line until a deliberate migration.
+
 ## [0.9.0] - 2026-07-18
 
 ### Added
