@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 # a query-only or perf release does not bump it. Consumers stamp this on their own
 # graph record at ingest and re-ingest when the running service reports a higher value,
 # so a gristle upgrade auto-refreshes stale graphs. Reported by /health, /ready, and
-# gristle_ingest_github. History: 1 = first stamped schema (post-0.9.0 SQL edges).
-GRAPH_SCHEMA_VERSION = 1
+# gristle_ingest_github. History: 1 = first stamped schema (post-0.9.0 SQL edges);
+# 2 = 0.10.0 recovered SQL functions tree-sitter couldn't parse (more accurate
+# DBFunction-[:USES_MODEL]->Model coverage + removal of string/comment false edges).
+GRAPH_SCHEMA_VERSION = 2
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).

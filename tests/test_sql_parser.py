@@ -161,3 +161,168 @@ class TestNonFunctionStatementsIgnored:
     def test_empty_and_garbage_input(self):
         assert parse_sql_schema("m.sql", "") == []
         assert parse_sql_schema("m.sql", "-- just a comment\n") == []
+
+
+class TestFallbackRecovery:
+    """Functions tree-sitter-sql produces no ``create_function`` node for (incomplete
+    plpgsql coverage) are recovered by re-parsing the dollar-quoted body alone."""
+
+    def test_security_definer_with_guards_is_recovered(self):
+        # SECURITY DEFINER + `SET search_path = ...` + compound IF guards make
+        # tree-sitter emit no create_function node at all — the exact real-repo shape.
+        fn = _fn(
+            "CREATE OR REPLACE FUNCTION save_preferred_transform_mode(p_mode TEXT)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "BEGIN\n"
+            "  IF auth.uid() IS NULL THEN RAISE EXCEPTION 'x'; END IF;\n"
+            "  IF p_mode IS NOT NULL AND p_mode NOT IN ('auto','guided','expert') THEN\n"
+            "    RAISE EXCEPTION 'y';\n"
+            "  END IF;\n"
+            "  UPDATE profiles SET preferred_transform_mode = p_mode WHERE id = auth.uid();\n"
+            "END; $$;"
+        )
+        assert fn.name == "save_preferred_transform_mode"
+        assert fn.writes == {"profiles"}
+        assert fn.reads == set()
+
+    def test_signature_params_are_not_tables(self):
+        # A standalone body has no signature context; parameters referenced in the body
+        # can surface as pseudo-tables and must be subtracted.
+        fn = _fn(
+            "CREATE OR REPLACE FUNCTION deduct(p_user_id uuid, p_amount int)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "BEGIN\n"
+            "  IF p_amount IS NULL OR p_amount NOT IN (1, 2, 3) THEN RAISE EXCEPTION 'bad'; END IF;\n"
+            "  UPDATE profiles SET credits = credits - p_amount WHERE id = p_user_id;\n"
+            "  INSERT INTO credit_ledger(user_id, delta) VALUES (p_user_id, p_amount);\n"
+            "END; $$;"
+        )
+        assert fn.writes == {"profiles", "credit_ledger"}
+        assert "p_user_id" not in (fn.reads | fn.writes)
+        assert "p_amount" not in (fn.reads | fn.writes)
+
+    def test_declare_variables_are_not_tables(self):
+        fn = _fn(
+            "CREATE OR REPLACE FUNCTION f(p_id uuid)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "DECLARE\n  v_total int;\n  v_row record;\n"
+            "BEGIN\n"
+            "  IF p_id IS NULL THEN RAISE EXCEPTION 'x'; END IF;\n"
+            "  IF v_total IS NULL OR v_total NOT IN (1, 2, 3) THEN RAISE EXCEPTION 'y'; END IF;\n"
+            "  UPDATE usage_history SET total = v_total WHERE user_id = p_id;\n"
+            "END; $$;"
+        )
+        assert fn.writes == {"usage_history"}
+        assert "v_total" not in (fn.reads | fn.writes)
+        assert "v_row" not in (fn.reads | fn.writes)
+
+    def test_for_loop_variable_is_not_a_table(self):
+        # A loop variable named after a real table (`FOR profiles IN ...`) must not
+        # become a false read; the FOR..IN SELECT source table is the real read.
+        fn = _fn(
+            "CREATE OR REPLACE FUNCTION f(p_x text)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "BEGIN\n"
+            "  IF p_x IS NULL OR p_x NOT IN ('a', 'b') THEN RAISE EXCEPTION 'x'; END IF;\n"
+            "  FOR profiles IN SELECT * FROM knuckles_gift_limits LOOP\n"
+            "    NULL;\n"
+            "  END LOOP;\n"
+            "END; $$;"
+        )
+        assert fn.reads == {"knuckles_gift_limits"}
+        assert "profiles" not in (fn.reads | fn.writes)
+
+    def test_non_public_schema_still_skipped_in_fallback(self):
+        fn = _fn(
+            "CREATE OR REPLACE FUNCTION f(p_x text)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "BEGIN\n"
+            "  IF p_x IS NULL OR p_x NOT IN ('a','b') THEN RAISE EXCEPTION 'x'; END IF;\n"
+            "  UPDATE auth.users SET email = p_x WHERE id = auth.uid();\n"
+            "END; $$;"
+        )
+        assert fn.writes == set()  # auth.users is not a public Model
+        assert fn.reads == set()
+
+    def test_ast_parsed_function_is_not_double_recovered(self):
+        # A file with one clean (AST-parsed) function and one fallback-only function
+        # must yield exactly one of each — the fallback skips AST-covered boundaries.
+        sql = (
+            "CREATE FUNCTION clean() RETURNS void LANGUAGE sql AS $$ UPDATE t1 SET x = 1 $$;\n"
+            "CREATE OR REPLACE FUNCTION guarded(p_v text)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "BEGIN\n"
+            "  IF p_v IS NULL OR p_v NOT IN ('a','b') THEN RAISE EXCEPTION 'x'; END IF;\n"
+            "  UPDATE t2 SET y = 2;\n"
+            "END; $$;"
+        )
+        fns = parse_sql_schema("m.sql", sql)
+        names = [f.name for f in fns]
+        assert names.count("clean") == 1
+        assert names.count("guarded") == 1
+        by_name = {f.name: f for f in fns}
+        assert by_name["clean"].writes == {"t1"}
+        assert by_name["guarded"].writes == {"t2"}
+
+    def test_create_function_in_block_comment_is_ignored(self):
+        # A commented-out prior definition (a common migration idiom) must not be
+        # scanned as a boundary — otherwise the fallback fabricates a second entry
+        # from dead code that displaces the real one in the downstream dedup.
+        sql = (
+            "/* Old version:\n"
+            "CREATE FUNCTION foo() RETURNS void AS $$\n"
+            "BEGIN INSERT INTO old_table VALUES (1); END;\n"
+            "$$ LANGUAGE plpgsql;\n"
+            "*/\n"
+            "CREATE FUNCTION foo() RETURNS void AS $$\n"
+            "BEGIN INSERT INTO accounts (id) VALUES (1); END;\n"
+            "$$ LANGUAGE plpgsql;"
+        )
+        fns = parse_sql_schema("m.sql", sql)
+        assert [f.name for f in fns] == ["foo"]
+        assert fns[0].writes == {"accounts"}  # not old_table from the comment
+
+    def test_table_name_in_raise_message_is_not_an_edge(self):
+        # A table named inside a dollar-quoted RAISE message must not be parsed as live
+        # SQL. Postgres requires a distinct tag to nest, so $m$...$m$ is the only legal
+        # form — and the verb in the prose ("delete from") must not drive a false edge.
+        fn = _fn(
+            "CREATE OR REPLACE FUNCTION enforce_policy(p_id uuid)\n"
+            "RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$\n"
+            "BEGIN\n"
+            "  IF p_id IS NULL THEN RAISE EXCEPTION 'missing id'; END IF;\n"
+            "  RAISE EXCEPTION $m$Cannot delete from user_sessions: active lock$m$;\n"
+            "  UPDATE audit_log SET touched = now() WHERE id = p_id;\n"
+            "END; $$;"
+        )
+        assert fn.writes == {"audit_log"}
+        assert "user_sessions" not in (fn.reads | fn.writes)
+
+    def test_raise_message_table_on_ast_path_is_not_an_edge(self):
+        # The same protection on the primary (AST) path — a plain plpgsql function whose
+        # body tree-sitter DOES model, but which contains a dollar-quoted RAISE message.
+        fn = _fn(
+            "CREATE FUNCTION g() RETURNS void LANGUAGE plpgsql AS $$\n"
+            "BEGIN\n"
+            "  RAISE EXCEPTION $m$Cannot delete from user_sessions$m$;\n"
+            "  UPDATE audit_log SET x = 1;\n"
+            "END; $$;"
+        )
+        assert fn.writes == {"audit_log"}
+        assert "user_sessions" not in (fn.reads | fn.writes)
+
+    def test_create_function_in_string_literal_is_ignored(self):
+        # Dynamic DDL: a CREATE FUNCTION inside an EXECUTE string must not fabricate a
+        # function nor truncate the enclosing function's table walk.
+        sql = (
+            "CREATE FUNCTION make_it() RETURNS void AS $$\n"
+            "BEGIN\n"
+            "  EXECUTE 'CREATE FUNCTION bar() RETURNS void AS $inner$ "
+            "INSERT INTO spurious VALUES(1); $inner$ LANGUAGE plpgsql';\n"
+            "  INSERT INTO accounts (id) VALUES (1);\n"
+            "END;\n"
+            "$$ LANGUAGE plpgsql;"
+        )
+        fns = parse_sql_schema("m.sql", sql)
+        assert [f.name for f in fns] == ["make_it"]
+        assert fns[0].writes == {"accounts"}  # not spurious, and accounts not lost

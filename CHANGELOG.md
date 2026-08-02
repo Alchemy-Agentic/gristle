@@ -6,7 +6,36 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
-## [0.9.1] - 2026-07-18
+## [0.10.0] - 2026-08-01
+
+### Changed
+- **`GRAPH_SCHEMA_VERSION` bumped to `2`.** The SQL coverage below adds/repairs
+  `DBFunction-[:USES_MODEL]->Model` edges, so existing graphs benefit from a re-ingest.
+  Consumers that stamp the schema version auto-refresh once the running service reports
+  the higher value.
+
+### Added
+- **SQL functions tree-sitter couldn't parse are now recovered.** tree-sitter-sql's
+  incomplete plpgsql coverage left ~23% of `CREATE FUNCTION` definitions with no AST
+  node at all — most commonly the `SECURITY DEFINER SET search_path = ... ` header
+  combined with `IF ... RAISE ... END IF` guards. Table access is now collected from a
+  masked, standalone re-parse of each function's dollar-quoted body, so those
+  functions' `DBFunction-[:USES_MODEL {access}]->Model` edges appear. Verified on a
+  large real schema: +12 correct table edges across previously-invisible stored
+  procedures, 0 false positives.
+
+### Fixed
+- **SQL table extraction no longer reads tables out of strings or comments.** A table
+  named inside a `RAISE`/`EXECUTE` message (`RAISE EXCEPTION $m$cannot delete from
+  orders$m$`), and a `CREATE FUNCTION` sitting inside a block comment (a commented-out
+  old definition) or a dynamic-SQL string, were being parsed as live SQL — fabricating
+  edges or displacing the real definition. Comments and string/dollar-quoted literals
+  are now masked before both boundary scanning and table extraction. Signature
+  parameters, `DECLARE`/loop variables, and CTE names are subtracted so a standalone
+  body's locals can't masquerade as tables.
+- **SQL parsing is no longer O(n²) on large function bodies.** `_collect_accesses`
+  read `Node.parent` per node (expensive in tree-sitter); parent context is now
+  threaded down the walk, cutting a 340 KB function body from ~17 s to ~2 s.
 
 ### Added
 - **`schema_version` reported by `/health`, `/ready`, and `gristle_ingest_github`.**
