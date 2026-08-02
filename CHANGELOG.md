@@ -6,7 +6,26 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
-## [0.10.0] - 2026-08-01
+## [0.10.1] - 2026-08-02
+
+### Fixed
+- **BOM-encoded (UTF-16/UTF-32) source files are no longer silently skipped or
+  mis-read.** Files were read as UTF-8 and any file with a NUL byte was treated as
+  binary and dropped — so a wide-encoding source file (e.g. a Supabase `types_db.ts`
+  produced by `supabase gen types typescript > types_db.ts` under PowerShell, which
+  emits UTF-16LE with a BOM) was skipped entirely, leaving its models/functions and all
+  their data-access edges missing. All source reading is now BOM-aware
+  (`ingestion/textio.py`: UTF-32/UTF-16 LE/BE, UTF-8-SIG, else UTF-8), the walker's
+  binary check treats a leading wide-encoding BOM as text, and the source read-back that
+  backs the `source_code` field decodes the same way (so line numbers still match).
+  Verified on a fresh Supabase repo: the data layer (5 models + their `USES_MODEL`
+  edges) went from invisible to fully ingested. CRLF/CR newlines are normalized to `\n`
+  (unchanged from the prior reader); a UTF-8-BOM file that contains NUL bytes is still
+  treated as binary.
+- **A BOM-encoded dependency manifest no longer aborts ingestion.** `package.json` /
+  `requirements.txt` / `pyproject.toml` were read with strict UTF-8; a UTF-16 manifest
+  raised `UnicodeDecodeError` (uncaught) and failed the whole ingest, and a UTF-8-BOM
+  manifest silently yielded no dependencies. All three now read BOM-aware.
 
 ### Changed
 - **`GRAPH_SCHEMA_VERSION` bumped to `2`.** The SQL coverage below adds/repairs

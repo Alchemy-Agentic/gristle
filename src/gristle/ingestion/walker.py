@@ -10,6 +10,7 @@ from pathlib import Path
 import pathspec
 
 from gristle.config import settings
+from gristle.ingestion.textio import is_wide_bom
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +172,15 @@ def walk_config_files(
 
 
 def _is_binary(path: str, chunk_size: int = 8192) -> bool:
-    """Heuristic: if the first chunk contains null bytes, treat as binary."""
+    """Heuristic: if the first chunk contains null bytes, treat as binary — EXCEPT when
+    the file opens with a UTF-16/UTF-8 BOM. UTF-16 text is full of NUL bytes but is
+    source, not binary (e.g. `supabase gen types > types.ts` under PowerShell); without
+    this, such files are silently skipped and their models/functions never ingested."""
     try:
         with open(path, "rb") as f:
             chunk = f.read(chunk_size)
-        return b"\x00" in chunk
     except (OSError, PermissionError):
         return True
+    if is_wide_bom(chunk):
+        return False
+    return b"\x00" in chunk

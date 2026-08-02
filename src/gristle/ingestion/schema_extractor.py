@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from gristle.config import settings
 from gristle.ingestion.batch import BatchCollector
+from gristle.ingestion.textio import read_text_file
 from gristle.models import ParsedDBFunction, ParsedModel, ParsedSQLFunction, SchemaExtractionResult
 
 if TYPE_CHECKING:
@@ -151,9 +151,9 @@ class SchemaExtractor:
 
     @staticmethod
     def _read_file(wf: WalkedFile) -> str | None:
-        """Read file content, returning None on error."""
+        """Read file content (BOM-aware), returning None on error."""
         try:
-            return Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
+            return read_text_file(wf.absolute_path)
         except OSError:
             logger.warning("Schema extractor: cannot read %s", wf.relative_path)
             return None

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from gristle.config import settings
+from gristle.ingestion.textio import read_text_file
 from gristle.models import RESOLUTION_RANK, resolution_confidence, weakest_resolution
 
 if TYPE_CHECKING:
@@ -3165,7 +3165,10 @@ class QueryEngine:
             return None
         abs_path = os.path.join(self.repo_path, file_path)
         try:
-            lines = Path(abs_path).read_text(encoding="utf-8", errors="replace").splitlines()
+            # BOM-aware so a UTF-16 source file (now ingested, not skipped) reads back
+            # correctly — and with the same universal-newline handling used at ingest,
+            # so the stored line numbers still index the right lines.
+            lines = read_text_file(abs_path).splitlines()
             # Convert to 0-indexed
             return "\n".join(lines[start_line - 1 : end_line])
         except (OSError, IndexError):

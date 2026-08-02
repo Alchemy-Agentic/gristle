@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from gristle.config import settings
 from gristle.graph.schema import ensure_schema
 from gristle.ingestion.batch import BatchCollector
+from gristle.ingestion.textio import read_text_file
 from gristle.ingestion.walker import WalkedFile, walk_config_files, walk_repo
 from gristle.logging import Timer
 from gristle.models import RESOLUTION_RANK
@@ -408,7 +409,7 @@ class IngestionPipeline:
 
         # 2. Re-parse
         try:
-            content = Path(abs_path).read_text(encoding="utf-8", errors="replace")
+            content = read_text_file(abs_path)
         except OSError as e:
             logger.warning("Cannot read %s for update: %s", relative_path, e)
             return result
@@ -545,7 +546,7 @@ class IngestionPipeline:
 
     def _parse_and_build(self, wf: WalkedFile, result: IngestionResult) -> ParsedFile | None:
         try:
-            content = Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
+            content = read_text_file(wf.absolute_path)
         except OSError as e:
             result.errors.append(f"Read error {wf.relative_path}: {e}")
             result.files_skipped += 1
@@ -2237,7 +2238,7 @@ class IngestionPipeline:
         pkg_json = root / "package.json"
         if pkg_json.is_file():
             try:
-                data = json.loads(pkg_json.read_text(encoding="utf-8"))
+                data = json.loads(read_text_file(pkg_json))
                 for section in ("dependencies", "devDependencies", "peerDependencies"):
                     deps = data.get(section, {})
                     if isinstance(deps, dict):
@@ -2253,7 +2254,7 @@ class IngestionPipeline:
             req_path = root / req_file
             if req_path.is_file():
                 try:
-                    for line in req_path.read_text(encoding="utf-8").splitlines():
+                    for line in read_text_file(req_path).splitlines():
                         line = line.strip()
                         if not line or line.startswith("#") or line.startswith("-"):
                             continue
@@ -2274,7 +2275,7 @@ class IngestionPipeline:
             try:
                 import tomllib
 
-                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                data = tomllib.loads(read_text_file(pyproject))
                 # PEP 621: [project.dependencies]
                 project_deps = data.get("project", {}).get("dependencies", [])
                 for dep_str in project_deps:
@@ -2315,7 +2316,7 @@ class IngestionPipeline:
         config_walked = walk_config_files(repo_path)
         for wf in config_walked:
             try:
-                content = Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
+                content = read_text_file(wf.absolute_path)
             except OSError as e:
                 logger.warning("Cannot read config file %s: %s", wf.relative_path, e)
                 continue
@@ -2744,7 +2745,7 @@ class IngestionPipeline:
             if name != "jsconfig.json" and not name.startswith("tsconfig"):
                 continue
             try:
-                data = self._load_jsonc(Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace"))
+                data = self._load_jsonc(read_text_file(wf.absolute_path))
             except Exception:
                 continue
             opts = data.get("compilerOptions", {})
@@ -2853,7 +2854,7 @@ class IngestionPipeline:
     def _process_document(self, wf: WalkedFile, result: IngestionResult, batch: BatchCollector) -> None:
         """Parse a markdown file and build document nodes with code references."""
         try:
-            content = Path(wf.absolute_path).read_text(encoding="utf-8", errors="replace")
+            content = read_text_file(wf.absolute_path)
         except OSError as e:
             result.errors.append(f"Read error {wf.relative_path}: {e}")
             return

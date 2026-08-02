@@ -584,7 +584,7 @@ Errors are logged with context (file path, operation, error message) via the str
 - Respects `.gitignore` patterns (parsed via `pathspec`)
 - Skips configured excluded directories
 - Filters by file size (default max 500KB)
-- Detects binary files (null-byte heuristic)
+- Detects binary files (null-byte heuristic; a leading UTF-16/UTF-32 BOM overrides it, so BOM-marked wide-encoding source — e.g. a PowerShell-generated `types_db.ts` — is treated as text, not skipped). Content is read BOM-aware (`ingestion/textio.py`: UTF-16/UTF-32/UTF-8-SIG/UTF-8), so its models and edges ingest correctly.
 - Returns forward-slash-normalized relative paths
 
 ---
