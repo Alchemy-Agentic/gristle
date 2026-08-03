@@ -68,6 +68,40 @@ class Settings(BaseSettings):
     viz_default_depth: int = 2  # default traversal depth for subgraph views
     viz_output_path: Path = Path("./gristle-graph.html")  # default HTML export path (CLI, P1)
 
+    # Feature-flag detection profile — how an app's flag convention is recognised.
+    # A configured convention (not a heuristic) keeps extraction precise: only calls
+    # to these functions become GATES edges, so no guessing about what's a flag.
+    # Defaults describe the Supabase/`useFeatureFlag` shape (homegrown DB-backed
+    # flags); override via env for other conventions. Managed-lib profiles
+    # (LaunchDarkly/Unleash/…) are just alternate values for these fields.
+    flag_detection_enabled: bool = True
+    # Functions whose argument at a given position is the flag key, mapping name ->
+    # candidate key-arg indices. The key is the string literal at the FIRST listed
+    # index that has one — so `useFeatureFlag('K')` (arg 0) and the server
+    # `isFeatureFlagEnabled(supabase, 'K', userId)` (arg 1) both resolve, and a
+    # non-key string in another position (e.g. a 4th-arg log tag) is never mistaken
+    # for the key. A key passed as a variable/const at the key position is skipped
+    # (a coverage limit), not guessed. `isFeatureFlagEnabled` lists (0, 1) because
+    # the same name is arg 0 client-side and arg 1 server-side.
+    flag_check_functions: dict[str, tuple[int, ...]] = {
+        "useFeatureFlag": (0,),
+        "isFeatureEnabled": (0,),
+        "isFeatureFlagEnabled": (0, 1),
+        "isFlagEnabledForUser": (1,),
+    }
+    # Tables whose rows ARE flags: `.from('<table>').eq('id','K')` reads a flag, and
+    # SQL `INSERT/DELETE` on the table declare/retire flag rows. `id` is the key col.
+    flag_tables: frozenset[str] = frozenset({"feature_flags"})
+    # `const <symbol> = { KEY: true/false, ... } as const` objects that declare the
+    # client-side flag registry (key + default value + doc comment).
+    flag_registry_symbols: frozenset[str] = frozenset({"featureFlags"})
+    # Objects whose SCREAMING_SNAKE member access reads a flag — `featureFlags.KEY`
+    # and the runtime cache `runtimeFlagCache.KEY`. Captures the wrapper-accessor
+    # surface (isXEnabled() helpers) so a flag read only through its wrapper still
+    # gets a GATES edge instead of looking dead. Defaults include the registry
+    # symbols plus the conventional runtime cache.
+    flag_accessor_symbols: frozenset[str] = frozenset({"featureFlags", "runtimeFlagCache"})
+
     @field_validator("falkordb_port", "http_port")
     @classmethod
     def _port_in_range(cls, v: int) -> int:

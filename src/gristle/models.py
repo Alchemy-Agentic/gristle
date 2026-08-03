@@ -364,3 +364,31 @@ class SchemaExtractionResult:
     db_functions_found: int = 0
     nodes_created: int = 0
     relationships_created: int = 0
+
+
+@dataclass(slots=True)
+class ParsedFlag:
+    """A feature-flag DEFINITION observed from one source — a client registry entry
+    (``const featureFlags = { KEY: true }``) or a DB migration row (``INSERT`` /
+    ``DELETE`` on a configured ``feature_flags`` table). Check SITES are NOT
+    ParsedFlags; they ride the ``flag('KEY')`` call descriptor in ``calls_with_args``.
+    The FlagExtractor merges per-key across sources into Flag nodes + GATES edges."""
+
+    key: str
+    source: str  # "registry" | "db"
+    default: bool | None = None  # registry: the literal default; db: the seeded `enabled`
+    description: str | None = None
+    retired: bool = False  # db-only: the row was later DELETEd (net-removed from the table)
+    file_path: str | None = None
+    line: int | None = None
+
+
+@dataclass(slots=True)
+class FlagExtractionResult:
+    """Result of feature-flag extraction phase."""
+
+    flags_found: int = 0  # distinct Flag nodes (union of registry + db + check-only)
+    gates_created: int = 0  # Flag-[:GATES]->Function edges
+    orphan_checks: int = 0  # keys checked in code but defined nowhere
+    nodes_created: int = 0
+    relationships_created: int = 0

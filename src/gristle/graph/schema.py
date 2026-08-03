@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 # so a gristle upgrade auto-refreshes stale graphs. Reported by /health, /ready, and
 # gristle_ingest_github. History: 1 = first stamped schema (post-0.9.0 SQL edges);
 # 2 = 0.10.0 recovered SQL functions tree-sitter couldn't parse (more accurate
-# DBFunction-[:USES_MODEL]->Model coverage + removal of string/comment false edges).
-GRAPH_SCHEMA_VERSION = 2
+# DBFunction-[:USES_MODEL]->Model coverage + removal of string/comment false edges);
+# 3 = feature-flag graph: Flag nodes (registry + DB migrations) and Flag-[:GATES]->
+# Function edges from configured flag-check call sites.
+GRAPH_SCHEMA_VERSION = 3
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).
@@ -67,6 +69,8 @@ _INDEXES: list[tuple[str, str]] = [
     ("Variable", "id"),
     ("Variable", "name"),
     ("Variable", "file_path"),
+    ("Flag", "id"),
+    ("Flag", "key"),
 ]
 
 # Full-text indexes for docstring search.

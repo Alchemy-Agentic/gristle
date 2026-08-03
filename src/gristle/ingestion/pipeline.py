@@ -337,6 +337,33 @@ class IngestionPipeline:
             logger.warning("Schema phase failed: %s", e, exc_info=True)
             result.errors.append(f"Schema phase failed: {e}")
 
+        # Flag phase: Detect feature flags (registry + DB migrations) and link the
+        # code that checks them (Flag-[:GATES]->Function). Runs after the schema
+        # phase so Function nodes exist for GATES to point at.
+        try:
+            with Timer() as flag_phase:
+                from gristle.ingestion.flag_extractor import FlagExtractor
+
+                flag_result = FlagExtractor(self.graph, dict(self._path_to_id)).extract(files, parsed_files)
+                result.nodes_created += flag_result.nodes_created
+                result.relationships_created += flag_result.relationships_created
+
+            if flag_result.flags_found:
+                logger.info(
+                    "Flag phase complete: %d flags, %d gates (%d orphan checks)",
+                    flag_result.flags_found,
+                    flag_result.gates_created,
+                    flag_result.orphan_checks,
+                    extra={
+                        "event": "flag_phase_done",
+                        "duration_ms": flag_phase.ms,
+                        "repo_id": self.graph.repo_id,
+                    },
+                )
+        except Exception as e:
+            logger.warning("Flag phase failed: %s", e, exc_info=True)
+            result.errors.append(f"Flag phase failed: {e}")
+
         # Phase 3: Walk and process documentation files
         try:
             with Timer() as phase3:

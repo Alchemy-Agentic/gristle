@@ -6,6 +6,39 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Feature-flag analysis — `Flag` nodes and `Flag-[:GATES]->Function` edges.** Gristle
+  now models an app's feature flags as first-class graph entities and links the code that
+  checks them, so "which flags can we retire, what does each gate, how do they interact"
+  becomes a query (`gristle_flag_analysis`) instead of a manual grep. A `Flag` is merged
+  per key across two definition surfaces — a client registry object
+  (`const featureFlags = { KEY: bool }`) and DB migration rows on a configured flag table
+  (`INSERT`/`DELETE` on `feature_flags`, netted; reversal/rollback scripts excluded) — and
+  three check surfaces: configured check calls (`useFeatureFlag('K')`,
+  `isFeatureFlagEnabled(sb, 'K', id)`), direct flag-table reads
+  (`.from('feature_flags').eq('id','K')`), and registry/cache member reads
+  (`featureFlags.K` / `runtimeFlagCache.K`, which cover wrapper accessors so a flag used
+  only through its `isXEnabled()` helper isn't mistaken for dead). A key passed as a
+  `const` resolves to the const's value, and key extraction is **position-configured** so a
+  non-key string argument (e.g. a 4th-arg log tag) is never taken as the key. Node props:
+  `in_registry`, `in_db`, `retired`, `orphan` (checked but defined nowhere),
+  `registry_default`, `gates_count`. The report surfaces retire candidates (declared, zero
+  gates), orphans, config-gaps (default-off + DB-controlled + no seed row → can't be flipped
+  from admin), superseded version families, and a dependency/interaction map. **Detection is
+  convention-configured, not heuristic** — `GRISTLE_FLAG_*` settings declare the check
+  functions, flag table, and registry/accessor symbols; defaults describe the
+  Supabase/`useFeatureFlag` shape, and other conventions (LaunchDarkly, Unleash, …) are just
+  alternate values. "Dead"/"config-gap" are code-derived candidates to verify — the
+  "fully rolled out → safe to retire" signal needs the live flag table and is not decidable
+  from code.
+- **MCP tool `gristle_flag_analysis`** — no `key`: the flag health report; with a `key`:
+  that flag's facts + the exact functions it gates (blast radius).
+
+### Changed
+- **`GRAPH_SCHEMA_VERSION` → 3.** Additive only (new `Flag` node + `GATES` edge; no existing
+  label, property, or edge changed), so existing Cypher keeps working — but consumers that
+  track the version will re-ingest to populate the flag graph.
+
 ## [0.10.1] - 2026-08-02
 
 ### Fixed

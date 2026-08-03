@@ -893,6 +893,39 @@ async def gristle_conventions(
 
 
 @mcp.tool()
+async def gristle_flag_analysis(
+    key: str | None = None,
+    repo_id: str | None = None,
+) -> dict:
+    """Analyze feature flags: what to retire, what each gates, how they interact.
+
+    With no `key`, returns a health report: dead_candidates (declared but nothing
+    checks them — retire candidates), orphan_checks (checked in code but defined
+    nowhere), config_gap (default-off + DB-controlled + no seed row, so they can't
+    be flipped from the admin panel), superseded_families (version pairs), retired,
+    and an interactions map (flag -> flags it depends on, from registry docs).
+
+    With a `key`, returns that flag's facts + the exact functions it gates
+    (its blast radius).
+
+    Requires an app whose flag convention matches the configured profile
+    (GRISTLE_FLAG_* settings; defaults to the Supabase/`useFeatureFlag` shape).
+    "dead_candidates" is code-derived — verify before removing, and note the
+    "fully rolled out -> safe to retire" signal needs the live flag table.
+
+    Args:
+        key: A specific flag key to inspect (omit for the full report).
+        repo_id: Repository identifier.
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+    if key:
+        return engine.flag_gates(key)
+    return engine.analyze_flags()
+
+
+@mcp.tool()
 async def gristle_embed(
     repo_id: str | None = None,
 ) -> dict:

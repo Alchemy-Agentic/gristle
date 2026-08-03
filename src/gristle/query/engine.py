@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from gristle.config import settings
@@ -1390,6 +1391,121 @@ class QueryEngine:
             {"limit": limit},
         )
         return result.records
+
+    # ------------------------------------------------------------------
+    # 13b. Feature-flag analysis (Flag nodes + GATES edges)
+    # ------------------------------------------------------------------
+
+    # Dependency phrasing in registry doc comments ("Requires X", "Sub-switch of X").
+    _FLAG_DEP_RE = re.compile(
+        r"(?:Requires|Only meaningful when|Only engages when|Sub-switch of|paired with)\s+([A-Z][A-Z0-9_]{3,})",
+        re.IGNORECASE,
+    )
+
+    def analyze_flags(self) -> dict[str, Any]:
+        """Feature-flag health report from Flag nodes + GATES edges.
+
+        Categories: dead (declared, nothing gates it — retire candidate), orphan
+        (checked in code, defined nowhere), config_gap (default-off, DB-controlled,
+        no seed row -> can't be flipped from admin), superseded (version families),
+        retired, plus a dependency (interaction) map parsed from registry docs.
+
+        NOTE: "dead" is a candidate list, not proof — a key composed dynamically or
+        passed through an unresolved variable can read as dead. Verify before removing.
+        The "fully rolled out -> safe to retire" signal needs the live flag table and
+        is NOT decidable from code.
+        """
+        rows = self.graph.execute(
+            """
+            MATCH (f:Flag)
+            RETURN f.key AS key, f.in_registry AS in_registry, f.in_db AS in_db,
+                   f.retired AS retired, f.orphan AS orphan,
+                   f.registry_default AS registry_default,
+                   f.gates_count AS gates_count, f.description AS description
+            ORDER BY f.key
+            """
+        ).records
+
+        dead, orphan, config_gap, retired = [], [], [], []
+        deps: dict[str, list[str]] = {}
+        for r in rows:
+            key = r["key"]
+            gates = r["gates_count"] or 0
+            if r["retired"]:
+                retired.append(key)
+            if r["in_registry"] and gates == 0 and not r["retired"]:
+                dead.append(key)
+            if r["orphan"]:
+                orphan.append({"key": key, "gates_count": gates})
+            if (
+                r["in_registry"]
+                and not r["in_db"]
+                and not r["retired"]
+                and r["registry_default"] is False
+                and gates > 0
+            ):
+                config_gap.append({"key": key, "gates_count": gates})
+            for m in self._FLAG_DEP_RE.finditer(r["description"] or ""):
+                target = m.group(1).upper()
+                if target != key:
+                    deps.setdefault(key, [])
+                    if target not in deps[key]:
+                        deps[key].append(target)
+
+        keys = [r["key"] for r in rows]
+        return {
+            "counts": {
+                "total": len(rows),
+                "in_registry": sum(1 for r in rows if r["in_registry"]),
+                "in_db": sum(1 for r in rows if r["in_db"]),
+                "retired": len(retired),
+                "orphan": len(orphan),
+            },
+            "dead_candidates": dead,
+            "orphan_checks": orphan,
+            "config_gap": config_gap,
+            "superseded_families": self._flag_version_families(keys),
+            "retired": sorted(retired),
+            "interactions": deps,
+            "note": "dead_candidates and config_gap are code-derived; confirm 'fully rolled out' against the live flag table before retiring.",
+        }
+
+    @staticmethod
+    def _flag_version_families(keys: list[str]) -> dict[str, list[str]]:
+        """Group keys that share a base after stripping version/stage suffixes
+        (``X`` + ``X_V2`` + ``X_GLOBAL_ROLLOUT``) — supersede candidates."""
+        suffix = re.compile(r"_?V\d+$|_(GLOBAL_ROLLOUT|GLOBAL|PREVIEW_GENERATION|COLLAPSE_MENUS)$")
+        families: dict[str, list[str]] = {}
+        for k in keys:
+            base = k
+            while True:
+                stripped = suffix.sub("", base)
+                if stripped == base:
+                    break
+                base = stripped
+            families.setdefault(base, []).append(k)
+        return {base: sorted(members) for base, members in families.items() if len(members) > 1}
+
+    def flag_gates(self, key: str) -> dict[str, Any]:
+        """What a single flag gates: its node facts + the functions that check it."""
+        node = self.graph.execute(
+            "MATCH (f:Flag {key: $key}) RETURN f.key AS key, f.in_registry AS in_registry, "
+            "f.in_db AS in_db, f.retired AS retired, f.orphan AS orphan, "
+            "f.registry_default AS registry_default, f.gates_count AS gates_count, "
+            "f.description AS description",
+            {"key": key},
+        ).records
+        if not node:
+            return {"error": f"No flag '{key}' in the graph."}
+        gates = self.graph.execute(
+            """
+            MATCH (f:Flag {key: $key})-[:GATES]->(fn:Function)
+            RETURN fn.name AS function, fn.file_path AS file
+            ORDER BY fn.file_path, fn.name
+            """,
+            {"key": key},
+        ).records
+        return {"flag": node[0], "gates": gates}
 
     # ------------------------------------------------------------------
     # 14. Conventions inference

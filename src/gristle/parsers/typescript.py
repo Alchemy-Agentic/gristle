@@ -8,6 +8,7 @@ import tree_sitter_javascript as ts_js
 import tree_sitter_typescript as ts_ts
 from tree_sitter import Language, Node, Parser
 
+from gristle.config import settings
 from gristle.models import (
     ParsedClass,
     ParsedFile,
@@ -22,6 +23,9 @@ from gristle.parsers.base import LanguageParser
 
 # Patterns for TODO/FIXME/HACK comments
 _TODO_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX|BUG|WARN(?:ING)?)\b[:\s]*(.*)", re.IGNORECASE)
+
+# A SCREAMING_SNAKE flag key, for member-read flag descriptors (featureFlags.KEY).
+_FLAG_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+$")
 
 # Patterns for detecting test files
 # Require test[-_]/spec[-_] at a path-segment boundary (after / or start)
@@ -99,6 +103,10 @@ class TypeScriptParser(LanguageParser):
     def __init__(self) -> None:
         self._ts_parser = Parser(Language(ts_ts.language_typescript()))
         self._tsx_parser = Parser(Language(ts_ts.language_tsx()))
+        # Per-file `const NAME = 'stringliteral'` bindings, so a flag key passed to a
+        # check as a const (`const QC='K'; isFeatureFlagEnabled(sb, QC, id)`) resolves
+        # to 'K'. Set per file in parse_file; only consulted at flag-key positions.
+        self._flag_const_bindings: dict[str, str] = {}
 
     @property
     def language_name(self) -> str:
@@ -113,6 +121,10 @@ class TypeScriptParser(LanguageParser):
         tree = parser.parse(content.encode())
         root = tree.root_node
         src = content.encode()
+
+        self._flag_const_bindings = (
+            self._collect_flag_const_bindings(root, src) if settings.flag_detection_enabled else {}
+        )
 
         is_test_file = bool(_TEST_FILE_RE.search(file_path))
         functions = self._extract_module_functions(root, src, file_path)
@@ -1088,8 +1100,166 @@ class TypeScriptParser(LanguageParser):
                 rpc_ref = self._supabase_rpc_descriptor(func_node, args_node, src)
                 if rpc_ref:
                     out.append(rpc_ref)
+                flag_ref = self._flag_check_descriptor(func_node, args_node, src)
+                if flag_ref:
+                    out.append(flag_ref)
+                flag_eq_ref = self._flag_table_id_descriptor(func_node, args_node, src)
+                if flag_eq_ref:
+                    out.append(flag_eq_ref)
+        if node.type == "member_expression":
+            flag_member = self._flag_member_descriptor(node, src)
+            if flag_member:
+                out.append(flag_member)
         for child in node.children:
             self._walk_call_arg_refs(child, src, out)
+
+    def _flag_member_descriptor(self, node: Node, src: bytes) -> str | None:
+        """For a flag read via member access on a configured accessor symbol —
+        ``featureFlags.KEY`` or the runtime cache ``runtimeFlagCache.KEY`` — return
+        ``"flag('KEY')"``. This captures the wrapper-accessor surface (the
+        ``isXEnabled()`` helpers read the cache), so a flag used only through its
+        wrapper still gets a GATES edge instead of looking dead. A SCREAMING_SNAKE
+        property is required so ``featureFlags.length`` / method calls never match.
+        """
+        if not settings.flag_detection_enabled or not settings.flag_accessor_symbols:
+            return None
+        obj = node.child_by_field_name("object")
+        prop = node.child_by_field_name("property")
+        if obj is None or prop is None:
+            return None
+        if self._text(obj, src) not in settings.flag_accessor_symbols:
+            return None
+        key = self._text(prop, src)
+        if not key or not _FLAG_KEY_RE.match(key):
+            return None
+        return f"flag('{key}')"
+
+    def _flag_check_descriptor(self, func_node: Node, args_node: Node, src: bytes) -> str | None:
+        """For a configured flag-check call — ``useFeatureFlag('K')`` or the server
+        ``isFeatureFlagEnabled(supabase, 'K', userId)`` — return ``"flag('K')"``.
+
+        The key is the string literal at the first configured key-arg index
+        (``settings.flag_check_functions[name]``) that has one, so the same name
+        works whether the key sits at arg 0 (client) or arg 1 (server), and a
+        non-key string elsewhere (a 4th-arg log tag) is never taken as the key. A
+        key passed as a variable/const at the key position is skipped, not guessed.
+        Precision comes from the configured name allowlist: only those callees
+        produce a descriptor. Undeclared keys still surface — that is how a check
+        with no matching definition (an orphan) is found by the FlagExtractor.
+        """
+        if not settings.flag_detection_enabled or not settings.flag_check_functions:
+            return None
+        name = self._callee_simple_name(func_node, src)
+        if name is None:
+            return None
+        indices = settings.flag_check_functions.get(name)
+        if indices is None:
+            return None
+        named = args_node.named_children
+        for idx in indices:
+            if idx >= len(named):
+                continue
+            arg = named[idx]
+            key = self._string_literal_value(arg, src)
+            if not key and arg.type == "identifier":
+                # `const QC = 'K'; isFeatureFlagEnabled(sb, QC, id)` — resolve the const.
+                key = self._flag_const_bindings.get(self._text(arg, src))
+            if key:
+                return f"flag('{key}')"
+        return None
+
+    def _collect_flag_const_bindings(self, root: Node, src: bytes) -> dict[str, str]:
+        """Map every ``<name> = '<string literal>'`` binding in the file to its value.
+        Only consulted when ``<name>`` sits at a flag-key position, so mapping all
+        string consts is harmless — a non-flag const is never resolved unless it is
+        actually passed to a configured check as the key."""
+        bindings: dict[str, str] = {}
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            if node.type == "variable_declarator":
+                name = node.child_by_field_name("name")
+                value = node.child_by_field_name("value")
+                if name is not None and name.type == "identifier" and value is not None:
+                    key = self._string_literal_value(value, src)
+                    if key:
+                        bindings.setdefault(self._text(name, src) or "", key)
+            stack.extend(node.children)
+        return bindings
+
+    def _flag_table_id_descriptor(self, func_node: Node, args_node: Node, src: bytes) -> str | None:
+        """For a direct flag-table read ``X.from('<flag_table>')…eq('id','K')``,
+        return ``"flag('K')"`` — the flag key is the second argument of an
+        ``.eq('id', …)`` whose receiver chain reads a configured flag table
+        (``settings.flag_tables``). Catches server-side reads that hit the table
+        instead of going through a helper function. The ``.from('<table>')`` guard
+        keeps a generic ``.eq('id', X)`` on some other table from matching.
+        """
+        if not settings.flag_detection_enabled or not settings.flag_tables:
+            return None
+        if func_node.type != "member_expression":
+            return None
+        prop = func_node.child_by_field_name("property")
+        if prop is None or self._text(prop, src) != "eq":
+            return None
+        named = args_node.named_children
+        if len(named) < 2 or self._string_literal_value(named[0], src) != "id":
+            return None
+        key = self._string_literal_value(named[1], src)
+        if not key:
+            return None
+        if not self._chain_reads_flag_table(func_node.child_by_field_name("object"), src):
+            return None
+        return f"flag('{key}')"
+
+    def _callee_simple_name(self, func_node: Node, src: bytes) -> str | None:
+        """Bare-function name (``useFeatureFlag``) or the method name of a member
+        call (``x.isEnabled`` -> ``isEnabled``)."""
+        if func_node.type == "identifier":
+            return self._text(func_node, src)
+        if func_node.type == "member_expression":
+            prop = func_node.child_by_field_name("property")
+            return self._text(prop, src) if prop else None
+        return None
+
+    def _string_literal_value(self, node: Node, src: bytes) -> str | None:
+        """Value of a plain string literal with exactly one fragment (no interpolation
+        / escapes), or None. Mirrors the string handling in the rpc/from descriptors."""
+        if node is None or node.type != "string":
+            return None
+        fragments = [c for c in node.children if c.type == "string_fragment"]
+        if len(fragments) != 1:
+            return None
+        return self._text(fragments[0], src)
+
+    def _chain_reads_flag_table(self, node: Node | None, src: bytes) -> bool:
+        """Walk down the ``.object`` receiver chain looking for a
+        ``.from('<flag_table>')`` call, so ``.eq('id', …)`` is only treated as a flag
+        read when the chain actually targets a configured flag table."""
+        depth = 0
+        while node is not None and depth < 12:
+            depth += 1
+            if node.type == "call_expression":
+                fn = node.child_by_field_name("function")
+                if fn is None:
+                    return False
+                if fn.type == "member_expression":
+                    p = fn.child_by_field_name("property")
+                    if p is not None and self._text(p, src) == "from":
+                        a = node.child_by_field_name("arguments")
+                        if a is not None and a.named_children:
+                            table = self._string_literal_value(a.named_children[0], src)
+                            if table in settings.flag_tables:
+                                return True
+                    node = fn.child_by_field_name("object")
+                    continue
+                node = fn
+                continue
+            if node.type == "member_expression":
+                node = node.child_by_field_name("object")
+                continue
+            break
+        return False
 
     def _supabase_rpc_descriptor(self, func_node: Node, args_node: Node, src: bytes) -> str | None:
         """For Supabase ``X.rpc('fn', {...})``, return ``"rpc('fn')"`` — a call to a
