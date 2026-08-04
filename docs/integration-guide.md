@@ -80,7 +80,7 @@ This clones the repo and runs full ingestion in one step.
 | `RAISES` | Function | Class | Function raises/throws a locally-defined exception class (Python `raise`, JS/TS `throw new`). Builtin/library exceptions (no Class node) stay in the function's `raises` property |
 | `CATCHES` | Function | Class | Function catches a locally-defined exception class (Python `except <Type>`). Other caught types stay in the function's `catches` property |
 | `INHERITS_FROM` | Class | Class | Class inheritance |
-| `IMPORTS` | File | File | File-level import dependency |
+| `IMPORTS` | File | File | File-level import dependency. Carries `names` — the union of the symbols the importing file pulls from the target across all its import statements (a barrel `export { X } from './x'` records `X`). Powers symbol-level dead-export detection; absent on edges written by the incremental watcher (treated conservatively as importing everything) |
 | `TESTS` | File | File | Test file covers production file |
 | `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper, 3=import-based JS/TS fallback) |
 | `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |

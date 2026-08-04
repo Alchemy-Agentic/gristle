@@ -2141,6 +2141,11 @@ class IngestionPipeline:
             file_id = f"file::{pf.path}"
             file_dir = pf.path.replace("\\", "/")
             file_dir = file_dir.rsplit("/", 1)[0] if "/" in file_dir else ""
+            # Union the names each importing file pulls from a given target, so the
+            # IMPORTS edge carries WHICH symbols were imported (a file can import the
+            # same target via several statements). Enables symbol-level dead-export
+            # detection instead of the coarse "is the file imported at all" floor.
+            edge_names: dict[str, set[str]] = {}
 
             for imp in pf.imports:
                 imp_id = f"import::{pf.path}::{imp.line}"
@@ -2155,7 +2160,7 @@ class IngestionPipeline:
                     self._source_roots,
                 )
                 if target_id and target_id != file_id:
-                    batch.add_merge_relationship("IMPORTS", file_id, target_id)
+                    edge_names.setdefault(target_id, set()).update(imp.imported_names)
                     self._import_resolved[imp_id] = True
                     # Track test file import targets for TESTS_FUNCTION resolution (JS/TS only)
                     if pf.is_test_file and pf.language != "python":
@@ -2181,6 +2186,11 @@ class IngestionPipeline:
                         # Also map the module basename (e.g. "React" from "react")
                         mod_base = imp.module_path.rsplit("/", 1)[-1].split(".")[0]
                         ext_map[mod_base] = dep_id
+
+            # One IMPORTS edge per (file, target) carrying the union of imported names,
+            # so dead-export detection can ask "was THIS export imported by name?".
+            for target_id, names in edge_names.items():
+                batch.add_merge_relationship("IMPORTS", file_id, target_id, {"names": sorted(names)})
 
         # Create Dependency nodes — with optional staleness/vulnerability enrichment
         from gristle.ingestion.dependency_checker import check_dependencies

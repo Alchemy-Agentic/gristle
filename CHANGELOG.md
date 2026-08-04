@@ -44,10 +44,23 @@ All notable changes to Gristle are documented here. This file is intended for co
   at function granularity (an upper bound — "what to review", not "what dies").
   `QueryEngine` exposes `analyze_flags` / `flag_gates` / `flag_reach`.
 
+- **Symbol-level dead-export detection.** `detect_dead_exports` now asks "does any file
+  import this export **by name**?" instead of the old file-level floor ("is this export's
+  file imported by anything at all?"), which marked every export of a file as used the
+  moment anything imported that file. `IMPORTS` edges now carry a `names` list (the union
+  of symbols each importer pulls from a target); a barrel re-export (`export { X } from
+  './x'`) counts as a use of `X`, and an edge without a `names` list keeps a file's exports
+  alive (conservative, never over-reports). Measured on a real repo (pig-knuckle): dead
+  exports found went from 218 to 724 — the extra 506 were genuinely unused exports living
+  in files that were imported for *other* symbols (e2e helpers, script utilities), which
+  the floor hid. Barrel-re-exported-but-never-consumed symbols are still counted as used
+  (a tighter floor, not yet exhaustive).
+
 ### Changed
-- **`GRAPH_SCHEMA_VERSION` → 3.** Additive only (new `Flag` node + `GATES` edge; no existing
-  label, property, or edge changed), so existing Cypher keeps working — but consumers that
-  track the version will re-ingest to populate the flag graph.
+- **`GRAPH_SCHEMA_VERSION` → 4.** Additive only (new `Flag` node + `GATES` edge in v3; a
+  `names` list on `IMPORTS` edges in v4; no existing label, property, or edge removed or
+  renamed), so existing Cypher keeps working — but consumers that track the version will
+  re-ingest to populate the flag graph and the symbol-level import names.
 
 ## [0.10.1] - 2026-08-02
 

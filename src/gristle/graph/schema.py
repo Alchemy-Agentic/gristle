@@ -24,8 +24,10 @@ logger = logging.getLogger(__name__)
 # 2 = 0.10.0 recovered SQL functions tree-sitter couldn't parse (more accurate
 # DBFunction-[:USES_MODEL]->Model coverage + removal of string/comment false edges);
 # 3 = feature-flag graph: Flag nodes (registry + DB migrations) and Flag-[:GATES]->
-# Function edges from configured flag-check call sites.
-GRAPH_SCHEMA_VERSION = 3
+# Function edges from configured flag-check call sites;
+# 4 = IMPORTS edges carry a `names` list (the union of symbols each file imports from a
+# target), enabling symbol-level dead-export detection instead of the file-level floor.
+GRAPH_SCHEMA_VERSION = 4
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).

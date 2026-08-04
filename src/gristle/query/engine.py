@@ -2854,20 +2854,31 @@ class QueryEngine:
     # ------------------------------------------------------------------
 
     def detect_dead_exports(self) -> dict[str, Any]:
-        """Find exported entities that are never imported by other files.
+        """Find exported entities that no other file imports **by name**.
 
-        Excludes entry points (they're meant to be external-facing).
-        Useful for identifying unused public API surface.
+        Symbol-level: an export is dead when no importing file pulls in its specific
+        name (the IMPORTS edge carries the union of imported names). This is far
+        tighter than the old file-level floor, which marked every export of a file
+        as used the moment *anything* imported that file. Entry points are excluded
+        (external-facing by design).
+
+        Conservative fallback: an IMPORTS edge without a ``names`` list (e.g. written
+        by the incremental watcher, or a `import './x'` side-effect import) keeps all
+        of the file's exports alive — so the result never over-reports on a partially
+        annotated graph. Barrel re-exports (`export { X } from './x'`) still count as
+        a use of ``X`` (the barrel imports it), so this is a floor for barrel-heavy
+        code — tighter than before, not yet exhaustive.
         """
         # NB: FalkorDB does not support the EXISTS { subquery } form. Use an
-        # OPTIONAL MATCH anti-join: an export is dead when no *other* file imports
-        # its file (self-imports excluded via the path inequality).
+        # OPTIONAL MATCH anti-join: an importer keeps an export alive only when it
+        # imports that name (or the edge carries no name info -> conservative keep).
         query = """
         MATCH (file:File)-[:EXPORTS]->(entity)
         WHERE NOT entity.is_entry_point
           AND file.is_documentation <> true
-        OPTIONAL MATCH (importer:File)-[:IMPORTS]->(file)
+        OPTIONAL MATCH (importer:File)-[imp:IMPORTS]->(file)
         WHERE importer.path <> file.path
+          AND (imp.names IS NULL OR entity.name IN imp.names)
         WITH file, entity, count(importer) AS importers
         WHERE importers = 0
         RETURN entity.qualified_name AS qualified_name,

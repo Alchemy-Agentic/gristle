@@ -636,6 +636,40 @@ class TestExportAwareFiltering:
         assert result[0] == "func::src/db.ts::query"
 
 
+class TestImportEdgeNames:
+    """IMPORTS edges carry the union of imported names (for symbol-level dead exports)."""
+
+    def test_imports_edge_unions_names(self):
+        utils = _make_file(
+            "src/utils.ts",
+            functions=[
+                _make_func("helperA", "src/utils.ts", is_exported=True),
+                _make_func("helperB", "src/utils.ts", is_exported=True),
+            ],
+        )
+        # Same target imported via two statements — names must union on one edge.
+        app = _make_file(
+            "src/app.ts",
+            imports=[
+                _make_import("./utils", imported_names=["helperB"], is_relative=True),
+                _make_import("./utils", imported_names=["helperA"], is_relative=True),
+            ],
+        )
+        pipeline = _setup_pipeline([utils, app])
+        batch = BatchCollector(pipeline.graph, batch_size=200)
+        pipeline._resolve_imports([utils, app], IngestionResult(repo_id="test", repo_path="/tmp"), batch)
+        batch.flush()
+
+        names = None
+        for call in pipeline.graph.batch_merge_relationships.call_args_list:
+            if call[0][0] != "IMPORTS":
+                continue
+            for item in call[0][1]:
+                if item["from_id"] == "file::src/app.ts" and item["to_id"] == "file::src/utils.ts":
+                    names = item.get("names")
+        assert names == ["helperA", "helperB"]  # unioned across both import lines, sorted
+
+
 class TestDependencyUsageEdges:
     """USES_DEPENDENCY edges should link functions to external packages."""
 
