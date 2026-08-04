@@ -905,8 +905,10 @@ async def gristle_flag_analysis(
     be flipped from the admin panel), superseded_families (version pairs), retired,
     and an interactions map (flag -> flags it depends on, from registry docs).
 
-    With a `key`, returns that flag's facts + the exact functions it gates
-    (its blast radius).
+    With a `key`, returns that flag's facts, the functions it gates, and its
+    reach/blast radius: the user-facing routes, data models, and co-gating flags
+    reachable from the gated functions — the safety check before retiring it
+    ("what does this flag's code touch, and is it still gated by something else?").
 
     Requires an app whose flag convention matches the configured profile
     (GRISTLE_FLAG_* settings; defaults to the Supabase/`useFeatureFlag` shape).
@@ -921,7 +923,11 @@ async def gristle_flag_analysis(
     if engine is None:
         return {"error": "No repository ingested. Call gristle_ingest first."}
     if key:
-        return engine.flag_gates(key)
+        detail = engine.flag_gates(key)
+        if "error" in detail:
+            return detail
+        detail["reach"] = engine.flag_reach(key)
+        return detail
     return engine.analyze_flags()
 
 

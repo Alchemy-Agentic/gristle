@@ -32,7 +32,14 @@ All notable changes to Gristle are documented here. This file is intended for co
   "fully rolled out → safe to retire" signal needs the live flag table and is not decidable
   from code.
 - **MCP tool `gristle_flag_analysis`** — no `key`: the flag health report; with a `key`:
-  that flag's facts + the exact functions it gates (blast radius).
+  that flag's facts, the functions it gates, and its **reach / blast radius** — the
+  user-facing routes, data models (read/write), and co-gating flags reachable from
+  the gated functions, traced through the call / USES_MODEL / CALLS_RPC graph. This is
+  the safety check a retire decision needs and that neither grep nor the flag table can
+  answer: e.g. a flag whose gate reaches a `write` to a billing table, or whose gating
+  function is shared by eight other flags, is not safe to remove in isolation. Reach is
+  at function granularity (an upper bound — "what to review", not "what dies").
+  `QueryEngine` exposes `analyze_flags` / `flag_gates` / `flag_reach`.
 
 ### Changed
 - **`GRAPH_SCHEMA_VERSION` → 3.** Additive only (new `Flag` node + `GATES` edge; no existing

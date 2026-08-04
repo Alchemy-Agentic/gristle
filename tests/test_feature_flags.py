@@ -302,3 +302,106 @@ class TestFlagExtractor:
         }
         assert nodes["ENABLE_A"]["in_db"] is True
         assert nodes["ENABLE_A"]["retired"] is False
+
+
+# ---------------------------------------------------------------------------
+# Query surface: analyze_flags + flag_reach
+# ---------------------------------------------------------------------------
+
+
+def _qr(records):
+    from gristle.graph.client import QueryResult
+
+    return QueryResult(records=records, summary={})
+
+
+def _engine(side_effect):
+    from gristle.query.engine import QueryEngine
+
+    graph = MagicMock()
+    graph.execute.side_effect = side_effect
+    return QueryEngine(graph, repo_path=None)
+
+
+class TestAnalyzeFlags:
+    def _rows(self):
+        def row(key, **kw):
+            base = {
+                "key": key,
+                "in_registry": False,
+                "in_db": False,
+                "retired": False,
+                "orphan": False,
+                "registry_default": None,
+                "gates_count": 0,
+                "description": "",
+            }
+            base.update(kw)
+            return base
+
+        return [
+            row("DEAD", in_registry=True, registry_default=False, gates_count=0),
+            row("ORPH", orphan=True, gates_count=1),
+            row("GAP", in_registry=True, registry_default=False, gates_count=2),
+            row("OLD", retired=True),
+            row("CHILD", in_registry=True, in_db=True, gates_count=1, description="Requires PARENT to be on"),
+            row("FEAT", in_registry=True, in_db=True, gates_count=1),
+            row("FEAT_V2", in_registry=True, in_db=True, gates_count=1),
+        ]
+
+    def test_categorization(self):
+        engine = _engine([_qr(self._rows())])
+        r = engine.analyze_flags()
+        assert r["dead_candidates"] == ["DEAD"]
+        assert [o["key"] for o in r["orphan_checks"]] == ["ORPH"]
+        assert [c["key"] for c in r["config_gap"]] == ["GAP"]
+        assert r["retired"] == ["OLD"]
+        assert r["interactions"]["CHILD"] == ["PARENT"]
+        assert r["superseded_families"].get("FEAT") == ["FEAT", "FEAT_V2"]
+
+    def test_retired_is_not_dead(self):
+        # A retired flag with 0 gates must not also be a dead candidate.
+        engine = _engine(
+            [
+                _qr(
+                    [
+                        {
+                            "key": "OLD",
+                            "in_registry": True,
+                            "in_db": False,
+                            "retired": True,
+                            "orphan": False,
+                            "registry_default": False,
+                            "gates_count": 0,
+                            "description": "",
+                        }
+                    ]
+                )
+            ]
+        )
+        r = engine.analyze_flags()
+        assert r["dead_candidates"] == []
+        assert r["retired"] == ["OLD"]
+
+
+class TestFlagReach:
+    def test_reach_merges_and_shapes(self):
+        engine = _engine(
+            [
+                _qr([{"f.key": "F"}]),  # existence
+                _qr([{"function": "gateFn", "file": "a.ts"}]),  # gated
+                _qr([{"method": "GET", "path": "/x"}]),  # routes
+                _qr([{"model": "User", "access": "read"}]),  # direct models
+                _qr([{"model": "User", "access": "write"}]),  # rpc models (write beats read)
+                _qr([{"flag": "OTHER", "shared_functions": 1}]),  # co-gating
+            ]
+        )
+        r = engine.flag_reach("F")
+        assert r["gated_functions_count"] == 1
+        assert r["routes_behind_flag"] == [{"method": "GET", "path": "/x"}]
+        assert r["models_touched"] == [{"model": "User", "access": "write"}]  # write won
+        assert r["co_gating_flags"] == [{"flag": "OTHER", "shared_functions": 1}]
+
+    def test_reach_missing_flag(self):
+        engine = _engine([_qr([])])  # existence returns nothing
+        assert "error" in engine.flag_reach("NOPE")

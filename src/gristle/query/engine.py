@@ -1507,6 +1507,91 @@ class QueryEngine:
         ).records
         return {"flag": node[0], "gates": gates}
 
+    def flag_reach(self, key: str, depth: int = 3) -> dict[str, Any]:
+        """Blast radius of a flag — the user-facing routes, data models, and
+        co-gating flags reachable from the functions it gates. Answers "if we retire
+        this flag, what does its code touch, and is that code still gated by something
+        else?" — the safety check the retire list needs, which neither grep nor the
+        flag table can do.
+
+        Reach is at FUNCTION granularity (the graph doesn't model which *branch* a
+        flag gates), so it is the subsystem a flag's checking functions can reach — an
+        upper bound. Read it as "what to review before removing", not "what dies".
+        """
+        if not self.graph.execute("MATCH (f:Flag {key: $key}) RETURN f.key", {"key": key}).records:
+            return {"error": f"No flag '{key}' in the graph."}
+
+        gated = self.graph.execute(
+            "MATCH (:Flag {key: $key})-[:GATES]->(fn:Function) "
+            "RETURN fn.name AS function, fn.file_path AS file ORDER BY fn.file_path, fn.name",
+            {"key": key},
+        ).records
+
+        # Routes from which a gated function is reachable (or that it directly handles)
+        # — the user-facing surfaces behind the flag.
+        routes = self.graph.execute(
+            f"""
+            MATCH (:Flag {{key: $key}})-[:GATES]->(g:Function)
+            MATCH (r:Route)-[:HANDLES]->(h)
+            WHERE h = g OR (h)-[:CALLS|RENDERS*1..{depth}]->(g)
+            RETURN DISTINCT r.method AS method, r.path AS path ORDER BY r.path, r.method
+            """,
+            {"key": key},
+        ).records
+
+        # Data models the gated subsystem reads/writes — directly and through RPC bodies.
+        direct_models = self.graph.execute(
+            f"""
+            MATCH (:Flag {{key: $key}})-[:GATES]->(g:Function)
+            MATCH (g)-[:CALLS*0..{depth}]->(:Function)-[um:USES_MODEL]->(m:Model)
+            RETURN DISTINCT m.name AS model, um.access AS access
+            """,
+            {"key": key},
+        ).records
+        rpc_models = self.graph.execute(
+            f"""
+            MATCH (:Flag {{key: $key}})-[:GATES]->(g:Function)
+            MATCH (g)-[:CALLS*0..{depth}]->(:Function)-[:CALLS_RPC]->(:DBFunction)-[dr:USES_MODEL]->(m:Model)
+            RETURN DISTINCT m.name AS model, dr.access AS access
+            """,
+            {"key": key},
+        ).records
+        model_access: dict[str, str] = {}  # write beats read
+        for r in direct_models + rpc_models:
+            name = r.get("model")
+            if not isinstance(name, str):
+                continue
+            access = r.get("access")
+            access = access if isinstance(access, str) else "read"
+            if access == "write" or name not in model_access:
+                model_access[name] = access
+        models = [{"model": n, "access": a} for n, a in sorted(model_access.items())]
+
+        # Other flags gating the same functions — if you remove this one, is the code
+        # still gated? (A shared gate means the removal is safe only after both go.)
+        cogating = self.graph.execute(
+            "MATCH (:Flag {key: $key})-[:GATES]->(g:Function)<-[:GATES]-(o:Flag) "
+            "WHERE o.key <> $key "
+            "RETURN o.key AS flag, count(DISTINCT g) AS shared_functions "
+            "ORDER BY shared_functions DESC, o.key",
+            {"key": key},
+        ).records
+
+        result = {
+            "flag": key,
+            "depth": depth,
+            "gated_functions": gated,
+            "gated_functions_count": len(gated),
+            "routes_behind_flag": routes,
+            "routes_behind_flag_count": len(routes),
+            "models_touched": models,
+            "models_touched_count": len(models),
+            "co_gating_flags": cogating,
+        }
+        for field in ("gated_functions", "routes_behind_flag", "models_touched", "co_gating_flags"):
+            self._cap_list(result, field)
+        return result
+
     # ------------------------------------------------------------------
     # 14. Conventions inference
     # ------------------------------------------------------------------
