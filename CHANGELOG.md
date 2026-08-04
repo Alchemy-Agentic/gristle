@@ -24,8 +24,11 @@ All notable changes to Gristle are documented here. This file is intended for co
   `in_registry`, `in_db`, `retired`, `orphan` (checked but defined nowhere),
   `registry_default`, `gates_count`. The report surfaces retire candidates (declared, zero
   gates), orphans, config-gaps (default-off + DB-controlled + no seed row → can't be flipped
-  from admin), superseded version families, and a dependency/interaction map. **Detection is
-  convention-configured, not heuristic** — `GRISTLE_FLAG_*` settings declare the check
+  from admin), superseded version families, a dependency/interaction map, and
+  **`client_only_gated`** — flags gated in the UI but not server-side (from a client/server
+  classification of the gate files), a possible enforcement bypass for anything gating a
+  paid/privileged feature. Per-flag `surfaces` (`client`/`server`) is on the detail view.
+  **Detection is convention-configured, not heuristic** — `GRISTLE_FLAG_*` settings declare the check
   functions, flag table, and registry/accessor symbols; defaults describe the
   Supabase/`useFeatureFlag` shape, and other conventions (LaunchDarkly, Unleash, …) are just
   alternate values. "Dead"/"config-gap" are code-derived candidates to verify — the

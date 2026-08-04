@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # gets a GATES edge instead of looking dead. Defaults include the registry
     # symbols plus the conventional runtime cache.
     flag_accessor_symbols: frozenset[str] = frozenset({"featureFlags", "runtimeFlagCache"})
+    # Path fragments that mark a SERVER-side gate (edge functions, workers, API/backend
+    # dirs). A flag checked only in files outside these is client-only — gated in the UI
+    # but not enforced server-side, so a user can bypass it by calling the API directly.
+    # Convention-based; override for other layouts.
+    flag_server_markers: frozenset[str] = frozenset(
+        {"supabase/functions/", "/workers/", "workers/", "/server/", "/backend/", "/api/", "/functions/"}
+    )
 
     @field_validator("falkordb_port", "http_port")
     @classmethod

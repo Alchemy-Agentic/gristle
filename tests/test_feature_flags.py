@@ -335,18 +335,23 @@ class TestAnalyzeFlags:
                 "registry_default": None,
                 "gates_count": 0,
                 "description": "",
+                "gate_files": [],
             }
             base.update(kw)
             return base
 
         return [
             row("DEAD", in_registry=True, registry_default=False, gates_count=0),
-            row("ORPH", orphan=True, gates_count=1),
+            row("ORPH", orphan=True, gates_count=1, gate_files=["supabase/functions/x/index.ts"]),
             row("GAP", in_registry=True, registry_default=False, gates_count=2),
             row("OLD", retired=True),
             row("CHILD", in_registry=True, in_db=True, gates_count=1, description="Requires PARENT to be on"),
             row("FEAT", in_registry=True, in_db=True, gates_count=1),
             row("FEAT_V2", in_registry=True, in_db=True, gates_count=1),
+            row("CLIENTONLY", in_registry=True, in_db=True, gates_count=1, gate_files=["src/components/X.tsx"]),
+            row(
+                "SERVERGATED", in_registry=True, in_db=True, gates_count=1, gate_files=["supabase/functions/y/index.ts"]
+            ),
         ]
 
     def test_categorization(self):
@@ -358,6 +363,20 @@ class TestAnalyzeFlags:
         assert r["retired"] == ["OLD"]
         assert r["interactions"]["CHILD"] == ["PARENT"]
         assert r["superseded_families"].get("FEAT") == ["FEAT", "FEAT_V2"]
+
+    def test_client_only_gated_is_enforcement_gap(self):
+        engine = _engine([_qr(self._rows())])
+        r = engine.analyze_flags()
+        keys = {c["key"] for c in r["client_only_gated"]}
+        assert "CLIENTONLY" in keys  # gated only in src/ -> client-only
+        assert "SERVERGATED" not in keys  # gated in supabase/functions/ -> server-enforced
+
+    def test_surfaces_classification(self):
+        from gristle.query.engine import QueryEngine
+
+        assert QueryEngine._flag_surfaces(["src/a.ts"]) == ["client"]
+        assert QueryEngine._flag_surfaces(["supabase/functions/x/index.ts"]) == ["server"]
+        assert QueryEngine._flag_surfaces(["src/a.ts", "workers/b.ts"]) == ["client", "server"]
 
     def test_retired_is_not_dead(self):
         # A retired flag with 0 gates must not also be a dead candidate.

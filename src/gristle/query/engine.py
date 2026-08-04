@@ -1418,25 +1418,28 @@ class QueryEngine:
         rows = self.graph.execute(
             """
             MATCH (f:Flag)
+            OPTIONAL MATCH (f)-[:GATES]->(fn:Function)
             RETURN f.key AS key, f.in_registry AS in_registry, f.in_db AS in_db,
                    f.retired AS retired, f.orphan AS orphan,
                    f.registry_default AS registry_default,
-                   f.gates_count AS gates_count, f.description AS description
+                   f.gates_count AS gates_count, f.description AS description,
+                   collect(DISTINCT fn.file_path) AS gate_files
             ORDER BY f.key
             """
         ).records
 
-        dead, orphan, config_gap, retired = [], [], [], []
+        dead, orphan, config_gap, retired, client_only = [], [], [], [], []
         deps: dict[str, list[str]] = {}
         for r in rows:
             key = r["key"]
             gates = r["gates_count"] or 0
+            surfaces = self._flag_surfaces(r.get("gate_files") or [])
             if r["retired"]:
                 retired.append(key)
             if r["in_registry"] and gates == 0 and not r["retired"]:
                 dead.append(key)
             if r["orphan"]:
-                orphan.append({"key": key, "gates_count": gates})
+                orphan.append({"key": key, "gates_count": gates, "surfaces": surfaces})
             if (
                 r["in_registry"]
                 and not r["in_db"]
@@ -1445,6 +1448,12 @@ class QueryEngine:
                 and gates > 0
             ):
                 config_gap.append({"key": key, "gates_count": gates})
+            # Gated in the client only — enforced in the UI but not server-side, so a
+            # user can bypass it by calling the API directly. A likely enforcement gap
+            # for anything gating a paid/privileged feature (verify: some flags are
+            # legitimately presentation-only).
+            if gates > 0 and surfaces == ["client"]:
+                client_only.append({"key": key, "gates_count": gates})
             for m in self._FLAG_DEP_RE.finditer(r["description"] or ""):
                 target = m.group(1).upper()
                 if target != key:
@@ -1464,11 +1473,32 @@ class QueryEngine:
             "dead_candidates": dead,
             "orphan_checks": orphan,
             "config_gap": config_gap,
+            "client_only_gated": client_only,
             "superseded_families": self._flag_version_families(keys),
             "retired": sorted(retired),
             "interactions": deps,
-            "note": "dead_candidates and config_gap are code-derived; confirm 'fully rolled out' against the live flag table before retiring.",
+            "note": "dead_candidates and config_gap are code-derived; confirm 'fully rolled out' against the live flag table before retiring. client_only_gated = gated in the UI but not server-side (possible bypass) — verify, some flags are presentation-only.",
         }
+
+    @staticmethod
+    def _flag_surfaces(file_paths: list[str]) -> list[str]:
+        """Classify a flag's gate files into ``client`` / ``server`` surfaces from the
+        configured server path markers. Returns [] when nothing gates it."""
+        markers = settings.flag_server_markers
+        client = server = False
+        for fp in file_paths:
+            if fp is None:
+                continue
+            if any(m in fp for m in markers):
+                server = True
+            else:
+                client = True
+        out = []
+        if client:
+            out.append("client")
+        if server:
+            out.append("server")
+        return out
 
     @staticmethod
     def _flag_version_families(keys: list[str]) -> dict[str, list[str]]:
@@ -1505,7 +1535,8 @@ class QueryEngine:
             """,
             {"key": key},
         ).records
-        return {"flag": node[0], "gates": gates}
+        surfaces = self._flag_surfaces([g["file"] for g in gates])
+        return {"flag": node[0], "surfaces": surfaces, "gates": gates}
 
     def flag_reach(self, key: str, depth: int = 3) -> dict[str, Any]:
         """Blast radius of a flag — the user-facing routes, data models, and
