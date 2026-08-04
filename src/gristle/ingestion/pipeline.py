@@ -1091,7 +1091,7 @@ class IngestionPipeline:
         self._resolve_unlinked_middleware(batch)
 
         # Resolve TESTS_FUNCTION edges (test function -> production function, depth 1-2)
-        self._resolve_test_function_edges(result, batch)
+        self._resolve_test_function_edges(parsed_files, result, batch)
 
         # Resolve RETURNS and ACCEPTS edges (type flow)
         self._resolve_type_edges(parsed_files, batch)
@@ -1189,23 +1189,27 @@ class IngestionPipeline:
 
     def _resolve_test_function_edges(
         self,
+        parsed_files: list[ParsedFile],
         result: IngestionResult,
         batch: BatchCollector,
     ) -> None:
         """Create TESTS_FUNCTION edges from test functions to production functions.
 
-        Uses three strategies:
+        Uses four strategies:
         1. Walk CALLS edges at depth 1 (direct calls from test functions)
         2. Walk CALLS edges at depth 2 (via helper functions)
         3. Import-based fallback: if a test file imports from a production file,
            link test functions in that file to exported functions in the production
-           file at depth 3 (inferred from imports). This is especially important
-           for JS/TS where describe/it callbacks don't create Function nodes.
+           file at depth 3 (inferred from imports).
+        4. Inline test blocks (depth 0): describe/it/test callbacks create no Function
+           node, so their calls are resolved from the TestCase node directly — precise
+           coverage that the coarse import fallback (3) only approximates.
         """
-        if not self._test_func_ids and not self._test_file_import_targets:
+        has_test_case_calls = any(tc.calls for pf in parsed_files for tc in pf.test_cases)
+        if not self._test_func_ids and not self._test_file_import_targets and not has_test_case_calls:
             return
 
-        # tested_func_id -> set of test_func_ids that exercise it
+        # tested_func_id -> set of test source ids (test Function or TestCase) that exercise it
         tested_by: dict[str, set[str]] = {}
 
         for test_id in self._test_func_ids:
@@ -1252,6 +1256,9 @@ class IngestionPipeline:
         # coverage from import statements. Not applied to Python where test_*
         # naming gives reliable call-graph resolution.
         self._resolve_import_based_test_edges(result, batch, tested_by)
+
+        # Depth 0: precise inline it()/test() coverage straight from TestCase nodes.
+        self._resolve_test_case_edges(parsed_files, result, batch, tested_by)
 
         # Update tested_by_count on production Function nodes via direct query
         if tested_by:
@@ -1326,6 +1333,67 @@ class IngestionPipeline:
                         )
                         result.test_coverage_edges += 1
                         tested_by.setdefault(prod_func_id, set()).add(test_id)
+
+    def _resolve_test_case_edges(
+        self,
+        parsed_files: list[ParsedFile],
+        result: IngestionResult,
+        batch: BatchCollector,
+        tested_by: dict[str, set[str]],
+    ) -> None:
+        """Link inline it()/test() blocks to the functions they exercise (depth 0).
+
+        describe/it/test callbacks don't become Function nodes, so their calls are
+        invisible to the call graph. Resolve each leaf block's captured bare calls
+        (``ParsedTestCase.calls``) and emit ``TestCase-[:TESTS_FUNCTION {depth:0}]->
+        Function``. This yields precise per-test coverage (feeds ``tested_by_count``)
+        and stops orphaning test helpers — the coarse depth-3 import fallback only
+        approximated this, and never fired for inline-only test files (no test
+        Function nodes). Targets are NOT filtered by ``is_test``: helpers in a test
+        file are themselves ``is_test`` Function nodes, and linking them is precisely
+        the un-orphaning we want.
+        """
+        from gristle.models import ParsedFunction
+
+        for pf in parsed_files:
+            for tc in pf.test_cases:
+                if not tc.calls:
+                    continue
+                tc_id = f"testcase::{tc.file_path}::L{tc.start_line}"
+                # Minimal caller context: for bare names _find_callee never dereferences
+                # the caller (only its dotted branch does, and tc.calls is bare-only), so
+                # this stub just supplies the file for scoped/import/same-file resolution.
+                caller = ParsedFunction(
+                    name=tc.name or "<test>",
+                    qualified_name=f"{tc.file_path}::<testcase L{tc.start_line}>",
+                    file_path=tc.file_path,
+                    start_line=tc.start_line,
+                    end_line=tc.end_line,
+                    signature="",
+                )
+                for call_name in tc.calls:
+                    match = self._find_callee(call_name, caller, pf)
+                    if match is None:
+                        continue
+                    callee_id, method = match
+                    if not callee_id.startswith("func::"):
+                        continue
+                    # Test bodies are full of bare framework calls (render, act, waitFor)
+                    # that aren't imported; the weakest `unique_global` tier would bind
+                    # them to a lone same-named local function. Real test->fn calls resolve
+                    # via import/same-file, so dropping unique_global here is precision-safe.
+                    if method == "unique_global":
+                        continue
+                    if tc_id in tested_by.get(callee_id, set()):
+                        continue
+                    batch.add_merge_relationship(
+                        "TESTS_FUNCTION",
+                        tc_id,
+                        callee_id,
+                        {"depth": 0},
+                    )
+                    result.test_coverage_edges += 1
+                    tested_by.setdefault(callee_id, set()).add(tc_id)
 
     # Primitives that don't need RETURNS/ACCEPTS edges
     _PRIMITIVE_TYPES = frozenset(

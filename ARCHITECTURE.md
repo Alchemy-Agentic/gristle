@@ -65,7 +65,7 @@ src/gristle/
   models.py                # All parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo graph isolation
-    schema.py              # Index creation (33 property indexes, 2 full-text)
+    schema.py              # Index creation (34 property indexes, 2 full-text)
   parsers/
     base.py                # Abstract LanguageParser base class
     registry.py            # Extension-based parser dispatch
@@ -189,6 +189,7 @@ Represents a function or method.
 | `block_type` | `str` | `"describe"` / `"it"` / `"test"` / `"class"` |
 | `parent_describe` | `str \| None` | Enclosing Test class name |
 | `parametrize_count` | `int` | Number of @pytest.mark.parametrize variants (0 = not parametrized) |
+| `calls` | `list[str]` | Bare call names in a leaf (`it`/`test`) block's callback body; resolved to `TestCase-[:TESTS_FUNCTION]->Function` edges. Empty for `describe`/`class` blocks |
 
 ### ParsedRoute
 
@@ -422,7 +423,7 @@ This phase creates all relationship edges that require cross-file knowledge:
 6. **Resolve IMPORTS edges** (File -> File) based on import statements. Each import is tracked as `resolved=True` (internal) or `resolved=False` (external/unresolved).
 7. **Resolve TESTS edges** (test File -> production File) by matching import paths.
 8. **Resolve USES_FIXTURE edges** (test Function -> fixture Function) by parameter name matching.
-9. **Resolve TESTS_FUNCTION edges** (test Function -> production Function) by walking test functions' CALLS edges to depth 2, with import-based depth-3 fallback for JS/TS, then updating `tested_by_count` on production functions.
+9. **Resolve TESTS_FUNCTION edges** (test -> production Function) by walking test functions' CALLS edges to depth 2, with import-based depth-3 fallback for JS/TS, plus depth-0 edges from inline `it()`/`test()` `TestCase` nodes (their callback calls, which create no Function node), then updating `tested_by_count` on the targets.
 10. **Resolve USES_DEPENDENCY edges** for external packages.
 
 ### Config Phase: Config Files & Environment Variables
@@ -519,7 +520,8 @@ Function-level test coverage is derived from the call graph:
 3. Any non-test `Function` reached gets a `TESTS_FUNCTION` edge with a `depth` property (1 = direct call, 2 = via helper).
 4. Direct coverage (depth 1) takes priority — if a test calls a function both directly and indirectly, only the depth-1 edge is created.
 5. **Import-based fallback (depth 3, JS/TS only):** For test functions in non-Python test files that have no depth 1-2 coverage, the pipeline checks what production files the test file imports and creates depth-3 edges to exported functions in those files. This handles TS/JS test helpers that use `import { validate } from '../validate'` without explicit calls visible in the AST.
-6. `tested_by_count` is computed for each production function and written to the graph via a batched `UNWIND` update.
+6. **Inline test blocks (depth 0):** `describe`/`it`/`test` callbacks create no Function node, so their calls are invisible to steps 1-5. Instead, the bare calls captured on each leaf (`it`/`test`) `TestCase` (`ParsedTestCase.calls`) are resolved with the same `_find_callee` machinery and emitted as `TestCase-[:TESTS_FUNCTION {depth: 0}]->Function`. This gives precise per-test coverage that the depth-3 import fallback only approximated (and which never fired for inline-only test files, since they have no test Function nodes), and un-orphans test helpers that are exercised only inside `it()` blocks. Targets are **not** filtered by `is_test`: a helper in a test file is itself an `is_test` Function, and linking it is precisely the un-orphaning intended. Because the source is a `TestCase` (not a Function), every `CALLS` edge stays `Function -> Function`.
+7. `tested_by_count` is computed for each production/helper function (aggregating distinct test Function **and** TestCase sources) and written to the graph via a batched `UNWIND` update.
 
 ### Route Auth Detection
 

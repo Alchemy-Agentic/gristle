@@ -1206,10 +1206,11 @@ class QueryEngine:
         # Test functions linked via TESTS_FUNCTION edges (preferred, has depth)
         tf_edges = self.graph.execute(
             """
-            MATCH (test:Function)-[r:TESTS_FUNCTION]->(target)
-            WHERE (target.name = $name OR target.qualified_name = $name)
-            RETURN DISTINCT test.name AS test_name,
-                   test.qualified_name AS test_qualified_name,
+            MATCH (test)-[r:TESTS_FUNCTION]->(target)
+            WHERE (test:Function OR test:TestCase)
+              AND (target.name = $name OR target.qualified_name = $name)
+            RETURN DISTINCT coalesce(test.qualified_name, test.id) AS test_qualified_name,
+                   test.name AS test_name,
                    test.file_path AS test_file,
                    test.start_line AS line,
                    r.depth AS depth,
@@ -1308,10 +1309,11 @@ class QueryEngine:
         # Get test functions that exercise it via TESTS_FUNCTION
         tests = self.graph.execute(
             """
-            MATCH (test:Function)-[r:TESTS_FUNCTION]->(f:Function)
-            WHERE f.name = $name OR f.qualified_name = $name
+            MATCH (test)-[r:TESTS_FUNCTION]->(f:Function)
+            WHERE (test:Function OR test:TestCase)
+              AND (f.name = $name OR f.qualified_name = $name)
             RETURN test.name AS test_name,
-                   test.qualified_name AS test_qualified_name,
+                   coalesce(test.qualified_name, test.id) AS test_qualified_name,
                    test.file_path AS test_file,
                    r.depth AS depth
             ORDER BY r.depth, test_file, test_name

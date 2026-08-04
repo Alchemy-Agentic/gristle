@@ -2481,6 +2481,19 @@ class TypeScriptParser(LanguageParser):
         if not name:
             return None
 
+        # Leaf test blocks (it/test) run a callback that isn't a Function node, so its
+        # calls are otherwise lost. Capture the BARE call names in that body so the
+        # pipeline can link the TestCase to the functions it exercises. Bare-only (no
+        # dotted method calls) — matches call resolution's precise slice; assertion
+        # libs (expect, vi.fn) simply don't resolve to local functions. A `.skip`
+        # modifier (it.skip/test.skip) marks a disabled test that never runs, so its
+        # calls are NOT coverage — skip extraction for those.
+        calls: list[str] = []
+        if func_name in ("it", "test") and not self._is_skipped_test(func, src):
+            body = self._get_test_block_body(node)
+            if body is not None:
+                calls = [c for c in self._extract_calls(body, src) if "." not in c]
+
         return ParsedTestCase(
             name=name,
             block_type=func_name,
@@ -2488,6 +2501,7 @@ class TypeScriptParser(LanguageParser):
             start_line=node.start_point[0] + 1,
             end_line=node.end_point[0] + 1,
             parent_describe=parent_describe,
+            calls=calls,
         )
 
     def _get_test_block_body(self, call_node: Node) -> Node | None:
@@ -2499,6 +2513,14 @@ class TypeScriptParser(LanguageParser):
             if child.type in ("arrow_function", "function_expression"):
                 return child.child_by_field_name("body")
         return None
+
+    @staticmethod
+    def _is_skipped_test(func_node: Node, src: bytes) -> bool:
+        """True for it.skip(...) / test.skip(...) — a disabled test whose body never runs."""
+        if func_node.type != "member_expression":
+            return False
+        prop = func_node.child_by_field_name("property")
+        return prop is not None and src[prop.start_byte : prop.end_byte].decode(errors="replace") == "skip"
 
     # ------------------------------------------------------------------
     # Helpers

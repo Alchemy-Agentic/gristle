@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 # Function edges from configured flag-check call sites;
 # 4 = IMPORTS edges carry a `names` list (the union of symbols each file imports from a
 # target), enabling symbol-level dead-export detection instead of the file-level floor.
-GRAPH_SCHEMA_VERSION = 4
+# 5 = inline test coverage: TestCase-[:TESTS_FUNCTION]->Function edges (depth=0) from the
+# calls in it()/test() callback bodies, so describe/it blocks (which create no Function
+# node) now carry precise test->production coverage and stop orphaning test helpers.
+GRAPH_SCHEMA_VERSION = 5
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).
@@ -73,6 +76,7 @@ _INDEXES: list[tuple[str, str]] = [
     ("Variable", "file_path"),
     ("Flag", "id"),
     ("Flag", "key"),
+    ("TestCase", "id"),
 ]
 
 # Full-text indexes for docstring search.

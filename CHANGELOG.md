@@ -7,6 +7,23 @@ All notable changes to Gristle are documented here. This file is intended for co
 ## [Unreleased]
 
 ### Added
+- **Inline test coverage — `TestCase-[:TESTS_FUNCTION]->Function` edges (depth 0).** In
+  JS/TS, `describe`/`it`/`test` callbacks don't create Function nodes, so the functions a
+  test exercises inside an `it('...', () => { ... })` block were invisible to the call
+  graph — production functions looked untested and test-file helpers looked dead. Gristle
+  now captures the bare calls in each leaf `it()`/`test()` block and links the `TestCase`
+  node straight to the functions it exercises, resolved with the same precise machinery as
+  regular calls (assertion libs like `expect`/`vi.fn` don't resolve to local functions, so
+  they're dropped). This yields **precise per-test coverage** — feeding `tested_by_count`,
+  `get_tests_for_entity`, `find_untested`, and `blast_radius` — that the previous coarse
+  import-based fallback only approximated (and which never fired for inline-only test
+  files), and it **un-orphans test helpers** exercised only inside `it()` blocks. Because
+  the new edges originate from `TestCase` nodes, every `CALLS` edge stays `Function ->
+  Function` (no consumer query that walks `(:Function)-[:CALLS]->` changes). `TESTS_FUNCTION`
+  now has a `depth: 0` tier (inline block) alongside 1/2 (call graph) and 3 (import
+  fallback); consumers that read `TESTS_FUNCTION` should accept a `TestCase` source as well
+  as `Function`. Measured on real TS repos: pig-knuckle +10.3k precise inline edges / 682
+  helpers un-orphaned; zod +787 edges. **Schema version 4 -> 5** (re-ingest to benefit).
 - **Feature-flag analysis — `Flag` nodes and `Flag-[:GATES]->Function` edges.** Gristle
   now models an app's feature flags as first-class graph entities and links the code that
   checks them, so "which flags can we retire, what does each gate, how do they interact"

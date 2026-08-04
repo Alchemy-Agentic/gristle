@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from gristle.ingestion.batch import BatchCollector
 from gristle.ingestion.pipeline import IngestionPipeline, IngestionResult
-from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedVariable
+from gristle.models import ParsedClass, ParsedFile, ParsedFunction, ParsedImport, ParsedTestCase, ParsedVariable
 
 
 def _make_graph_mock() -> MagicMock:
@@ -543,6 +543,99 @@ class TestTestCoverageEdges:
         _, result = self._run_test_edges([file_a, file_b, test_file])
 
         assert result.test_coverage_edges == 2
+
+
+class TestInlineTestCaseCoverage:
+    """Inline it()/test() blocks link to the functions they exercise (depth 0)."""
+
+    def _run(self, parsed_files: list[ParsedFile]) -> tuple[IngestionPipeline, IngestionResult, dict]:
+        pipeline = _setup_pipeline(parsed_files)
+        result = IngestionResult(repo_id="test", repo_path="/tmp")
+        batch = BatchCollector(pipeline.graph, batch_size=200)
+        tested_by: dict[str, set[str]] = {}
+        pipeline._resolve_test_case_edges(parsed_files, result, batch, tested_by)
+        batch.flush()
+        return pipeline, result, tested_by
+
+    def _tc(self, name: str, file_path: str, calls: list[str], line: int = 5) -> ParsedTestCase:
+        return ParsedTestCase(
+            name=name,
+            block_type="it",
+            file_path=file_path,
+            start_line=line,
+            end_line=line + 3,
+            calls=calls,
+        )
+
+    def test_links_to_same_file_helper(self):
+        """A helper defined in the test file (is_test) is un-orphaned by the it() block."""
+        helper = _make_func("makeResult", "src/foo.test.ts", is_test=True)
+        test_file = _make_file("src/foo.test.ts", functions=[helper], is_test_file=True)
+        test_file.test_cases = [self._tc("builds a result", "src/foo.test.ts", ["makeResult"])]
+
+        pipeline, result, tested_by = self._run([test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert (
+            "testcase::src/foo.test.ts::L5",
+            "func::src/foo.test.ts::makeResult",
+            "TESTS_FUNCTION",
+        ) in rels
+        assert result.test_coverage_edges == 1
+        assert "func::src/foo.test.ts::makeResult" in tested_by
+
+    def test_links_to_imported_production_fn(self):
+        """A production function exercised inline gets precise coverage."""
+        prod = _make_func("computeScore", "src/score.ts", is_exported=True)
+        prod_file = _make_file("src/score.ts", functions=[prod])
+        imp = _make_import("./score", imported_names=["computeScore"])
+        test_file = _make_file("src/score.test.ts", imports=[imp], is_test_file=True)
+        test_file.test_cases = [self._tc("scores", "src/score.test.ts", ["computeScore"], line=3)]
+
+        pipeline, result, _ = self._run([prod_file, test_file])
+
+        rels = _extract_batch_merge_rels(pipeline.graph)
+        assert (
+            "testcase::src/score.test.ts::L3",
+            "func::src/score.ts::computeScore",
+            "TESTS_FUNCTION",
+        ) in rels
+
+    def test_unresolved_library_call_dropped(self):
+        """A bare call that resolves to no local function (e.g. expect) creates no edge."""
+        test_file = _make_file("src/foo.test.ts", is_test_file=True)
+        test_file.test_cases = [self._tc("x", "src/foo.test.ts", ["expect"], line=1)]
+
+        _, result, _ = self._run([test_file])
+
+        assert result.test_coverage_edges == 0
+
+    def test_unique_global_not_used_for_test_bodies(self):
+        """A bare test-body call resolvable only via unique_global (e.g. a framework name
+        colliding with one local fn) creates NO edge — that tier is too weak for test noise."""
+        prod = _make_func("render", "src/render.ts", is_exported=True)  # lone global 'render'
+        prod_file = _make_file("src/render.ts", functions=[prod])
+        # test file does NOT import render; calls it bare (like testing-library's render())
+        test_file = _make_file("src/comp.test.ts", is_test_file=True)
+        test_file.test_cases = [self._tc("renders", "src/comp.test.ts", ["render"])]
+
+        _, result, _ = self._run([prod_file, test_file])
+
+        assert result.test_coverage_edges == 0
+
+    def test_two_blocks_hitting_same_helper_count_distinctly(self):
+        """tested_by aggregates distinct TestCase sources for a shared helper."""
+        helper = _make_func("seed", "src/db.test.ts", is_test=True)
+        test_file = _make_file("src/db.test.ts", functions=[helper], is_test_file=True)
+        test_file.test_cases = [
+            self._tc("a", "src/db.test.ts", ["seed"], line=5),
+            self._tc("b", "src/db.test.ts", ["seed"], line=10),
+        ]
+
+        _, result, tested_by = self._run([test_file])
+
+        assert result.test_coverage_edges == 2
+        assert len(tested_by["func::src/db.test.ts::seed"]) == 2
 
 
 class TestExportAwareFiltering:

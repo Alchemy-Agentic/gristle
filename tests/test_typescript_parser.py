@@ -994,6 +994,46 @@ class TestTestCaseExtraction:
         assert result.test_cases[0].name == "returns true"
         assert result.test_cases[0].parent_describe is None
 
+    def test_it_block_captures_bare_calls(self):
+        """it()/test() bodies capture bare call names; describe blocks do not."""
+        parser = TypeScriptParser()
+        code = (
+            "import { describe, it, expect } from 'vitest';\n"
+            "import { computeScore } from './score';\n"
+            "function makeInput() { return 1; }\n"
+            "describe('scoring', () => {\n"
+            "  it('scores', () => {\n"
+            "    const x = makeInput();\n"
+            "    expect(computeScore(x)).toBe(2);\n"
+            "  });\n"
+            "});\n"
+        )
+        result = parser.parse_file("score.test.ts", code)
+        it_block = next(tc for tc in result.test_cases if tc.block_type == "it")
+        assert "makeInput" in it_block.calls
+        assert "computeScore" in it_block.calls
+        assert "expect" in it_block.calls  # bare call captured; pipeline drops it (no local defn)
+        # dotted calls (.toBe) are excluded — only bare names
+        assert all("." not in c for c in it_block.calls)
+        # describe is a container: no calls captured on it
+        describe_block = next(tc for tc in result.test_cases if tc.block_type == "describe")
+        assert describe_block.calls == []
+
+    def test_skipped_test_captures_no_calls(self):
+        """it.skip/test.skip never run, so their calls are not coverage; it.only runs."""
+        parser = TypeScriptParser()
+        code = (
+            "import { it } from 'vitest';\n"
+            "it.skip('disabled', () => { computeScore(); });\n"
+            "it.only('focused', () => { runThing(); });\n"
+            "it('normal', () => { doIt(); });\n"
+        )
+        result = parser.parse_file("x.test.ts", code)
+        by_name = {tc.name: tc for tc in result.test_cases}
+        assert by_name["disabled"].calls == []  # it.skip is disabled
+        assert "runThing" in by_name["focused"].calls  # it.only runs
+        assert "doIt" in by_name["normal"].calls
+
     def test_nested_describe_blocks(self):
         parser = TypeScriptParser()
         code = "describe('Outer', () => {\n  describe('Inner', () => {\n    it('works', () => {});\n  });\n});\n"

@@ -82,7 +82,7 @@ This clones the repo and runs full ingestion in one step.
 | `INHERITS_FROM` | Class | Class | Class inheritance |
 | `IMPORTS` | File | File | File-level import dependency. Carries `names` — the union of the symbols the importing file pulls from the target across all its import statements (a barrel `export { X } from './x'` records `X`). Powers symbol-level dead-export detection; absent on edges written by the incremental watcher (treated conservatively as importing everything) |
 | `TESTS` | File | File | Test file covers production file |
-| `TESTS_FUNCTION` | Function | Function | Test function exercises production function (with `depth` property: 1=direct, 2=via helper, 3=import-based JS/TS fallback) |
+| `TESTS_FUNCTION` | Function, TestCase | Function | A test exercises a production (or helper) function. The source is a test `Function` **or** a `TestCase` node — inline `it()`/`test()` blocks create no Function node, so their callback's calls are attributed to the `TestCase` directly. `depth` property: `0`=inline test-block call (precise), `1`=direct call from a test function, `2`=via a helper, `3`=import-based JS/TS fallback. Feeds `Function.tested_by_count`; un-orphans test helpers that are only exercised inside `it()` blocks |
 | `USES_FIXTURE` | Function | Function | Test uses pytest fixture (by parameter name) |
 | `USES_DEPENDENCY` | Function | Dependency | Uses external package |
 | `USES_VARIABLE` | Function | Variable | Function calls a method on an **imported** module-level `Variable` (`config.get()`, `schema.parse()`, `logger.info()`). Import-resolved and parameter-excluded for precision (same-named params/locals don't link); same-file variable use is intentionally not linked |

@@ -145,6 +145,11 @@ class ParsedTestCase:
     end_line: int
     parent_describe: str | None = None  # Enclosing describe/class name
     parametrize_count: int = 0  # Number of parametrize variants (0 = not parametrized)
+    # Bare call names in a LEAF (it/test) block's callback body. describe/it callbacks
+    # don't create Function nodes, so these calls are otherwise lost; the pipeline
+    # resolves them to TestCase-[:TESTS_FUNCTION]->Function edges (precise inline-test
+    # coverage + un-orphans test helpers). Empty for describe/class blocks.
+    calls: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
