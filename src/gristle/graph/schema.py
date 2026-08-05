@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 # 5 = inline test coverage: TestCase-[:TESTS_FUNCTION]->Function edges (depth=0) from the
 # calls in it()/test() callback bodies, so describe/it blocks (which create no Function
 # node) now carry precise test->production coverage and stop orphaning test helpers.
-GRAPH_SCHEMA_VERSION = 5
+# 6 = Next.js App Router page/layout routes now link to their default-export component via
+# HANDLES (previously synthesized with an inert handler_name="default" that never matched),
+# so route -> page component -> CALLS/RENDERS -> USES_MODEL traces a page's data access.
+GRAPH_SCHEMA_VERSION = 6
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).

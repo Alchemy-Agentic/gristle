@@ -1060,6 +1060,62 @@ class TestMiddlewareEdges:
         assert any(r[2] == "USES_MIDDLEWARE" and r[1] == "func::src/mw.ts::requireAuth" for r in create_rels)
 
 
+class TestNextjsPageHandles:
+    """A Next.js page route links to its default-export component via HANDLES."""
+
+    def test_page_route_links_to_default_export_component(self):
+        from gristle.models import ParsedRoute
+
+        page = _make_func("AccountPage", "app/account/page.tsx", is_exported=True)
+        page.is_component = True
+        pf = _make_file("app/account/page.tsx", functions=[page])
+        pf.routes = [
+            ParsedRoute(
+                method="GET",
+                path="/account",
+                handler_name="AccountPage",  # resolved default export (was literal "default")
+                file_path="app/account/page.tsx",
+                line=1,
+            )
+        ]
+
+        pipeline = _setup_pipeline_with_resolution([pf])
+        create_rels = _extract_batch_create_rels(pipeline.graph)
+        assert (
+            "route::app/account/page.tsx::L1::GET",
+            "func::app/account/page.tsx::AccountPage",
+            "HANDLES",
+        ) in create_rels
+
+    def test_anonymous_default_page_stays_unlinked(self):
+        """An anonymous default export (handler_name 'default') creates no HANDLES edge."""
+        from gristle.models import ParsedRoute
+
+        pf = _make_file("app/x/page.tsx")
+        pf.routes = [ParsedRoute(method="GET", path="/x", handler_name="default", file_path="app/x/page.tsx", line=1)]
+        pipeline = _setup_pipeline_with_resolution([pf])
+        create_rels = _extract_batch_create_rels(pipeline.graph)
+        assert not any(r[2] == "HANDLES" for r in create_rels)
+
+    def test_generically_named_pages_link_to_own_component(self):
+        """Two pages both `export default function Page()` must each HANDLES its OWN
+        file's component, not collide on the shared short name."""
+        from gristle.models import ParsedRoute
+
+        def page(dir_):
+            fp = f"app/{dir_}/page.tsx"
+            fn = _make_func("Page", fp, is_exported=True)
+            fn.is_component = True
+            pf = _make_file(fp, functions=[fn])
+            pf.routes = [ParsedRoute(method="GET", path=f"/{dir_}", handler_name="Page", file_path=fp, line=1)]
+            return pf
+
+        pipeline = _setup_pipeline_with_resolution([page("account"), page("settings")])
+        handles = [r for r in _extract_batch_create_rels(pipeline.graph) if r[2] == "HANDLES"]
+        assert ("route::app/account/page.tsx::L1::GET", "func::app/account/page.tsx::Page", "HANDLES") in handles
+        assert ("route::app/settings/page.tsx::L1::GET", "func::app/settings/page.tsx::Page", "HANDLES") in handles
+
+
 class TestErrorFlowEdges:
     def test_raises_edge_to_local_exception_class(self):
         """A raised type that resolves to a local Class gets a RAISES edge;

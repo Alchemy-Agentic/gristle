@@ -7,6 +7,17 @@ All notable changes to Gristle are documented here. This file is intended for co
 ## [Unreleased]
 
 ### Added
+- **Next.js App Router page routes now link to their component (`HANDLES`).** A
+  `page.tsx`/`layout.tsx` route was synthesized with an inert `handler_name="default"`
+  that never matched the file's real default export (`export default function Account()`),
+  so the route dead-ended with no `HANDLES` edge — only `route.ts` API handlers connected,
+  leaving Next.js *page* routes disconnected from the flagship route→DB story. Page routes
+  now resolve their handler to the file's default-export component (named `export default
+  function`/`class`, or a bare `export default Name`), so `route → page component →
+  CALLS`/`RENDERS` → `USES_MODEL` traces a Server Component page's data access. Anonymous
+  or HOC-wrapped default exports (no name to resolve) stay unlinked rather than mis-linking.
+  Measured: nextjs-subscription-payments HANDLES 38%→100%; page routes now reach their
+  data models (`/account → customers`). **Schema version 5 → 6** (re-ingest to benefit).
 - **Inline test coverage — `TestCase-[:TESTS_FUNCTION]->Function` edges (depth 0).** In
   JS/TS, `describe`/`it`/`test` callbacks don't create Function nodes, so the functions a
   test exercises inside an `it('...', () => { ... })` block were invisible to the call

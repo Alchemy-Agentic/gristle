@@ -2035,12 +2035,16 @@ class TypeScriptParser(LanguageParser):
                                 )
                             )
                 else:
-                    # Page component — represents a GET route
+                    # Page/layout component — a GET route served by the file's default
+                    # export (the page component). Resolve its real name so HANDLES links
+                    # the route to the component (enabling route -> component -> DB
+                    # tracing); fall back to "default" (stays unlinked) for an anonymous
+                    # or HOC-wrapped default export we can't name.
                     routes.append(
                         ParsedRoute(
                             method="GET",
                             path=route_path,
-                            handler_name="default",
+                            handler_name=self._default_export_name(root, src) or "default",
                             file_path=file_path,
                             line=1,
                         )
@@ -2363,6 +2367,48 @@ class TypeScriptParser(LanguageParser):
                             name_node = child.child_by_field_name("name")
                             return self._text(name_node, src) if name_node else None
         return None
+
+    def _default_export_name(self, root: Node, src: bytes) -> str | None:
+        """Name the file's default export resolves to, for HANDLES-linking a Next.js
+        page route to its component. Handles ``export default function Name(){}`` /
+        ``class Name`` (inherently local), and ``export default Name`` (bare identifier)
+        ONLY when ``Name`` is a local binding in this file — an *imported* identifier is
+        left unresolved so the route stays unlinked rather than mis-linking to a
+        same-named symbol elsewhere. Returns None for anonymous (`export default () =>
+        {}`) or HOC-wrapped (`export default wrap(Name)`) default exports too."""
+        for node in root.children:
+            if node.type != "export_statement":
+                continue
+            if not any(c.type == "default" for c in node.children):
+                continue
+            decl = node.child_by_field_name("declaration")
+            if decl and decl.type in ("function_declaration", "generator_function_declaration", "class_declaration"):
+                name_node = decl.child_by_field_name("name")
+                return self._text(name_node, src) if name_node else None
+            value = node.child_by_field_name("value")
+            if value and value.type == "identifier":
+                name = self._text(value, src)
+                return name if self._has_local_binding(root, name, src) else None
+            return None  # anonymous function/arrow or HOC call — unresolvable by name
+        return None
+
+    def _has_local_binding(self, root: Node, name: str, src: bytes) -> bool:
+        """True if a top-level function/class/const/let/var named ``name`` is declared in
+        this file — i.e. ``name`` is local, not imported."""
+        for node in root.children:
+            target = node.child_by_field_name("declaration") if node.type == "export_statement" else node
+            target = target or node
+            if target.type in ("function_declaration", "generator_function_declaration", "class_declaration"):
+                name_node = target.child_by_field_name("name")
+                if name_node and self._text(name_node, src) == name:
+                    return True
+            elif target.type in ("lexical_declaration", "variable_declaration"):
+                for child in target.children:
+                    if child.type == "variable_declarator":
+                        name_node = child.child_by_field_name("name")
+                        if name_node and self._text(name_node, src) == name:
+                            return True
+        return False
 
     @staticmethod
     def _nextjs_route_from_path(file_path: str) -> str | None:

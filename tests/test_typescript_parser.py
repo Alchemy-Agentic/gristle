@@ -762,6 +762,32 @@ class TestRouteExtraction:
         assert len(result.routes) == 1
         assert result.routes[0].method == "GET"
         assert result.routes[0].path == "/about"
+        # handler_name is the real default-export component so HANDLES can link it
+        assert result.routes[0].handler_name == "AboutPage"
+
+    def test_nextjs_page_handler_resolution(self):
+        """A page route's handler resolves to the file's default export when it is a local
+        binding (named declaration, or a bare identifier bound in the file). Anonymous/HOC
+        defaults, and an *imported* identifier, fall back to 'default' (unlinked)."""
+        parser = TypeScriptParser()
+        # bare-identifier default export bound to a local function
+        r = parser.parse_file("app/signin/page.tsx", "function SignIn(){return null}\nexport default SignIn\n")
+        assert r.routes[0].handler_name == "SignIn"
+        # local const-arrow page (common Next.js style)
+        r = parser.parse_file("app/home/page.tsx", "const Home = () => null;\nexport default Home;\n")
+        assert r.routes[0].handler_name == "Home"
+        # layout component
+        r = parser.parse_file("app/layout.tsx", "export default function RootLayout(){return null}\n")
+        assert r.routes[0].handler_name == "RootLayout"
+        # anonymous default export: no name to link to -> 'default'
+        r = parser.parse_file("app/x/page.tsx", "export default () => null\n")
+        assert r.routes[0].handler_name == "default"
+        # IMPORTED default export: not a local binding -> 'default' (must not mis-link to
+        # an unrelated same-named symbol elsewhere in the repo)
+        r = parser.parse_file(
+            "app/dash/page.tsx", "import Widget from '../../components/Widget';\nexport default Widget;\n"
+        )
+        assert r.routes[0].handler_name == "default"
 
     def test_nextjs_api_route(self):
         parser = TypeScriptParser()
