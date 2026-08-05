@@ -546,6 +546,19 @@ Find exported functions/classes that are never imported by other files. Identifi
 
 ---
 
+### `gristle_graph_health()`
+
+Structural meta-analysis of the ingested graph itself — *is it too flat, and is it fully utilized?* Returns:
+- **`totals`** — node/edge counts per type and the edge-to-node ratio.
+- **`schema_utilization`** — which core node/edge types are present vs. **absent** (a `Model`/`USES_MODEL` absence means either no data layer or an extraction gap), plus coverage ratios: routes→`HANDLES`, models→`USES_MODEL`, functions→tested, functions→with-a-caller.
+- **`topology`** — connectivity %, **call-graph roles** (isolated / root / leaf / intermediate — the `intermediate` share is a flatness/depth proxy), dark-orphan count, and the top fan-in hubs.
+- **`assessment`** — connectivity level (well-connected / moderate / sparse) and call-graph shape (layered / moderate / flat).
+- **`flags`** — factual callouts (unhandled routes, never-referenced models, high dark-orphan or isolated %, absent core edge types).
+
+Dual use: read a codebase's architecture (well-connected vs. a flat pancake with dead islands), and self-diagnose gristle's own extraction coverage — a surprisingly low ratio flags either a thin app or a missing extractor. Note it analyzes the **code graph gristle built** (one per ingested repo), not any runtime graph the app maintains itself.
+
+---
+
 ### `gristle_cycles(max_length?)`
 
 Detect circular import dependencies. Returns cycle paths as file path lists, grouped by cycle length. Cycles are deduplicated.

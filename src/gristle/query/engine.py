@@ -1048,6 +1048,180 @@ class QueryEngine:
         self._cap_list(overview, "files", cap=100)
         return overview
 
+    # Core types whose ABSENCE is meaningful: the app has no such pattern, or gristle
+    # didn't extract it. (File/Import/etc. are always present, so not listed.)
+    _CORE_NODE_TYPES = ("Function", "Class", "Route", "Model", "TestCase", "Variable", "DBFunction", "Flag")
+    _CORE_EDGE_TYPES = (
+        "CALLS",
+        "RENDERS",
+        "HANDLES",
+        "USES_MODEL",
+        "TESTS_FUNCTION",
+        "IMPORTS",
+        "INHERITS_FROM",
+        "USES_DEPENDENCY",
+        "CALLS_RPC",
+    )
+
+    def graph_health(self) -> dict[str, Any]:
+        """Structural health of the ingested graph: is it *fully utilized* (are the
+        schema's node/edge types populated?) and is it *too flat* (weak connectivity,
+        dead islands, shallow call chains)?
+
+        A meta-analysis over the graph itself. Useful for reading a codebase's shape
+        (well-connected vs. a flat pancake with dead islands) AND as a self-diagnostic
+        for extraction gaps — a low coverage ratio means either the app lacks that
+        pattern or gristle didn't detect it (a low HANDLES % is how the Next.js page-route
+        gap first surfaced). Read-only; runs on the existing graph, no re-extraction.
+        """
+
+        def scalar(cypher: str) -> int:
+            r = self.graph.execute(cypher).records
+            return int(r[0]["c"]) if r and r[0].get("c") is not None else 0
+
+        def pct(n: int, d: int) -> float | None:
+            return round(100 * n / d, 1) if d else None
+
+        def cov(n: int, d: int) -> dict[str, Any]:
+            return {"n": n, "of": d, "pct": pct(n, d)}
+
+        node_counts = {
+            r["t"]: r["c"]
+            for r in self.graph.execute("MATCH (n) RETURN labels(n)[0] AS t, count(*) AS c").records
+            if r["t"]
+        }
+        edge_counts = {
+            r["t"]: r["c"] for r in self.graph.execute("MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS c").records
+        }
+        total_nodes = sum(node_counts.values())
+        total_edges = sum(edge_counts.values())
+        funcs = node_counts.get("Function", 0)
+
+        absent_nodes = [t for t in self._CORE_NODE_TYPES if node_counts.get(t, 0) == 0]
+        absent_edges = [t for t in self._CORE_EDGE_TYPES if edge_counts.get(t, 0) == 0]
+
+        routes = node_counts.get("Route", 0)
+        routes_handled = scalar("MATCH (r:Route)-[:HANDLES]->() RETURN count(DISTINCT r) AS c")
+        models = node_counts.get("Model", 0)
+        models_used = scalar("MATCH (m:Model)<-[:USES_MODEL]-() RETURN count(DISTINCT m) AS c")
+        connected = scalar(
+            "MATCH (f:Function) WHERE ()-[:CALLS|RENDERS|TESTS_FUNCTION|HANDLES]->(f) RETURN count(f) AS c"
+        )
+        tested = scalar("MATCH (f:Function) WHERE ()-[:TESTS_FUNCTION]->(f) RETURN count(f) AS c")
+
+        # Call-graph in/out roles (the "flatness" proxy): sequential OPTIONAL MATCH
+        # aggregates degree without a cross-product blow-up on hub nodes.
+        roles_rec = self.graph.execute(
+            """
+            MATCH (f:Function)
+            OPTIONAL MATCH (f)<-[ci:CALLS]-()
+            WITH f, count(ci) AS indeg
+            OPTIONAL MATCH (f)-[co:CALLS]->()
+            WITH f, indeg, count(co) AS outdeg
+            RETURN count(f) AS total,
+                   sum(CASE WHEN indeg = 0 AND outdeg = 0 THEN 1 ELSE 0 END) AS isolated,
+                   sum(CASE WHEN indeg = 0 AND outdeg > 0 THEN 1 ELSE 0 END) AS roots,
+                   sum(CASE WHEN indeg > 0 AND outdeg = 0 THEN 1 ELSE 0 END) AS leaves,
+                   sum(CASE WHEN indeg > 0 AND outdeg > 0 THEN 1 ELSE 0 END) AS intermediate
+            """
+        ).records
+        roles = roles_rec[0] if roles_rec else {}
+        rtot = int(roles.get("total", 0) or 0)
+        isolated = int(roles.get("isolated", 0) or 0)
+        intermediate = int(roles.get("intermediate", 0) or 0)
+
+        dark = scalar(
+            """
+            MATCH (f:Function)
+            WHERE NOT ()-[:CALLS|RENDERS|TESTS_FUNCTION|HANDLES]->(f)
+              AND coalesce(f.is_test, false) = false AND coalesce(f.is_entry_point, false) = false
+              AND coalesce(f.is_component, false) = false AND coalesce(f.is_exported, false) = false
+            RETURN count(f) AS c
+            """
+        )
+        hubs = self.graph.execute(
+            """
+            MATCH (f:Function)<-[:CALLS]-(c) WITH f, count(DISTINCT c) AS deg
+            RETURN f.name AS name, f.file_path AS file_path, deg AS callers
+            ORDER BY deg DESC LIMIT 10
+            """
+        ).records
+
+        # Conservative, factual flags (leave repo-type judgement to the reader: a library
+        # is *expected* to be flat / low-connectivity).
+        dark_pct = pct(dark, funcs)
+        iso_pct = pct(isolated, rtot)
+        flags: list[str] = []
+        if routes and routes_handled < routes:
+            flags.append(f"{routes - routes_handled} of {routes} routes have no linked handler.")
+        if models and models_used < models:
+            flags.append(
+                f"{models - models_used} of {models} models are never referenced (possible dead tables/types)."
+            )
+        if dark_pct and dark_pct > 15:
+            flags.append(
+                f"{dark} functions ({dark_pct}%) have no caller and aren't tests/entry points/components/exports "
+                "-- candidate dead code or an extraction gap."
+            )
+        if iso_pct and iso_pct > 30:
+            flags.append(
+                f"{iso_pct}% of functions are isolated in the call graph (no caller, call nothing) "
+                "-- a flat/disconnected graph."
+            )
+        if absent_edges:
+            flags.append(f"Core edge types absent: {', '.join(absent_edges)} (pattern not present, or not extracted).")
+
+        conn_pct = pct(connected, funcs) or 0
+        inter_pct = pct(intermediate, rtot) or 0
+        connectivity_level = "well-connected" if conn_pct >= 60 else "moderate" if conn_pct >= 30 else "sparse"
+        shape = "layered" if inter_pct >= 25 else "moderate" if inter_pct >= 15 else "flat"
+
+        return {
+            "totals": {
+                "nodes": total_nodes,
+                "edges": total_edges,
+                "functions": funcs,
+                "edge_to_node_ratio": round(total_edges / total_nodes, 2) if total_nodes else 0,
+                "node_types": node_counts,
+                "edge_types": edge_counts,
+            },
+            "schema_utilization": {
+                "node_types_present": len(node_counts),
+                "edge_types_present": len(edge_counts),
+                "absent_core_node_types": absent_nodes,
+                "absent_core_edge_types": absent_edges,
+                "coverage": {
+                    "routes_handled": cov(routes_handled, routes),
+                    "models_used": cov(models_used, models),
+                    "functions_tested": cov(tested, funcs),
+                    "functions_with_caller": cov(connected, funcs),
+                },
+            },
+            "topology": {
+                "connectivity_pct": conn_pct,
+                "call_graph_roles": {
+                    "isolated": isolated,
+                    "roots": int(roles.get("roots", 0) or 0),
+                    "leaves": int(roles.get("leaves", 0) or 0),
+                    "intermediate": intermediate,
+                    "isolated_pct": iso_pct,
+                    "intermediate_pct": inter_pct,
+                },
+                "dark_orphans": {"n": dark, "pct": dark_pct},
+                "top_hubs": hubs,
+            },
+            "assessment": {
+                "connectivity": connectivity_level,
+                "call_graph_shape": shape,
+                "summary": (
+                    f"{connectivity_level.capitalize()} call graph ({conn_pct}% of functions have a caller); "
+                    f"{shape} shape ({inter_pct}% intermediate nodes). "
+                    f"{len(node_counts)} node / {len(edge_counts)} edge types populated."
+                ),
+            },
+            "flags": flags,
+        }
+
     # ------------------------------------------------------------------
     # 9. Documentation queries
     # ------------------------------------------------------------------

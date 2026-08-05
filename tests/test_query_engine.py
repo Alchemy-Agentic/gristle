@@ -2195,3 +2195,111 @@ class TestGetChangesetImpact:
         out = self._engine_with({}, not_found={"a", "b"}).get_changeset_impact(["a", "b"])
         assert "error" in out
         assert out["entities"] == []
+
+
+# ==================================================================
+# graph_health (structural meta-analysis)
+# ==================================================================
+
+
+def _health_effect(nodes, edges, routes_handled, models_used, connected, tested, roles, dark, hubs):
+    """Return an execute() side-effect that answers each graph_health query by substring."""
+
+    def effect(cypher, params=None):
+        c = cypher
+        if "labels(n)[0]" in c:
+            return _qr(nodes)
+        if "type(r)" in c and "count(*)" in c and "-[r]->" in c:
+            return _qr(edges)
+        if "(r:Route)-[:HANDLES]->()" in c:
+            return _qr([{"c": routes_handled}])
+        if "(m:Model)<-[:USES_MODEL]-()" in c:
+            return _qr([{"c": models_used}])
+        if "()-[:TESTS_FUNCTION]->(f)" in c and "coalesce" not in c:
+            return _qr([{"c": tested}])
+        if "CALLS|RENDERS|TESTS_FUNCTION|HANDLES]->(f)" in c and "coalesce" not in c:
+            return _qr([{"c": connected}])
+        if "sum(CASE WHEN indeg" in c:
+            return _qr([roles])
+        if "coalesce(f.is_test" in c:
+            return _qr([{"c": dark}])
+        if "ORDER BY deg DESC LIMIT 10" in c:
+            return _qr(hubs)
+        return _empty()
+
+    return effect
+
+
+class TestGraphHealth:
+    def test_flat_underutilized_graph(self):
+        """A sparse/flat, data-layer-less graph yields the expected flags + assessment."""
+        effect = _health_effect(
+            nodes=[{"t": "Function", "c": 100}, {"t": "File", "c": 20}, {"t": "Route", "c": 4}],
+            edges=[{"t": "CALLS", "c": 30}, {"t": "CONTAINS", "c": 120}, {"t": "HANDLES", "c": 2}],
+            routes_handled=2,  # 2 of 4 routes handled
+            models_used=0,
+            connected=25,  # 25% connectivity -> "sparse"
+            tested=5,
+            # 60 isolated of 100 -> 60% (>30 flag); 8 intermediate -> 8% -> "flat"
+            roles={"total": 100, "isolated": 60, "roots": 20, "leaves": 12, "intermediate": 8},
+            dark=25,  # 25% dark (>15 flag)
+            hubs=[{"name": "cn", "file_path": "utils.ts", "callers": 40}],
+        )
+        engine, _ = _make_engine(execute_side_effect=effect)
+        h = engine.graph_health()
+
+        assert h["assessment"]["connectivity"] == "sparse"
+        assert h["assessment"]["call_graph_shape"] == "flat"
+        assert h["schema_utilization"]["coverage"]["routes_handled"] == {"n": 2, "of": 4, "pct": 50.0}
+        assert h["schema_utilization"]["coverage"]["functions_with_caller"]["pct"] == 25.0
+        # Model/USES_MODEL absent from the (node/edge) sets -> flagged as absent core types
+        assert "Model" in h["schema_utilization"]["absent_core_node_types"]
+        assert "USES_MODEL" in h["schema_utilization"]["absent_core_edge_types"]
+        assert h["topology"]["call_graph_roles"]["isolated"] == 60  # int, not 60.0
+        flags = " ".join(h["flags"])
+        assert "2 of 4 routes have no linked handler" in flags
+        assert "candidate dead code or an extraction gap" in flags  # dark 25% > 15
+        assert "flat/disconnected graph" in flags  # isolated 60% > 30
+
+    def test_healthy_graph_minimal_flags(self):
+        """A well-connected, layered, fully-populated graph reads as healthy."""
+        effect = _health_effect(
+            nodes=[
+                {"t": "Function", "c": 100},
+                {"t": "Route", "c": 4},
+                {"t": "Model", "c": 5},
+                {"t": "Class", "c": 10},
+                {"t": "TestCase", "c": 8},
+                {"t": "Variable", "c": 6},
+                {"t": "DBFunction", "c": 3},
+                {"t": "Flag", "c": 2},
+            ],
+            edges=[
+                {"t": et, "c": 20}
+                for et in (
+                    "CALLS",
+                    "RENDERS",
+                    "HANDLES",
+                    "USES_MODEL",
+                    "TESTS_FUNCTION",
+                    "IMPORTS",
+                    "INHERITS_FROM",
+                    "USES_DEPENDENCY",
+                    "CALLS_RPC",
+                )
+            ],
+            routes_handled=4,
+            models_used=5,
+            connected=85,  # well-connected
+            tested=40,
+            roles={"total": 100, "isolated": 10, "roots": 20, "leaves": 40, "intermediate": 30},  # layered
+            dark=5,
+            hubs=[],
+        )
+        engine, _ = _make_engine(execute_side_effect=effect)
+        h = engine.graph_health()
+        assert h["assessment"]["connectivity"] == "well-connected"
+        assert h["assessment"]["call_graph_shape"] == "layered"
+        assert h["schema_utilization"]["absent_core_node_types"] == []
+        assert h["schema_utilization"]["absent_core_edge_types"] == []
+        assert h["flags"] == []

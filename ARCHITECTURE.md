@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (31 tools + 2 resources) |
+                                          | (38 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -88,7 +88,7 @@ src/gristle/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 31 tools + 2 resources
+    server.py              # MCP server, 38 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)

@@ -1210,6 +1210,36 @@ async def gristle_dead_exports(
 
 
 @mcp.tool()
+async def gristle_graph_health(
+    repo_id: str | None = None,
+) -> dict:
+    """Assess the structural health of the ingested code graph itself: is it *fully
+    utilized* (are the schema's node/edge types populated?) and is it *too flat* (weak
+    connectivity, dead islands, shallow call chains)?
+
+    A meta-analysis over the graph gristle built from the repo. Useful for reading a
+    codebase's architecture (well-connected vs. a flat pancake with dead islands) AND as
+    a self-diagnostic for extraction gaps: a low coverage ratio means either the app
+    lacks that pattern or gristle didn't detect it (a low routes-handled % is how a
+    Next.js page-route gap first surfaced).
+
+    Returns: totals (node/edge counts, edge/node ratio), schema_utilization (present vs.
+    absent core node/edge types + coverage ratios for routes->HANDLES, models->USES_MODEL,
+    functions->tested, functions->caller), topology (connectivity %, call-graph roles
+    isolated/root/leaf/intermediate as a flatness proxy, dark-orphan count, top hubs), an
+    assessment (connectivity level + call-graph shape), and factual flags.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository loaded. Run gristle_ingest first."}
+
+    return engine.graph_health()
+
+
+@mcp.tool()
 async def gristle_cycles(
     max_length: int = 10,
     repo_id: str | None = None,

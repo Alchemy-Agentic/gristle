@@ -7,6 +7,20 @@ All notable changes to Gristle are documented here. This file is intended for co
 ## [Unreleased]
 
 ### Added
+- **`gristle_graph_health` — structural meta-analysis of the ingested graph.** Answers
+  two questions about the code graph itself: is it *fully utilized* (are the schema's
+  node/edge types populated?) and is it *too flat* (weak connectivity, dead islands,
+  shallow call chains?). Returns totals (node/edge counts, edge-to-node ratio),
+  `schema_utilization` (present vs. **absent** core node/edge types + coverage ratios:
+  routes→`HANDLES`, models→`USES_MODEL`, functions→tested, functions→with-a-caller),
+  `topology` (connectivity %, call-graph roles isolated/root/leaf/intermediate as a
+  flatness proxy, dark-orphan count, top fan-in hubs), an `assessment` (connectivity
+  level + call-graph shape), and factual `flags`. Dual use: read a codebase's
+  architecture (well-connected vs. a flat pancake with dead islands), and self-diagnose
+  gristle's own extraction coverage — a surprisingly low ratio flags either a thin app
+  or a missing extractor (a low `HANDLES` % is how the Next.js page-route gap first
+  surfaced). Read-only, runs on the existing graph — no re-ingest, no schema change.
+  Now **38 MCP tools**.
 - **Next.js App Router page routes now link to their component (`HANDLES`).** A
   `page.tsx`/`layout.tsx` route was synthesized with an inert `handler_name="default"`
   that never matched the file's real default export (`export default function Account()`),
