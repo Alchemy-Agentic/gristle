@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-04
+
 ### Added
 - **`gristle_graph_health` — structural meta-analysis of the ingested graph.** Answers
   two questions about the code graph itself: is it *fully utilized* (are the schema's
@@ -99,10 +101,13 @@ All notable changes to Gristle are documented here. This file is intended for co
   (a tighter floor, not yet exhaustive).
 
 ### Changed
-- **`GRAPH_SCHEMA_VERSION` → 4.** Additive only (new `Flag` node + `GATES` edge in v3; a
-  `names` list on `IMPORTS` edges in v4; no existing label, property, or edge removed or
-  renamed), so existing Cypher keeps working — but consumers that track the version will
-  re-ingest to populate the flag graph and the symbol-level import names.
+- **`GRAPH_SCHEMA_VERSION` 2 → 6.** Additive only across all four bumps — no existing label,
+  property, or edge was removed or renamed, so existing Cypher keeps working. A consumer that
+  tracks the version should re-ingest to benefit: **v3** adds `Flag` nodes + `GATES` edges;
+  **v4** adds a `names` list on `IMPORTS` edges (symbol-level dead-export); **v5** adds inline
+  `TestCase-[:TESTS_FUNCTION {depth: 0}]->Function` edges; **v6** links Next.js App Router page
+  routes to their component via `HANDLES`. The only consumer-facing note: `TESTS_FUNCTION` may
+  now originate from a `TestCase` node (not only `Function`) — see the inline-coverage entry.
 
 ## [0.10.1] - 2026-08-02
 
