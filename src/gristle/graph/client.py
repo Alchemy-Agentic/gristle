@@ -32,6 +32,8 @@ _ID_PREFIX_TO_LABEL: dict[str, str] = {
     "model": "Model",
     "mf": "ModelField",
     "dbfunc": "DBFunction",
+    "flag": "Flag",
+    "token": "Token",
 }
 
 

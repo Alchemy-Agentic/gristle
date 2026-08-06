@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 # 6 = Next.js App Router page/layout routes now link to their default-export component via
 # HANDLES (previously synthesized with an inert handler_name="default" that never matched),
 # so route -> page component -> CALLS/RENDERS -> USES_MODEL traces a page's data access.
-GRAPH_SCHEMA_VERSION = 6
+# 7 = design tokens: Token nodes (CSS custom properties from :root / Tailwind v4 @theme
+# blocks, categorized color/spacing/typography/radius/shadow/z_index/animation) with a
+# File-[:CONTAINS]->Token home edge — the definition inventory for design-system analysis.
+GRAPH_SCHEMA_VERSION = 7
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).
@@ -80,6 +83,9 @@ _INDEXES: list[tuple[str, str]] = [
     ("Flag", "id"),
     ("Flag", "key"),
     ("TestCase", "id"),
+    ("Token", "id"),
+    ("Token", "name"),
+    ("Token", "category"),
 ]
 
 # Full-text indexes for docstring search.

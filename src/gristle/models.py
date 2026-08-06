@@ -397,3 +397,31 @@ class FlagExtractionResult:
     orphan_checks: int = 0  # keys checked in code but defined nowhere
     nodes_created: int = 0
     relationships_created: int = 0
+
+
+@dataclass(slots=True)
+class ParsedToken:
+    """A design-token DEFINITION observed from one source — a CSS custom property
+    (``--primary: 215 75% 25%``) declared in a ``:root`` selector or a Tailwind v4
+    ``@theme`` block. ``category`` is inferred from the name/value; ``references`` are
+    the other tokens this value points at via ``var(--x)`` (e.g. a v4 ``@theme`` token
+    ``--color-primary: hsl(var(--primary))`` references ``--primary``). Token USAGE in
+    components is NOT a ParsedToken — that arrives as USES_TOKEN edges in a later slice.
+    The TokenExtractor dedupes per name into Token nodes + File-[:CONTAINS]->Token."""
+
+    name: str  # custom-property name WITHOUT the leading `--` (e.g. "primary", "color-accent")
+    value: str  # the declared value, verbatim (e.g. "215 75% 25%", "hsl(var(--primary))")
+    category: str  # color | spacing | typography | radius | shadow | z_index | animation | other
+    source_kind: str  # "css_theme" (Tailwind v4 @theme block) | "css_root" (:root / other selector)
+    references: list[str] = field(default_factory=list)  # token names it references via var()
+    file_path: str | None = None
+    line: int | None = None
+
+
+@dataclass(slots=True)
+class TokenExtractionResult:
+    """Result of design-token extraction phase."""
+
+    tokens_found: int = 0  # distinct Token nodes (deduped per name)
+    nodes_created: int = 0
+    relationships_created: int = 0

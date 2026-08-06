@@ -1465,6 +1465,33 @@ async def gristle_db_functions(repo_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+async def gristle_tokens(category: str | None = None, repo_id: str | None = None) -> dict:
+    """Design-token inventory — the CSS custom properties (`:root` / Tailwind v4 `@theme`)
+    an app defines as its design system.
+
+    Returns the total, a per-category breakdown (color / spacing / typography / radius /
+    shadow / z_index / animation / other), a split by source (`css_theme` = the Tailwind v4
+    theme layer vs. `css_root` = semantic `:root` values), the defining `.css` files, and
+    the token list itself — each token with its value, category, source, and the tokens it
+    references via `var(--x)` (so a v4 `--color-primary: hsl(var(--primary))` shows its link
+    to `--primary`). Pass `category` to filter the list to one category (the breakdown stays
+    global). The list is capped at 50 (`tokens_omitted` gives the cut, `count` stays exact).
+
+    This is the design-system inventory — "do we even have tokens, and what kind?". Token
+    usage in components and drift (styling that bypasses the tokens) are separate concerns.
+
+    Args:
+        category: Optional category filter (e.g. "color").
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    return engine.get_tokens(category)
+
+
+@mcp.tool()
 async def gristle_subgraph(
     view: Literal["call_hierarchy", "blast_radius", "request_trace", "component_tree"],
     center: str | None = None,

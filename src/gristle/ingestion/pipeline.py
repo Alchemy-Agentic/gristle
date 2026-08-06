@@ -230,8 +230,9 @@ class IngestionPipeline:
         self._unlinked_middleware.clear()
         self._callback_target_ids.clear()
 
-        # Walk and collect source files (include .prisma/.sql for schema extraction)
-        schema_extensions = frozenset({"prisma", "sql"})
+        # Walk and collect source files (include .prisma/.sql for schema extraction,
+        # .css for design-token extraction)
+        schema_extensions = frozenset({"prisma", "sql", "css"})
         files = walk_repo(repo_path, self.registry.supported_extensions | schema_extensions)
         logger.info("Found %d parseable files in %s", len(files), repo_path)
 
@@ -363,6 +364,30 @@ class IngestionPipeline:
         except Exception as e:
             logger.warning("Flag phase failed: %s", e, exc_info=True)
             result.errors.append(f"Flag phase failed: {e}")
+
+        # Token phase: Detect design tokens (CSS custom properties in :root / Tailwind v4
+        # @theme blocks) and create Token nodes. Isolated like the schema/flag phases.
+        try:
+            with Timer() as token_phase:
+                from gristle.ingestion.token_extractor import TokenExtractor
+
+                token_result = TokenExtractor(self.graph, dict(self._path_to_id)).extract(files, parsed_files)
+                result.nodes_created += token_result.nodes_created
+                result.relationships_created += token_result.relationships_created
+
+            if token_result.tokens_found:
+                logger.info(
+                    "Token phase complete: %d design tokens",
+                    token_result.tokens_found,
+                    extra={
+                        "event": "token_phase_done",
+                        "duration_ms": token_phase.ms,
+                        "repo_id": self.graph.repo_id,
+                    },
+                )
+        except Exception as e:
+            logger.warning("Token phase failed: %s", e, exc_info=True)
+            result.errors.append(f"Token phase failed: {e}")
 
         # Phase 3: Walk and process documentation files
         try:

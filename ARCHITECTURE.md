@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (38 tools + 2 resources) |
+                                          | (39 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -65,7 +65,7 @@ src/gristle/
   models.py                # All parsed data models (dataclasses)
   graph/
     client.py              # FalkorDB wrapper, per-repo graph isolation
-    schema.py              # Index creation (34 property indexes, 2 full-text)
+    schema.py              # Index creation (45 property indexes, 2 full-text)
   parsers/
     base.py                # Abstract LanguageParser base class
     registry.py            # Extension-based parser dispatch
@@ -88,7 +88,7 @@ src/gristle/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 38 tools + 2 resources
+    server.py              # MCP server, 39 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -457,6 +457,10 @@ Runs after the Schema Phase (so `Function` nodes exist for `GATES` edges to poin
 1. **Definitions** merge per key from two surfaces. A client **registry object** (`const featureFlags = { KEY: bool }`, parsed with tree-sitter — the configured `flag_registry_symbols`) gives the key, default, and doc comment. DB **migration rows** (`INSERT`/`DELETE` on a configured `flag_tables` table like `feature_flags`, parsed by targeted SQL regex) give `in_db` / `retired`, netted across migrations — a key inserted then removed by a cleanup migration is retired. **Reversal scripts are excluded** (a `rollbacks/` dir, `*_rollback.sql`, `*.down.sql`): their `DELETE`/`INSERT` invert the forward state, so counting them would mis-mark a live flag.
 2. **Check sites** come from the TS parser's `flag('KEY')` descriptors (in each function's `calls_with_args`), covering three shapes: configured **check calls** (`useFeatureFlag('K')`, `isFeatureFlagEnabled(sb,'K',id)`) with the key taken from a **configured argument position** (so a non-key string like a 4th-arg log tag is never mistaken for the key, and the same name works at arg 0 client-side / arg 1 server-side); direct **flag-table reads** (`.from('feature_flags').eq('id','K')`); and registry/cache **member reads** (`featureFlags.K` / `runtimeFlagCache.K`, which capture the `isXEnabled()` wrapper-accessor surface so a flag used only through its wrapper isn't seen as dead). A key passed as a `const` (`const QC='K'; check(sb, QC, id)`) is resolved to the const's value via a per-file binding map.
 3. Creates one `Flag` node per key (union of registry + DB + checked keys; a key checked but defined by neither surface is flagged `orphan`) and a `Flag-[:GATES]->Function` edge per check site. Detection is **convention-configured** via `GRISTLE_FLAG_*` settings (defaults = the Supabase/`useFeatureFlag` shape), never heuristic — only calls to the configured functions/tables/symbols produce edges, so nothing is guessed. Queried by `analyze_flags()` / the `gristle_flag_analysis` tool (retire candidates, orphans, config-gaps, superseded families, interactions).
+
+### Token Phase: Design-Token Detection
+
+Runs after the Flag Phase; `TokenExtractor` mirrors the standalone-extractor shape (`.css` is whitelisted into the walk via `schema_extensions`, like `.prisma`/`.sql`). It reads each CSS file, and `parse_css_tokens` extracts every custom-property definition (`--name: value`) — from a `:root` selector or a Tailwind v4 `@theme` block — into a `ParsedToken`. Each is categorized (`color`/`spacing`/`typography`/`radius`/`shadow`/`z_index`/`animation`/`other`) by a priority name/value heuristic, tagged with its `source_kind` (`css_theme` vs `css_root`), and carries the tokens it references via `var(--x)`. The extractor dedupes per name (first/`:root` definition wins — the light default precedes a `.dark` override) and creates one `Token` node each plus a `File-[:CONTAINS]->Token` edge (synthesizing a minimal `File` node for the `.css` file, which Phase 1 didn't parse). Regex-based like the Markdown parser (CSS is outside the tree-sitter mandate). This is the design-system definition inventory; token *usage* and *drift* are later slices. Queried by `get_tokens()` / the `gristle_tokens` tool.
 
 ### Phase 3: Process Documentation
 

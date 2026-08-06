@@ -3574,6 +3574,58 @@ class QueryEngine:
         self._cap_list(report, "db_functions", self._MODELS_CAP)
         return report
 
+    def get_tokens(self, category: str | None = None) -> dict:
+        """Design-token inventory: the CSS custom properties (`:root` / Tailwind v4
+        `@theme`) gristle modeled as Token nodes. Returns the total, a per-category
+        breakdown (color/spacing/typography/radius/shadow/z_index/animation/other), a
+        per-source-kind split (`css_theme` vs `css_root`), the defining files, and the
+        token list itself (capped at ``_MODELS_CAP``; ``count`` stays exact). Pass
+        ``category`` to filter the list to one category (the breakdown stays global).
+        Read-only inventory — token USAGE/drift are separate queries.
+        """
+        by_category = {
+            r["category"]: r["c"]
+            for r in self.graph.execute(
+                "MATCH (t:Token) RETURN t.category AS category, count(*) AS c ORDER BY c DESC"
+            ).records
+            if r.get("category")
+        }
+        by_source = {
+            r["source_kind"]: r["c"]
+            for r in self.graph.execute("MATCH (t:Token) RETURN t.source_kind AS source_kind, count(*) AS c").records
+            if r.get("source_kind")
+        }
+        files = [
+            r["fp"]
+            for r in self.graph.execute(
+                "MATCH (t:Token) WHERE t.file_path IS NOT NULL RETURN DISTINCT t.file_path AS fp ORDER BY fp"
+            ).records
+        ]
+        where = "WHERE t.category = $category" if category else ""
+        rows = self.graph.execute(
+            f"""
+            MATCH (t:Token) {where}
+            RETURN t.name AS name, t.category AS category, t.value AS value,
+                   t.source_kind AS source_kind, t.references AS references,
+                   t.file_path AS filePath, t.line AS line
+            ORDER BY t.category, t.name
+            """,
+            {"category": category} if category else None,
+        ).records
+        for row in rows:
+            row["references"] = row.get("references") or []
+        total = self.graph.execute("MATCH (t:Token) RETURN count(t) AS c").records[0]["c"]
+        report = {
+            "count": len(rows),
+            "total_tokens": total,
+            "by_category": by_category,
+            "by_source_kind": by_source,
+            "files": files,
+            "tokens": rows,
+        }
+        self._cap_list(report, "tokens", self._MODELS_CAP)
+        return report
+
     # ------------------------------------------------------------------
     # Source code loader
     # ------------------------------------------------------------------

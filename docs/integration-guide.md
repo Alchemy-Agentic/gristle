@@ -65,12 +65,13 @@ This clones the repo and runs full ingestion in one step.
 | `DBFunction` | `id`, `name`, `qualified_name`, `file_path`, `line`, `args`, `arg_count`, `returns`, `schema` | Postgres stored function / RPC (a `supabase.rpc('name')` target), from the Supabase generated types' `public.Functions` block. Body is SQL (not parsed); the callable signature is captured |
 | `Variable` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `end_line`, `kind`, `value_kind`, `is_exported` | Module-level const/let/var (TS/JS) or module assignment (Python) that isn't a function or class — config objects, validation schemas, registries, constants. `kind`: `const`/`let`/`var`/`assignment`; `value_kind`: `object`/`array`/`call`/`new`/`literal`/`reference` |
 | `Flag` | `id`, `key`, `in_registry`, `in_db`, `retired`, `orphan`, `registry_default`, `db_seeded_enabled`, `gates_count`, `description`, `line` | Feature flag, merged per key across a client registry object (`const featureFlags = { KEY: bool }`) and DB migration rows on a configured flag table (`feature_flags`). `in_registry`/`in_db` say which surfaces declare it; `orphan` = checked in code but defined nowhere; `retired` = removed by a cleanup migration (reversal/rollback scripts excluded); `registry_default` is the static default. Detection is convention-configured (`GRISTLE_FLAG_*` settings), defaulting to the Supabase/`useFeatureFlag` shape. Query with `gristle_flag_analysis` |
+| `Token` | `id`, `name`, `raw_name`, `value`, `category`, `source_kind`, `references`, `file_path`, `line` | Design token — a CSS custom property (`--primary: 215 75% 25%`) from a `:root` selector or a Tailwind v4 `@theme` block. `category` is inferred (`color`/`spacing`/`typography`/`radius`/`shadow`/`z_index`/`animation`/`other`); `source_kind` is `css_theme` (the v4 utility layer) or `css_root` (semantic values); `references` are the token names this value points at via `var(--x)` (a v4 `--color-primary: hsl(var(--primary))` references `--primary`). Deduped per name (first/`:root` definition wins). Query with `gristle_tokens` |
 
 ### Edge Types
 
 | Type | From | To | Description |
 |------|------|----|-------------|
-| `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase, Variable, Model | Container relationship |
+| `CONTAINS` | File, Class | Function, Class, Import, Route, TestCase, Variable, Model, Flag, Token | Container relationship |
 | `DEFINED_IN` | Function, Class | File | Reverse of CONTAINS |
 | `EXPORTS` | File | Function, Class, Variable | Module exports |
 | `CALLS` | Function | Function | Function call. Carries a `resolution` property recording how the callee was resolved, by confidence: `exact` / `file_scoped` / `import` / `typed_receiver` / `dotted` / `same_file` / `unique_global` — lets consumers weight or filter by reliability. JSX renders are **not** CALLS — see `RENDERS` |
@@ -553,6 +554,14 @@ Analyze feature flags — what to retire, what each gates, how they interact. Tw
 - **With a `key`** — that flag's facts, the functions it `GATES`, and its reach/blast radius: the user-facing routes, data models, and co-gating flags reachable from the gated functions. This is the safety check before retiring — *"what does this flag's code touch, and is it still gated by something else?"*
 
 Requires an app whose flag convention matches the configured profile (`GRISTLE_FLAG_*` settings; defaults to the Supabase/`useFeatureFlag` shape). `dead_candidates` is code-derived — verify before removing (the "fully rolled out → safe to retire" signal needs the live flag table). See the `Flag` node and `GATES` edge in **Graph Schema**.
+
+---
+
+### `gristle_tokens(category?, repo_id?)`
+
+Design-token inventory — the CSS custom properties (`:root` / Tailwind v4 `@theme`) an app defines as its design system. Returns the total, a per-category breakdown (`color`/`spacing`/`typography`/`radius`/`shadow`/`z_index`/`animation`/`other`), a split by source (`css_theme` = the v4 theme/utility layer vs. `css_root` = semantic `:root` values), the defining `.css` files, and the token list — each with its value, category, source, and the tokens it references via `var(--x)` (so a v4 `--color-primary: hsl(var(--primary))` shows its link to `--primary`). Pass `category` to filter the list (the breakdown stays global). Capped at 50 (`tokens_omitted` gives the cut, `count` is exact).
+
+This is the design-system inventory — *"do we even have tokens, and what kind?"*. Token usage in components and drift (styling that bypasses the tokens) are separate, later concerns. See the `Token` node in **Graph Schema**.
 
 ---
 

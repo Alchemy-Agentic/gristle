@@ -6,6 +6,21 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+### Added
+- **Design tokens — `Token` nodes from CSS custom properties.** Gristle now models an
+  app's design system: it parses CSS custom-property definitions (`--primary: 215 75% 25%`)
+  from `:root` selectors and Tailwind v4 `@theme` blocks into `Token` nodes, each
+  categorized (color / spacing / typography / radius / shadow / z_index / animation / other)
+  and homed in its file via `File-[:CONTAINS]->Token`. A token records the tokens it
+  references through `var(--x)` (so a v4 `--color-primary: hsl(var(--primary))` links to
+  `--primary`) and whether it lives in the `@theme` utility layer (`source_kind: css_theme`)
+  or the semantic `:root` layer (`css_root`). The new `gristle_tokens` tool returns the
+  inventory — total, per-category and per-source breakdown, defining files, and the token
+  list. This is the first slice of design-system analysis (the definition inventory);
+  token *usage* and *drift* detection follow. Detection is on by default
+  (`GRISTLE_DESIGN_TOKENS_ENABLED=false` to skip). **Schema version 6 → 7** (re-ingest to
+  populate). Now **39 MCP tools**.
+
 ## [0.11.0] - 2026-08-04
 
 ### Added

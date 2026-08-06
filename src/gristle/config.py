@@ -109,6 +109,10 @@ class Settings(BaseSettings):
         {"supabase/functions/", "/workers/", "workers/", "/server/", "/backend/", "/api/", "/functions/"}
     )
 
+    # Design-token detection: parse CSS custom properties (`:root` / Tailwind v4 `@theme`
+    # blocks) into Token nodes. Set false to skip the token phase entirely.
+    design_tokens_enabled: bool = True
+
     @field_validator("falkordb_port", "http_port")
     @classmethod
     def _port_in_range(cls, v: int) -> int:
