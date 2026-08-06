@@ -546,6 +546,16 @@ Find exported functions/classes that are never imported by other files. Identifi
 
 ---
 
+### `gristle_flag_analysis(key?, repo_id?)`
+
+Analyze feature flags — what to retire, what each gates, how they interact. Two modes:
+- **No `key`** — a health report: `dead_candidates` (declared but nothing checks them → retire candidates), `orphan_checks` (checked in code but defined nowhere), `config_gap` (default-off + DB-controlled + no seed row, so they can't be flipped from the admin panel), `superseded_families` (version pairs), `retired`, and an `interactions` map (flag → the flags it depends on).
+- **With a `key`** — that flag's facts, the functions it `GATES`, and its reach/blast radius: the user-facing routes, data models, and co-gating flags reachable from the gated functions. This is the safety check before retiring — *"what does this flag's code touch, and is it still gated by something else?"*
+
+Requires an app whose flag convention matches the configured profile (`GRISTLE_FLAG_*` settings; defaults to the Supabase/`useFeatureFlag` shape). `dead_candidates` is code-derived — verify before removing (the "fully rolled out → safe to retire" signal needs the live flag table). See the `Flag` node and `GATES` edge in **Graph Schema**.
+
+---
+
 ### `gristle_graph_health()`
 
 Structural meta-analysis of the ingested graph itself — *is it too flat, and is it fully utilized?* Returns:
@@ -943,6 +953,7 @@ gristle_ingest(repo_path="/path/to/repo")          # Local repo
 gristle_ingest_github(repo_url="owner/repo")        # GitHub repo
 
 gristle_conventions()                                # Understand structure
+gristle_graph_health()                               # Is it well-connected? What's populated vs. absent?
 gristle_explore(entity="<main_module>.py")           # Explore core files
 ```
 
