@@ -4,7 +4,10 @@ services:
     ports:
       - "${FALKORDB_PORT:-6390}:6379"
     volumes:
-      - falkordb_data:/data
+      # FalkorDB's configured `dir` is /var/lib/falkordb/data, NOT the /data that
+      # the plain redis image uses. Mounting at /data leaves dump.rdb on the
+      # container's writable layer, where `docker compose down` destroys it.
+      - falkordb_data:/var/lib/falkordb/data
     deploy:
       resources:
         limits:
