@@ -1048,6 +1048,9 @@ class IngestionPipeline:
                 "catches": func.catches,
                 "has_error_handling": func.has_error_handling,
                 "tested_by_count": 0,
+                "hardcoded_colors": func.style_drift.hardcoded_colors,
+                "off_scale_values": func.style_drift.off_scale_values,
+                "inline_style_count": func.style_drift.inline_style_count,
             },
         )
 

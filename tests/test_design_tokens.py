@@ -399,3 +399,79 @@ class TestUsesTokenExtraction:
         result = TokenExtractor(graph, file_path_to_id={}).extract([], [pf])
         assert result.uses_created == 0
         assert _merged(graph, "USES_TOKEN") == []
+
+
+# ---------------------------------------------------------------------------
+# Drift — hardcoded colors / off-scale arbitraries / inline styles
+# ---------------------------------------------------------------------------
+
+
+class TestStyleDriftCapture:
+    def test_captures_colors_offscale_inline_excludes_variants_and_var(self):
+        src = (
+            "export function Card() {\n"
+            '  return <div className="bg-primary text-[10px] bg-[#3b82f6] '
+            'data-[state=open]:bg-x h-[300px] text-[hsl(var(--x))]"\n'
+            '              style={{ color: "#fff", ring: "hsl(var(--success))" }}>\n'
+            "    x\n"
+            "  </div>;\n"
+            "}\n"
+        )
+        d = TypeScriptParser().parse_file("Card.tsx", src).functions[0].style_drift
+        assert "#3b82f6" in d.hardcoded_colors  # arbitrary color class
+        assert "#fff" in d.hardcoded_colors  # inline style
+        assert all("var(" not in c for c in d.hardcoded_colors)  # var() is a token ref, not hardcoded
+        assert set(d.off_scale_values) == {"text-[10px]", "h-[300px]"}
+        assert "data-[state=open]:bg-x" not in d.off_scale_values  # state variant, not drift
+        assert d.inline_style_count == 1
+
+    def test_no_drift_for_plain_classes(self):
+        src = "export function P(){ return <div className='flex items-center bg-primary p-4'>x</div>; }\n"
+        d = TypeScriptParser().parse_file("P.tsx", src).functions[0].style_drift
+        assert d.hardcoded_colors == [] and d.off_scale_values == [] and d.inline_style_count == 0
+
+    def test_trailing_modifier_stripped_and_colors_normalized(self):
+        src = (
+            "export function C() {\n"
+            "  return <div className='bg-[#3B82F6]/50 text-[10px]/6'\n"
+            "    style={{ a: 'hsl(18, 100%, 60%)', b: 'hsl(18,100%,60%)' }}>x</div>;\n"
+            "}\n"
+        )
+        d = TypeScriptParser().parse_file("C.tsx", src).functions[0].style_drift
+        assert "#3b82f6" in d.hardcoded_colors  # trailing /50 stripped, hex lowercased
+        assert d.hardcoded_colors.count("hsl(18,100%,60%)") == 1  # whitespace normalized -> one
+        assert "text-[10px]" in d.off_scale_values  # trailing /6 stripped
+
+    def test_offscale_strictness_and_inline_object_only(self):
+        src = (
+            "export function C(props) {\n"
+            "  return <div className='aspect-[16/9] bg-[url(/img2.png)] grid-cols-[repeat(3,1fr)] h-[300px]'\n"
+            "    style={props.style}>x</div>;\n"
+            "}\n"
+        )
+        d = TypeScriptParser().parse_file("C.tsx", src).functions[0].style_drift
+        assert d.off_scale_values == ["h-[300px]"]  # url/aspect/grid-template excluded
+        assert d.inline_style_count == 0  # style={props.style} passthrough is not drift
+
+
+class TestGetDrift:
+    def test_shape(self):
+        # execute order: total_colors, total_offscale, total_inline, affected, recurring, worst
+        results = [
+            _qr([{"c": 60}]),
+            _qr([{"c": 218}]),
+            _qr([{"c": 42}]),
+            _qr([{"c": 122}]),
+            _qr([{"color": "#fff", "c": 14}, {"color": "#000", "c": 3}]),
+            _qr([{"fp": "Home.tsx", "hc": 20, "os": 25, "ins": 2, "d": 47}]),
+        ]
+        d = _engine(results).get_drift()
+        assert d["summary"] == {
+            "hardcoded_colors": 60,
+            "off_scale_values": 218,
+            "inline_styles": 42,
+            "functions_affected": 122,
+        }
+        assert d["recurring_colors"][0] == {"color": "#fff", "count": 14}
+        assert d["worst_files"][0]["file"] == "Home.tsx"
+        assert d["worst_files"][0]["drift"] == 47

@@ -55,6 +55,17 @@ class ParsedImport:
 
 
 @dataclass(slots=True)
+class StyleDrift:
+    """Design-system drift found in a function's styling — values that BYPASS the design
+    tokens, scoped to styling context (className arbitrary values + inline `style`). Not
+    bare hex anywhere (that would catch chart palettes / SVG). See the design-token slices."""
+
+    hardcoded_colors: list[str] = field(default_factory=list)  # #hex / rgb() / hsl() literals
+    off_scale_values: list[str] = field(default_factory=list)  # arbitrary dims, e.g. "text-[10px]"
+    inline_style_count: int = 0  # number of inline `style={{...}}` attributes
+
+
+@dataclass(slots=True)
 class ParsedFunction:
     name: str
     qualified_name: str
@@ -93,6 +104,7 @@ class ParsedFunction:
     # only literal classNames are captured (dynamic `className={cn(...)}` is skipped).
     style_class_uses: list[str] = field(default_factory=list)
     token_var_uses: list[str] = field(default_factory=list)
+    style_drift: StyleDrift = field(default_factory=StyleDrift)  # hardcoded styling bypassing tokens
     callback_refs: list[tuple[str, str]] = field(default_factory=list)  # (callee_name, context)
     parameters: list[str] = field(default_factory=list)  # Parameter names
     typed_parameters: list[tuple[str, str | None]] = field(default_factory=list)  # (name, type) pairs

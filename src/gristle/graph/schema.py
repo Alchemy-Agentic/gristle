@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 # 8 = design-token USAGE: Function-[:USES_TOKEN]->Token edges, resolved from literal
 # className utility classes (Tailwind prefix -> token namespace) and var(--x) refs
 # (name-gated to real tokens) — enables dead-token detection and token blast-radius.
-GRAPH_SCHEMA_VERSION = 8
+# 9 = design drift: Function nodes carry hardcoded_colors / off_scale_values /
+# inline_style_count (styling that BYPASSES the tokens — hardcoded hex/rgb/hsl, arbitrary
+# off-scale utilities, inline styles), for the gristle_drift design-system audit.
+GRAPH_SCHEMA_VERSION = 9
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).

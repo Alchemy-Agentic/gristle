@@ -18,6 +18,7 @@ from gristle.models import (
     ParsedTestCase,
     ParsedTypeField,
     ParsedVariable,
+    StyleDrift,
 )
 from gristle.parsers.base import LanguageParser
 
@@ -658,6 +659,7 @@ class TypeScriptParser(LanguageParser):
             has_error_handling=has_error_handling,
             style_class_uses=self._extract_style_class_uses(body, src) if body else [],
             token_var_uses=self._extract_var_refs(node, src),
+            style_drift=self._extract_style_drift(body, src) if body else StyleDrift(),
             decorators=self._extract_decorators(node, src),
         )
 
@@ -739,6 +741,7 @@ class TypeScriptParser(LanguageParser):
             has_error_handling=has_error_handling,
             style_class_uses=self._extract_style_class_uses(body, src) if body else [],
             token_var_uses=self._extract_var_refs(node, src),
+            style_drift=self._extract_style_drift(body, src) if body else StyleDrift(),
         )
 
     def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
@@ -798,6 +801,7 @@ class TypeScriptParser(LanguageParser):
                     has_error_handling=has_error_handling,
                     style_class_uses=self._extract_style_class_uses(body, src) if body else [],
                     token_var_uses=self._extract_var_refs(node, src),
+                    style_drift=self._extract_style_drift(body, src) if body else StyleDrift(),
                 )
         return None
 
@@ -922,6 +926,20 @@ class TypeScriptParser(LanguageParser):
     _JSX_EVENT_PREFIX = "on"
     _STYLE_ATTR_NAMES = frozenset({"className", "class"})
     _TOKEN_VAR_RE = re.compile(r"var\(\s*(--[A-Za-z0-9_-]+)")
+    # Color literal: a hex, or a color function allowing ONE level of nested parens (so
+    # `rgb(calc(..),0,0)` / `hsl(0 0% var(--l))` match whole, not truncated at the inner `)`).
+    _COLOR_LIT_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b|(?:rgba?|hsla?|okl(?:ch|ab))\((?:[^()]|\([^()]*\))*\)")
+    _ARBITRARY_RE = re.compile(r"^(.+?)-\[([^\]]+)\]$")
+    # A single dimension value inside an arbitrary utility (`10px`, `3.5rem`, `80vh`, `-4px`).
+    # Requiring this (vs. "contains a digit") keeps `url(/img2.png)`, `aspect-[16/9]`, and grid
+    # templates out of off-scale drift.
+    _DIM_ARBITRARY_RE = re.compile(r"^-?[\d.]+(?:px|rem|em|vh|vw|vmin|vmax|ch|%|fr|deg|s|ms|pt)?$")
+    # Trailing opacity / line-height / important modifiers on an arbitrary class (`bg-[#fff]/50`,
+    # `text-[10px]/6`, `bg-[#fff]!`) — stripped before classification so they aren't missed.
+    _ARB_TRAILING_RE = re.compile(r"(?:/[\d.]+|!)+$")
+    # Arbitrary-value classes whose prefix is a STATE VARIANT (data-[state=open], aria-[…],
+    # group-data-[…]) are Tailwind syntax, not drift — excluded from off-scale drift.
+    _DRIFT_VARIANT_ROOTS = frozenset({"data", "aria", "group", "peer", "has", "supports"})
 
     def _walk_callback_refs(
         self,
@@ -1002,6 +1020,61 @@ class TypeScriptParser(LanguageParser):
         text = re.sub(r"(?<!:)//[^\n]*", " ", text)  # strip line comments (keep `://` in URLs)
         matches = (m.group(1) for m in self._TOKEN_VAR_RE.finditer(text))
         return list(dict.fromkeys(matches))  # de-dupe, order preserved
+
+    def _extract_style_drift(self, body: Node, src: bytes) -> StyleDrift:
+        """Styling that BYPASSES the design tokens, scoped to styling context: hardcoded
+        colors (hex/rgb/hsl in a className arbitrary value or an inline `style`), off-scale
+        arbitrary utilities (`text-[10px]`, `h-[300px]`), and the count of inline `style`
+        attributes. Deliberately NOT bare hex anywhere (avoids chart/SVG false positives)."""
+        colors: list[str] = []
+        dims: list[str] = []
+        inline = [0]
+        self._walk_style_drift(body, src, colors, dims, inline)
+        # Normalize colors (drop whitespace, lowercase) so `hsl(18, 100%, 60%)` and
+        # `hsl(18,100%,60%)` / `#FFF` and `#fff` count as one recurring candidate token.
+        norm = [re.sub(r"\s+", "", c).lower() for c in colors]
+        return StyleDrift(
+            hardcoded_colors=list(dict.fromkeys(norm)),
+            off_scale_values=list(dict.fromkeys(dims)),
+            inline_style_count=inline[0],
+        )
+
+    def _walk_style_drift(self, node: Node, src: bytes, colors: list[str], dims: list[str], inline: list[int]) -> None:
+        if node.type == "jsx_attribute":
+            named = node.named_children
+            if named and named[0].type == "property_identifier":
+                attr = self._text(named[0], src)
+                if attr in self._STYLE_ATTR_NAMES and len(named) >= 2:
+                    value = self._string_literal_value(named[1], src)
+                    if value:
+                        for cls in value.split():
+                            self._classify_arbitrary(cls, colors, dims)
+                elif attr == "style" and len(named) >= 2 and named[1].type == "jsx_expression":
+                    # Only an inline OBJECT literal (`style={{...}}`) is drift — a `style={var}`
+                    # passthrough or `style={theme.card}` token ref is not.
+                    if any(ch.type == "object" for ch in named[1].named_children):
+                        inline[0] += 1
+                        found = self._COLOR_LIT_RE.findall(self._text(named[1], src))
+                        colors.extend(c for c in found if "var(" not in c)  # var() is a token ref
+        for child in node.children:
+            self._walk_style_drift(child, src, colors, dims, inline)
+
+    def _classify_arbitrary(self, cls: str, colors: list[str], dims: list[str]) -> None:
+        """Classify a Tailwind class: an arbitrary color (`bg-[#fff]`) -> hardcoded color; an
+        arbitrary dimension (`text-[10px]`) -> off-scale; a state variant / plain class -> ignore."""
+        base = cls.split(":")[-1]  # strip variant prefixes
+        base = self._ARB_TRAILING_RE.sub("", base)  # strip trailing /opacity, /line-height, !
+        m = self._ARBITRARY_RE.match(base)
+        if not m:
+            return
+        prefix, inner = m.group(1), m.group(2)
+        if prefix.split("-")[0] in self._DRIFT_VARIANT_ROOTS:
+            return  # data-[state=open] etc. — Tailwind syntax, not drift
+        found = [c for c in self._COLOR_LIT_RE.findall(inner) if "var(" not in c]
+        if found:
+            colors.extend(found)
+        elif self._DIM_ARBITRARY_RE.match(inner):
+            dims.append(base)  # a single arbitrary dimension bypassing the scale
 
     def _get_method_name(self, func_node: Node, src: bytes) -> str | None:
         """Extract the method name from a call expression's function node."""

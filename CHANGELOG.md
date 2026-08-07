@@ -33,6 +33,20 @@ All notable changes to Gristle are documented here. This file is intended for co
   referenced by a `@theme` `--color-primary` isn't called dead). Measured: lax-flow 814
   edges (39/137 tokens unused), pig-knuckle 6,360 edges. **Schema version 7 → 8** (re-ingest
   to populate). Drift detection (styling that bypasses tokens) is the next slice.
+- **Design-system drift — `gristle_drift` + `Function` drift properties.** Gristle now
+  detects styling that **bypasses** the design tokens: each `Function` carries
+  `hardcoded_colors` (hex/rgb/hsl literals), `off_scale_values` (arbitrary dimensions like
+  `text-[10px]`/`h-[300px]` that bypass the scale), and `inline_style_count` — all scoped to
+  styling context (className arbitrary values + inline `style={{...}}`), deliberately **not**
+  bare hex anywhere (which would flag chart palettes / SVG). The new `gristle_drift` tool
+  aggregates these into a `summary`, `recurring_colors` (a hardcoded color and how many
+  components repeat it — the recurring ones are candidate new tokens; normalized so `#FFF`/
+  `#fff` count once), and `worst_files` (ranked by total drift). Together with `gristle_tokens`
+  this is the *"does the app match its design system?"* audit. Colors that reference a token
+  (`hsl(var(--x))`), state-variant arbitraries (`data-[state=open]`), and `style={var}`
+  passthroughs are correctly excluded. Measured: lax-flow 53 hardcoded colors / 200 off-scale
+  / 41 inline styles; pig-knuckle 166 / 848 / 2069. **Schema version 8 → 9** (re-ingest to
+  populate). Now **40 MCP tools**.
 
 ## [0.11.0] - 2026-08-04
 

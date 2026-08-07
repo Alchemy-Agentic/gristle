@@ -42,7 +42,7 @@ Repository on disk
                                                     v
                                           +------------------+
                                           | MCP Tools        |
-                                          | (39 tools + 2 resources) |
+                                          | (40 tools + 2 resources) |
                                           +------------------+
                                                     |
                                                     v
@@ -88,7 +88,7 @@ src/gristle/
     embeddings.py          # Optional semantic search (sentence-transformers)
   logging.py               # Structured logging (JSON for prod, coloured text for dev)
   mcp/
-    server.py              # MCP server, 39 tools + 2 resources
+    server.py              # MCP server, 40 tools + 2 resources
 
 tests/
   conftest.py              # Shared pytest fixtures (sample Python code)
@@ -462,7 +462,9 @@ Runs after the Schema Phase (so `Function` nodes exist for `GATES` edges to poin
 
 Runs after the Flag Phase; `TokenExtractor` mirrors the standalone-extractor shape (`.css` is whitelisted into the walk via `schema_extensions`, like `.prisma`/`.sql`). It reads each CSS file, and `parse_css_tokens` extracts every custom-property definition (`--name: value`) — from a `:root` selector or a Tailwind v4 `@theme` block — into a `ParsedToken`. Each is categorized (`color`/`spacing`/`typography`/`radius`/`shadow`/`z_index`/`animation`/`other`) by a priority name/value heuristic, tagged with its `source_kind` (`css_theme` vs `css_root`), and carries the tokens it references via `var(--x)`. The extractor dedupes per name (first/`:root` definition wins — the light default precedes a `.dark` override) and creates one `Token` node each plus a `File-[:CONTAINS]->Token` edge (synthesizing a minimal `File` node for the `.css` file, which Phase 1 didn't parse). Regex-based like the Markdown parser (CSS is outside the tree-sitter mandate).
 
-It then emits **`Function-[:USES_TOKEN]->Token`** edges: the TS parser captures each function's literal `className` utility classes and `var(--x)` refs, and the extractor resolves them against the token set — a Tailwind prefix→namespace map turns `bg-primary` into `--color-primary` and `p-4` into `--spacing-4` (the ambiguous `text-` and `shadow-` prefixes try both namespaces and match whichever token exists). Resolution is **name-gated** — only a class/var that maps to a real token yields an edge, so stock utilities, default-scale classes, and arbitrary values (`bg-[#fff]`) produce nothing. This powers the dead-token signal (`gristle_tokens` returns each token's `used_by` plus `unused_count`, computed alias-aware so a `:root` token referenced by a `@theme` token isn't called dead) and token blast-radius. Drift detection is a later slice. Queried by `get_tokens()` / the `gristle_tokens` tool.
+It then emits **`Function-[:USES_TOKEN]->Token`** edges: the TS parser captures each function's literal `className` utility classes and `var(--x)` refs, and the extractor resolves them against the token set — a Tailwind prefix→namespace map turns `bg-primary` into `--color-primary` and `p-4` into `--spacing-4` (the ambiguous `text-` and `shadow-` prefixes try both namespaces and match whichever token exists). Resolution is **name-gated** — only a class/var that maps to a real token yields an edge, so stock utilities, default-scale classes, and arbitrary values (`bg-[#fff]`) produce nothing. This powers the dead-token signal (`gristle_tokens` returns each token's `used_by` plus `unused_count`, computed alias-aware so a `:root` token referenced by a `@theme` token isn't called dead) and token blast-radius. Queried by `get_tokens()` / the `gristle_tokens` tool.
+
+Finally, the TS parser records per-function **drift** — styling that BYPASSES the tokens — as `Function` properties: `hardcoded_colors` (hex/rgb/hsl literals in a className arbitrary value or inline `style`), `off_scale_values` (arbitrary dimensions like `text-[10px]`), and `inline_style_count`. Scoped to styling context (never bare hex in chart/SVG code); colors referencing a token (`hsl(var(--x))`), state-variant arbitraries, and `style={var}` passthroughs are excluded. `get_drift()` / `gristle_drift` aggregates these into a summary, recurring hardcoded colors (candidate new tokens), and the worst-offending files — the *"what doesn't match the design system?"* audit.
 
 ### Phase 3: Process Documentation
 

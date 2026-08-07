@@ -102,6 +102,7 @@ def _methods(ctx: dict[str, Any]) -> dict[str, Callable[[], Any]]:
         "get_repo_overview": lambda: e.get_repo_overview(),
         "graph_health": lambda: e.graph_health(),
         "get_tokens": lambda: e.get_tokens(),
+        "get_drift": lambda: e.get_drift(),
         "get_function_context": lambda: e.get_function_context(fn),
         "get_class_structure": lambda: e.get_class_structure(cls),
         "get_file_overview": lambda: e.get_file_overview(fil),

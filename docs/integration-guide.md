@@ -51,7 +51,7 @@ This clones the repo and runs full ingestion in one step.
 | Label | Key Properties | Purpose |
 |-------|---------------|---------|
 | `File` | `id`, `path`, `language`, `line_count`, `is_test_file`, `todo_count`, `config_type` | Source or config file |
-| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback`, `raises`, `catches`, `has_error_handling` | Function or method (`raises`/`catches` are exception type-name lists; see `RAISES`/`CATCHES` edges for locally-defined ones. `has_error_handling` is a boolean — true if the body has a `try`/`except` or `try`/`catch`, including bare `except:`/`finally` and all JS/TS catches that name no type) |
+| `Function` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `is_async`, `is_test`, `is_exported`, `is_component`, `is_entry_point`, `entry_point_reason`, `is_fixture`, `complexity`, `decorators`, `visibility`, `return_type`, `tested_by_count`, `is_callback`, `raises`, `catches`, `has_error_handling`, `hardcoded_colors`, `off_scale_values`, `inline_style_count` | Function or method (`raises`/`catches` are exception type-name lists; see `RAISES`/`CATCHES` edges for locally-defined ones. `has_error_handling` is a boolean — true if the body has a `try`/`except` or `try`/`catch`, including bare `except:`/`finally` and all JS/TS catches that name no type. `hardcoded_colors`/`off_scale_values`/`inline_style_count` are design-system **drift** — styling that bypasses the tokens, scoped to className arbitrary values + inline `style`; aggregate with `gristle_drift`) |
 | `Class` | `id`, `name`, `qualified_name`, `file_path`, `start_line`, `signature`, `docstring`, `bases`, `is_abstract`, `is_exported`, `kind`, `permission_classes` | Class, interface, type, or enum. `permission_classes` holds a DRF class-based view's `permission_classes` names (e.g. `["IsAuthenticated"]`); join `(:Route)-[:HANDLES]->(:Class)` to read a CBV route's auth posture. Empty for non-DRF classes. |
 | `Import` | `id`, `file_path`, `line`, `module_path`, `imported_names`, `is_relative`, `resolved` | Import statement |
 | `Route` | `id`, `method`, `path`, `handler_name`, `file_path`, `line`, `middleware`, `has_auth` | HTTP endpoint |
@@ -562,7 +562,18 @@ Requires an app whose flag convention matches the configured profile (`GRISTLE_F
 
 Design-token inventory — the CSS custom properties (`:root` / Tailwind v4 `@theme`) an app defines as its design system. Returns the total, a per-category breakdown (`color`/`spacing`/`typography`/`radius`/`shadow`/`z_index`/`animation`/`other`), a split by source (`css_theme` = the v4 theme/utility layer vs. `css_root` = semantic `:root` values), the defining `.css` files, and the token list — each with its value, category, source, the tokens it references via `var(--x)` (so a v4 `--color-primary: hsl(var(--primary))` shows its link to `--primary`), and a `used_by` count (components/functions that use it via a Tailwind class or `var()`, the `USES_TOKEN` edge). Also `total_uses` and `unused_count` — tokens nothing uses and no other token aliases (the dead-token / retire-candidate signal, computed alias-aware). Pass `category` to filter the list (the breakdown stays global). Capped at 50 (`tokens_omitted` gives the cut, `count` is exact).
 
-Answers *"do we have tokens, what kind, and which are used vs. dead?"*. Drift (hardcoded styling that bypasses the tokens) is a separate, later concern. See the `Token` node and `USES_TOKEN` edge in **Graph Schema**.
+Answers *"do we have tokens, what kind, and which are used vs. dead?"*. Pair with `gristle_drift` for what *bypasses* the tokens. See the `Token` node and `USES_TOKEN` edge in **Graph Schema**.
+
+---
+
+### `gristle_drift(repo_id?)`
+
+Design-system **drift** — styling that bypasses the design tokens (*"what in the app doesn't match the design system?"*). Scans styling context — className arbitrary values (`bg-[#3b82f6]`, `text-[10px]`) and inline `style={{...}}` — for hardcoded colors (hex/rgb/hsl), off-scale arbitrary dimensions, and inline-style count. Deliberately **not** bare hex anywhere (avoids flagging chart palettes / SVG). Returns:
+- **`summary`** — totals (`hardcoded_colors`, `off_scale_values`, `inline_styles`) + `functions_affected`.
+- **`recurring_colors`** — a hardcoded color and how many functions repeat it; the recurring ones are the best candidates to **promote to a token** (colors are normalized so `#FFF`/`#fff` and spacing variants count as one).
+- **`worst_files`** — ranked by total drift (where to start cleaning up).
+
+Pair with `gristle_tokens` (what tokens exist / are unused) for the full design-system picture. Deciding what *should* become a token is a judgment call for the caller. See the `Function` node's `hardcoded_colors`/`off_scale_values`/`inline_style_count` in **Graph Schema**.
 
 ---
 

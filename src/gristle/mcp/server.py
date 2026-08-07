@@ -1495,6 +1495,32 @@ async def gristle_tokens(category: str | None = None, repo_id: str | None = None
 
 
 @mcp.tool()
+async def gristle_drift(repo_id: str | None = None) -> dict:
+    """Design-system drift — styling that BYPASSES the design tokens. Answers *"what in
+    the app doesn't match the design system?"*.
+
+    Scans styling context (className arbitrary values + inline `style`) for: hardcoded
+    colors (`bg-[#3b82f6]`, `style={{ color: '#fff' }}`), off-scale arbitrary utilities
+    (`text-[10px]`, `h-[300px]` that bypass the spacing/type scale), and inline `style`
+    attributes. Deliberately NOT bare hex anywhere (that would flag chart palettes / SVG).
+
+    Returns a `summary` (totals + affected functions), `recurring_colors` (a hardcoded
+    color and how many functions repeat it — the recurring ones are the best candidates to
+    PROMOTE to a token), and `worst_files` (ranked by total drift — where to start). Pair
+    with `gristle_tokens` (which tokens exist / are unused) for the full design-system
+    picture; deciding what *should* become a token is a judgment call for the caller.
+
+    Args:
+        repo_id: Repository identifier (optional, uses most recent if omitted).
+    """
+    engine = _resolve_engine(repo_id)
+    if engine is None:
+        return {"error": "No repository ingested. Call gristle_ingest first."}
+
+    return engine.get_drift()
+
+
+@mcp.tool()
 async def gristle_subgraph(
     view: Literal["call_hierarchy", "blast_radius", "request_trace", "component_tree"],
     center: str | None = None,

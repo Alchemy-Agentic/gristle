@@ -3645,6 +3645,69 @@ class QueryEngine:
         self._cap_list(report, "tokens", self._MODELS_CAP)
         return report
 
+    def get_drift(self) -> dict:
+        """Design-system drift — styling that BYPASSES the design tokens. Aggregates the
+        per-function drift signals (hardcoded hex/rgb/hsl colors, off-scale arbitrary
+        utilities like `text-[10px]`, and inline `style` attributes — all scoped to styling
+        context, never bare hex in chart/SVG code). Returns a `summary` (totals + affected
+        functions), `recurring_colors` (a hardcoded color and how many functions use it —
+        the ones that recur are candidate NEW tokens), and `worst_files` (ranked by total
+        drift). This is the "what doesn't match the design system?" audit.
+        """
+
+        def scalar(cypher: str) -> int:
+            r = self.graph.execute(cypher).records
+            return int(r[0]["c"]) if r and r[0].get("c") is not None else 0
+
+        total_colors = scalar("MATCH (f:Function) RETURN sum(size(f.hardcoded_colors)) AS c")
+        total_offscale = scalar("MATCH (f:Function) RETURN sum(size(f.off_scale_values)) AS c")
+        total_inline = scalar("MATCH (f:Function) RETURN sum(f.inline_style_count) AS c")
+        affected = scalar(
+            """
+            MATCH (f:Function)
+            WHERE size(f.hardcoded_colors) > 0 OR size(f.off_scale_values) > 0 OR f.inline_style_count > 0
+            RETURN count(f) AS c
+            """
+        )
+        recurring = [
+            {"color": r["color"], "count": r["c"]}
+            for r in self.graph.execute(
+                """
+                MATCH (f:Function) WHERE size(f.hardcoded_colors) > 0
+                UNWIND f.hardcoded_colors AS color
+                RETURN color, count(*) AS c ORDER BY c DESC, color LIMIT 25
+                """
+            ).records
+        ]
+        worst = [
+            {
+                "file": r["fp"],
+                "hardcoded_colors": int(r["hc"]),
+                "off_scale_values": int(r["os"]),
+                "inline_styles": int(r["ins"]),
+                "drift": int(r["d"]),
+            }
+            for r in self.graph.execute(
+                """
+                MATCH (f:Function) WHERE f.file_path IS NOT NULL
+                WITH f.file_path AS fp, sum(size(f.hardcoded_colors)) AS hc,
+                     sum(size(f.off_scale_values)) AS os, sum(f.inline_style_count) AS ins
+                WITH fp, hc, os, ins, hc + os + ins AS d WHERE d > 0
+                RETURN fp, hc, os, ins, d ORDER BY d DESC, fp LIMIT 20
+                """
+            ).records
+        ]
+        return {
+            "summary": {
+                "hardcoded_colors": total_colors,
+                "off_scale_values": total_offscale,
+                "inline_styles": total_inline,
+                "functions_affected": affected,
+            },
+            "recurring_colors": recurring,
+            "worst_files": worst,
+        }
+
     # ------------------------------------------------------------------
     # Source code loader
     # ------------------------------------------------------------------
