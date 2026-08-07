@@ -656,6 +656,8 @@ class TypeScriptParser(LanguageParser):
             raises=raises,
             catches=catches,
             has_error_handling=has_error_handling,
+            style_class_uses=self._extract_style_class_uses(body, src) if body else [],
+            token_var_uses=self._extract_var_refs(node, src),
             decorators=self._extract_decorators(node, src),
         )
 
@@ -735,6 +737,8 @@ class TypeScriptParser(LanguageParser):
             raises=raises,
             catches=catches,
             has_error_handling=has_error_handling,
+            style_class_uses=self._extract_style_class_uses(body, src) if body else [],
+            token_var_uses=self._extract_var_refs(node, src),
         )
 
     def _parse_variable_function(self, node: Node, src: bytes, file_path: str) -> ParsedFunction | None:
@@ -792,6 +796,8 @@ class TypeScriptParser(LanguageParser):
                     raises=raises,
                     catches=catches,
                     has_error_handling=has_error_handling,
+                    style_class_uses=self._extract_style_class_uses(body, src) if body else [],
+                    token_var_uses=self._extract_var_refs(node, src),
                 )
         return None
 
@@ -914,6 +920,8 @@ class TypeScriptParser(LanguageParser):
         return unique
 
     _JSX_EVENT_PREFIX = "on"
+    _STYLE_ATTR_NAMES = frozenset({"className", "class"})
+    _TOKEN_VAR_RE = re.compile(r"var\(\s*(--[A-Za-z0-9_-]+)")
 
     def _walk_callback_refs(
         self,
@@ -964,6 +972,36 @@ class TypeScriptParser(LanguageParser):
                 name = self._resolve_call_name(child, src)
                 if name:
                     out.append((name, "jsx_callback"))
+
+    def _extract_style_class_uses(self, body: Node, src: bytes) -> list[str]:
+        """Utility classes from literal `className="..."` / `class="..."` JSX attributes in
+        this body (dynamic `className={...}` is skipped). De-duped, order preserved."""
+        out: list[str] = []
+        self._walk_style_classes(body, src, out)
+        return list(dict.fromkeys(out))  # de-dupe, order preserved
+
+    def _walk_style_classes(self, node: Node, src: bytes, out: list[str]) -> None:
+        if node.type == "jsx_attribute":
+            named = node.named_children
+            if (
+                len(named) >= 2
+                and named[0].type == "property_identifier"
+                and self._text(named[0], src) in self._STYLE_ATTR_NAMES
+            ):
+                value = self._string_literal_value(named[1], src)
+                if value:
+                    out.extend(value.split())
+        for child in node.children:
+            self._walk_style_classes(child, src, out)
+
+    def _extract_var_refs(self, node: Node, src: bytes) -> list[str]:
+        """`var(--token)` names referenced anywhere in this function's source (inline
+        styles, template literals, CSS-in-JS). De-duped, order preserved."""
+        text = self._text(node, src)
+        text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)  # strip block comments
+        text = re.sub(r"(?<!:)//[^\n]*", " ", text)  # strip line comments (keep `://` in URLs)
+        matches = (m.group(1) for m in self._TOKEN_VAR_RE.finditer(text))
+        return list(dict.fromkeys(matches))  # de-dupe, order preserved
 
     def _get_method_name(self, func_node: Node, src: bytes) -> str | None:
         """Extract the method name from a call expression's function node."""

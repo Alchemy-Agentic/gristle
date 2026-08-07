@@ -87,6 +87,12 @@ class ParsedFunction:
     # De-conflated from `calls`: a `<Foo/>` is a render, not a call. Resolved to a
     # Function/Class component (never a Variable) as a RENDERS edge by the pipeline.
     renders: list[str] = field(default_factory=list)
+    # Utility classes from literal `className="..."` JSX attrs (e.g. ["bg-primary",
+    # "text-muted-foreground", "p-4"]) and `var(--x)` token names referenced in the body
+    # (e.g. ["--primary"]). Resolved to Token nodes as USES_TOKEN edges by the pipeline;
+    # only literal classNames are captured (dynamic `className={cn(...)}` is skipped).
+    style_class_uses: list[str] = field(default_factory=list)
+    token_var_uses: list[str] = field(default_factory=list)
     callback_refs: list[tuple[str, str]] = field(default_factory=list)  # (callee_name, context)
     parameters: list[str] = field(default_factory=list)  # Parameter names
     typed_parameters: list[tuple[str, str | None]] = field(default_factory=list)  # (name, type) pairs
@@ -423,5 +429,6 @@ class TokenExtractionResult:
     """Result of design-token extraction phase."""
 
     tokens_found: int = 0  # distinct Token nodes (deduped per name)
+    uses_created: int = 0  # Function-[:USES_TOKEN]->Token edges
     nodes_created: int = 0
     relationships_created: int = 0

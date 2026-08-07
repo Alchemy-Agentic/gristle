@@ -8,7 +8,9 @@ from unittest.mock import MagicMock
 
 from gristle.ingestion.token_extractor import TokenExtractor
 from gristle.ingestion.walker import WalkedFile
-from gristle.parsers.design_tokens import parse_css_tokens
+from gristle.models import ParsedFile, ParsedFunction
+from gristle.parsers.design_tokens import parse_css_tokens, resolve_utility_class
+from gristle.parsers.typescript import TypeScriptParser
 
 # ---------------------------------------------------------------------------
 # CSS custom-property parser
@@ -243,7 +245,7 @@ def _engine(side_effect):
 
 class TestGetTokens:
     def test_inventory_shape(self):
-        # execute order in get_tokens: by_category, by_source, files, tokens, total
+        # execute order: by_category, by_source, files, tokens, total, total_uses, unused
         results = [
             _qr([{"category": "color", "c": 3}, {"category": "radius", "c": 1}]),
             _qr([{"source_kind": "css_root", "c": 3}, {"source_kind": "css_theme", "c": 1}]),
@@ -258,15 +260,142 @@ class TestGetTokens:
                         "references": None,
                         "filePath": "src/index.css",
                         "line": 4,
+                        "used_by": 12,
                     }
                 ]
             ),
             _qr([{"c": 4}]),  # total (direct count, robust to null-category nodes)
+            _qr([{"c": 30}]),  # total_uses
+            _qr([{"c": 1}]),  # unused_count
         ]
         report = _engine(results).get_tokens()
         assert report["total_tokens"] == 4
+        assert report["total_uses"] == 30
+        assert report["unused_count"] == 1
         assert report["by_category"] == {"color": 3, "radius": 1}
         assert report["by_source_kind"] == {"css_root": 3, "css_theme": 1}
         assert report["files"] == ["src/index.css"]
         assert report["count"] == 1
         assert report["tokens"][0]["references"] == []  # null coalesced to []
+        assert report["tokens"][0]["used_by"] == 12
+
+
+# ---------------------------------------------------------------------------
+# USES_TOKEN — className/var capture, class->token resolution, edge emission
+# ---------------------------------------------------------------------------
+
+
+class TestStyleUsageCapture:
+    def test_parser_captures_literal_classes_and_vars_skips_dynamic(self):
+        src = (
+            "export function Card() {\n"
+            '  const s = { color: "var(--accent)" };\n'
+            '  return <div className="bg-primary text-muted-foreground p-4" style={s}>\n'
+            '    <span className={cn("dynamic", x)}>skip</span>\n'
+            '    <p className="rounded-lg">hi</p>\n'
+            "  </div>;\n"
+            "}\n"
+        )
+        fn = TypeScriptParser().parse_file("Card.tsx", src).functions[0]
+        assert fn.style_class_uses == ["bg-primary", "text-muted-foreground", "p-4", "rounded-lg"]
+        assert fn.token_var_uses == ["--accent"]  # dynamic className={cn(...)} not captured
+
+    def test_var_in_comment_not_captured(self):
+        src = (
+            "export function F() {\n"
+            "  // switch to var(--ghost) later\n"
+            '  const s = { color: "var(--real)" };\n'
+            "  return <div style={s} />;\n"
+            "}\n"
+        )
+        fn = TypeScriptParser().parse_file("F.tsx", src).functions[0]
+        assert fn.token_var_uses == ["--real"]  # var() inside a comment is ignored
+
+
+class TestResolveUtilityClass:
+    _TOKENS = {"color-primary", "primary", "color-muted-foreground", "text-lg", "border", "radius-lg"}
+
+    def test_color_utility_resolves_to_theme_token(self):
+        assert resolve_utility_class("bg-primary", self._TOKENS) == "color-primary"
+        assert resolve_utility_class("text-muted-foreground", self._TOKENS) == "color-muted-foreground"
+
+    def test_text_ambiguity_resolves_by_which_token_exists(self):
+        assert resolve_utility_class("text-lg", self._TOKENS) == "text-lg"  # font-size token
+        assert resolve_utility_class("text-primary", self._TOKENS) == "color-primary"  # color token
+
+    def test_variant_opacity_important_stripped(self):
+        assert resolve_utility_class("hover:bg-primary", self._TOKENS) == "color-primary"
+        assert resolve_utility_class("dark:md:bg-primary/50", self._TOKENS) == "color-primary"
+        assert resolve_utility_class("!bg-primary", self._TOKENS) == "color-primary"
+
+    def test_bare_utility_is_not_a_token_use(self):
+        # `border` (width utility) must NOT match the `--border` color token
+        assert resolve_utility_class("border", self._TOKENS) is None
+        assert resolve_utility_class("rounded", self._TOKENS) is None
+
+    def test_arbitrary_value_and_stock_classes_match_nothing(self):
+        assert resolve_utility_class("bg-[#fff]", self._TOKENS) is None  # drift, not a token
+        assert resolve_utility_class("flex", self._TOKENS) is None
+        assert resolve_utility_class("items-center", self._TOKENS) is None
+        assert resolve_utility_class("bg-nonexistent", self._TOKENS) is None  # name-gated
+
+    def test_fraction_utility_is_not_a_spacing_token(self):
+        # `w-1/2` is a 50% width ratio, NOT a use of `--spacing-1`
+        assert resolve_utility_class("w-1/2", {"spacing-1"}) is None
+        assert resolve_utility_class("h-1/3", {"spacing-1"}) is None
+
+    def test_opacity_modifier_still_resolves_base(self):
+        assert resolve_utility_class("bg-primary/50", self._TOKENS) == "color-primary"
+
+    def test_non_color_prefix_does_not_hit_bare_color_token(self):
+        # a non-color suffix must not collide with a bare `:root` color token
+        assert resolve_utility_class("font-primary", {"primary"}) is None
+        assert resolve_utility_class("p-4", {"primary"}) is None
+
+
+def _usage_fn(name, classes=None, vars=None):
+    return ParsedFunction(
+        name=name,
+        qualified_name=f"app.tsx::{name}",
+        file_path="app.tsx",
+        start_line=1,
+        end_line=2,
+        signature="",
+        style_class_uses=classes or [],
+        token_var_uses=vars or [],
+    )
+
+
+def _merged(graph, rel_type):
+    return [
+        r for call in graph.batch_merge_relationships.call_args_list if call.args[0] == rel_type for r in call.args[1]
+    ]
+
+
+class TestUsesTokenExtraction:
+    def test_emits_uses_token_name_gated(self, tmp_path):
+        graph = _graph_mock()
+        css = _walked(
+            tmp_path,
+            "t.css",
+            ":root{--primary: 1 2% 3%; --accent: red;}\n@theme{--color-primary: hsl(var(--primary));}",
+        )
+        fn = _usage_fn("Card", classes=["bg-primary", "flex", "p-4", "bg-[#000]"], vars=["--accent"])
+        pf = ParsedFile(path="app.tsx", language="typescript", functions=[fn])
+        result = TokenExtractor(graph, file_path_to_id={}).extract([css], [pf])
+
+        edges = _merged(graph, "USES_TOKEN")
+        targets = {e["to_id"] for e in edges}
+        # bg-primary -> color-primary; var(--accent) -> accent. flex/p-4/bg-[#000] name-gated out.
+        assert targets == {"token::color-primary", "token::accent"}
+        assert all(e["from_id"] == "func::app.tsx::Card" for e in edges)
+        assert result.uses_created == 2
+
+    def test_no_edges_without_tokens(self, tmp_path):
+        graph = _graph_mock()
+        fn = _usage_fn("Card", classes=["bg-primary"])
+        pf = ParsedFile(path="app.tsx", language="typescript", functions=[fn])
+        # no css -> no tokens -> name-gating yields nothing
+        result = TokenExtractor(graph, file_path_to_id={}).extract([], [pf])
+        assert result.uses_created == 0
+        assert _merged(graph, "USES_TOKEN") == []

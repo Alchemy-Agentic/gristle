@@ -177,6 +177,111 @@ def _categorize(name: str, value: str) -> str:
     return "other"
 
 
+# Tailwind utility-class prefix -> the token namespace(s) it draws from (Tailwind v4). A
+# class `bg-primary` reads a `--color-*` token; `rounded-lg` a `--radius-*`; `p-4` a
+# `--spacing-*`. `text-` and `shadow-` are ambiguous (color vs. font-size, shadow vs.
+# color), so they list both namespaces and candidate-matching against the real token set
+# disambiguates. Only prefixes whose values are commonly THEMED (custom tokens) are listed.
+_UTIL_PREFIX_NS: dict[str, tuple[str, ...]] = {
+    "bg": ("color",),
+    "text": ("color", "text"),
+    "border": ("color",),
+    "ring": ("color",),
+    "ring-offset": ("color",),
+    "fill": ("color",),
+    "stroke": ("color",),
+    "outline": ("color",),
+    "decoration": ("color",),
+    "accent": ("color",),
+    "caret": ("color",),
+    "placeholder": ("color",),
+    "divide": ("color",),
+    "from": ("color",),
+    "via": ("color",),
+    "to": ("color",),
+    "shadow": ("shadow", "color"),
+    "rounded": ("radius",),
+    "font": ("font",),
+    "leading": ("leading",),
+    "tracking": ("tracking",),
+    "z": ("z",),
+    "animate": ("animate", "animation"),
+    "duration": ("duration",),
+    "ease": ("ease",),
+    # spacing utilities (padding/margin/gap/size) draw from `--spacing-*` tokens
+    "p": ("spacing",),
+    "px": ("spacing",),
+    "py": ("spacing",),
+    "pt": ("spacing",),
+    "pr": ("spacing",),
+    "pb": ("spacing",),
+    "pl": ("spacing",),
+    "ps": ("spacing",),
+    "pe": ("spacing",),
+    "m": ("spacing",),
+    "mx": ("spacing",),
+    "my": ("spacing",),
+    "mt": ("spacing",),
+    "mr": ("spacing",),
+    "mb": ("spacing",),
+    "ml": ("spacing",),
+    "ms": ("spacing",),
+    "me": ("spacing",),
+    "gap": ("spacing",),
+    "gap-x": ("spacing",),
+    "gap-y": ("spacing",),
+    "space-x": ("spacing",),
+    "space-y": ("spacing",),
+    "w": ("spacing",),
+    "h": ("spacing",),
+    "size": ("spacing",),
+    "min-w": ("spacing",),
+    "max-w": ("spacing",),
+    "min-h": ("spacing",),
+    "max-h": ("spacing",),
+}
+_PREFIXES_BY_LEN = sorted(_UTIL_PREFIX_NS, key=len, reverse=True)
+
+
+def resolve_utility_class(cls: str, token_names: set[str]) -> str | None:
+    """Map a Tailwind utility class to the design Token it reads, or None. Strips variant
+    prefixes (`hover:`, `dark:`, `md:`, `group-*:`), a leading `!`/`-`, and an opacity
+    suffix (`/50`), then matches candidate token names against *token_names* — so ONLY a
+    class that resolves to a REAL token yields an edge (stock classes like `flex`, or a
+    default-scale `p-4` with no custom `--spacing-4`, match nothing). Candidates are the
+    namespace-qualified name (`color-primary`) then the bare name (`primary`), covering a
+    v4 `@theme` token and a plain `:root` token alike. Arbitrary values (`bg-[#fff]`) are
+    NOT token uses — they're drift (a later slice)."""
+    cls = cls.split(":")[-1].lstrip("!-")  # drop variants, important, negative sign
+    if not cls or "[" in cls:  # arbitrary value -> drift, not a token use
+        return None
+    suffix: str | None = None
+    namespaces: tuple[str, ...] = ()
+    for prefix in _PREFIXES_BY_LEN:
+        if cls.startswith(prefix + "-"):
+            suffix, namespaces = cls[len(prefix) + 1 :], _UTIL_PREFIX_NS[prefix]
+            break
+    # Only `prefix-suffix` forms name a token. A BARE utility (`border`, `rounded`,
+    # `shadow`) sets a default/width, not a named-token reference — never an edge.
+    if not suffix:
+        return None
+    if "/" in suffix:
+        left = suffix.split("/", 1)[0]
+        if left.replace(".", "", 1).isdigit():
+            return None  # a fraction like `w-1/2` (layout ratio) is not a token use
+        suffix = left  # an opacity modifier (`bg-primary/50`) -> resolve the base token
+    # namespace-qualified candidate (`color-primary`); the bare `:root` name (`primary`)
+    # is a candidate ONLY for color utilities — a `font-*`/spacing suffix must not collide
+    # with a bare COLOR token (e.g. `font-primary` must not resolve to the `--primary` color).
+    candidates = [f"{ns}-{suffix}" for ns in namespaces]
+    if "color" in namespaces:
+        candidates.append(suffix)
+    for c in candidates:
+        if c in token_names:
+            return c
+    return None
+
+
 def parse_css_tokens(relative_path: str, content: str) -> list[ParsedToken]:
     """Extract every CSS custom-property definition as a ParsedToken (document order)."""
     masked = _mask(content)

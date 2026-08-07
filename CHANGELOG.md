@@ -20,6 +20,19 @@ All notable changes to Gristle are documented here. This file is intended for co
   token *usage* and *drift* detection follow. Detection is on by default
   (`GRISTLE_DESIGN_TOKENS_ENABLED=false` to skip). **Schema version 6 → 7** (re-ingest to
   populate). Now **39 MCP tools**.
+- **Design-token usage — `Function-[:USES_TOKEN]->Token` edges.** Gristle now links the
+  components/functions that use a design token to it, resolved from two signals: literal
+  `className` utility classes (a Tailwind prefix→namespace map turns `bg-primary` into the
+  `--color-primary` token, `p-4` into `--spacing-4`, disambiguating `text-primary` (color)
+  from `text-lg` (size) by which token exists) and `var(--x)` references in a function's
+  body. Both are **name-gated** — only a class/var that resolves to a real Token yields an
+  edge, so stock utilities (`flex`), default-scale classes, and arbitrary values
+  (`bg-[#fff]`) produce nothing. `gristle_tokens` now reports each token's `used_by` count
+  plus `total_uses` and `unused_count` (tokens nothing uses and no other token aliases — the
+  dead-token / retire-candidate signal, computed alias-aware so a `:root` `--primary`
+  referenced by a `@theme` `--color-primary` isn't called dead). Measured: lax-flow 814
+  edges (39/137 tokens unused), pig-knuckle 6,360 edges. **Schema version 7 → 8** (re-ingest
+  to populate). Drift detection (styling that bypasses tokens) is the next slice.
 
 ## [0.11.0] - 2026-08-04
 

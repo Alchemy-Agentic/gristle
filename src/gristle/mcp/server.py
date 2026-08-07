@@ -1474,11 +1474,14 @@ async def gristle_tokens(category: str | None = None, repo_id: str | None = None
     theme layer vs. `css_root` = semantic `:root` values), the defining `.css` files, and
     the token list itself — each token with its value, category, source, and the tokens it
     references via `var(--x)` (so a v4 `--color-primary: hsl(var(--primary))` shows its link
-    to `--primary`). Pass `category` to filter the list to one category (the breakdown stays
-    global). The list is capped at 50 (`tokens_omitted` gives the cut, `count` stays exact).
+    to `--primary`), and a `used_by` count = the components/functions that use it (via a
+    Tailwind class or `var()`). Also `total_uses` and `unused_count` — tokens nothing uses
+    and no other token aliases (the dead-token / retire-candidate signal). Pass `category`
+    to filter the list (the breakdown stays global). Capped at 50 (`tokens_omitted` gives the
+    cut, `count` stays exact).
 
-    This is the design-system inventory — "do we even have tokens, and what kind?". Token
-    usage in components and drift (styling that bypasses the tokens) are separate concerns.
+    Answers "do we have tokens, what kind, and which are used vs. dead?". Drift (hardcoded
+    styling that bypasses the tokens) is a separate concern.
 
     Args:
         category: Optional category filter (e.g. "color").

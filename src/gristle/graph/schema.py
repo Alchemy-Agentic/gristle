@@ -36,7 +36,10 @@ logger = logging.getLogger(__name__)
 # 7 = design tokens: Token nodes (CSS custom properties from :root / Tailwind v4 @theme
 # blocks, categorized color/spacing/typography/radius/shadow/z_index/animation) with a
 # File-[:CONTAINS]->Token home edge — the definition inventory for design-system analysis.
-GRAPH_SCHEMA_VERSION = 7
+# 8 = design-token USAGE: Function-[:USES_TOKEN]->Token edges, resolved from literal
+# className utility classes (Tailwind prefix -> token namespace) and var(--x) refs
+# (name-gated to real tokens) — enables dead-token detection and token blast-radius.
+GRAPH_SCHEMA_VERSION = 8
 
 # Indexes to create for efficient lookups.
 # Each entry is (NodeLabel, property_name).

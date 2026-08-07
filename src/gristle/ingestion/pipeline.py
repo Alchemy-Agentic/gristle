@@ -377,8 +377,9 @@ class IngestionPipeline:
 
             if token_result.tokens_found:
                 logger.info(
-                    "Token phase complete: %d design tokens",
+                    "Token phase complete: %d design tokens, %d USES_TOKEN edges",
                     token_result.tokens_found,
+                    token_result.uses_created,
                     extra={
                         "event": "token_phase_done",
                         "duration_ms": token_phase.ms,

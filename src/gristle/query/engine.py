@@ -3579,9 +3579,11 @@ class QueryEngine:
         `@theme`) gristle modeled as Token nodes. Returns the total, a per-category
         breakdown (color/spacing/typography/radius/shadow/z_index/animation/other), a
         per-source-kind split (`css_theme` vs `css_root`), the defining files, and the
-        token list itself (capped at ``_MODELS_CAP``; ``count`` stays exact). Pass
-        ``category`` to filter the list to one category (the breakdown stays global).
-        Read-only inventory — token USAGE/drift are separate queries.
+        token list itself (each with a ``used_by`` count = incoming USES_TOKEN edges;
+        capped at ``_MODELS_CAP``; ``count`` stays exact). Also ``total_uses`` and
+        ``unused_count`` — tokens that nothing uses AND no other token aliases via
+        ``var()`` (the dead-token / retire-candidate signal). Pass ``category`` to filter
+        the list (the breakdown stays global). Drift detection is a separate query.
         """
         by_category = {
             r["category"]: r["c"]
@@ -3605,9 +3607,11 @@ class QueryEngine:
         rows = self.graph.execute(
             f"""
             MATCH (t:Token) {where}
+            OPTIONAL MATCH (t)<-[u:USES_TOKEN]-()
+            WITH t, count(u) AS used_by
             RETURN t.name AS name, t.category AS category, t.value AS value,
                    t.source_kind AS source_kind, t.references AS references,
-                   t.file_path AS filePath, t.line AS line
+                   t.file_path AS filePath, t.line AS line, used_by AS used_by
             ORDER BY t.category, t.name
             """,
             {"category": category} if category else None,
@@ -3615,9 +3619,24 @@ class QueryEngine:
         for row in rows:
             row["references"] = row.get("references") or []
         total = self.graph.execute("MATCH (t:Token) RETURN count(t) AS c").records[0]["c"]
+        total_uses = self.graph.execute("MATCH ()-[u:USES_TOKEN]->() RETURN count(u) AS c").records[0]["c"]
+        # Dead token = nothing uses it AND no other token aliases it via var() (so a
+        # semantic `--primary` referenced by a `@theme --color-primary` isn't called dead).
+        unused = self.graph.execute(
+            """
+            MATCH (t:Token)
+            OPTIONAL MATCH (t)<-[u:USES_TOKEN]-()
+            WITH t, count(u) AS ub WHERE ub = 0
+            OPTIONAL MATCH (s:Token) WHERE s <> t AND t.raw_name IN s.references
+            WITH t, count(s) AS refd WHERE refd = 0
+            RETURN count(t) AS c
+            """
+        ).records[0]["c"]
         report = {
             "count": len(rows),
             "total_tokens": total,
+            "total_uses": total_uses,
+            "unused_count": unused,
             "by_category": by_category,
             "by_source_kind": by_source,
             "files": files,

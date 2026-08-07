@@ -70,9 +70,9 @@ class TokenExtractor:
             if content is not None:
                 defs.extend(parse_css_tokens(wf.relative_path, content))
 
-        return self._write_tokens(defs)
+        return self._write(defs, parsed_files or [])
 
-    def _write_tokens(self, defs: list[ParsedToken]) -> TokenExtractionResult:
+    def _write(self, defs: list[ParsedToken], parsed_files: list[ParsedFile]) -> TokenExtractionResult:
         # Dedupe per name — first definition wins (:root/light default precedes .dark).
         by_name: dict[str, ParsedToken] = {}
         for d in defs:
@@ -98,12 +98,45 @@ class TokenExtractor:
             if tok.file_path:
                 batch.add_relationship("CONTAINS", self._file_id_for(tok.file_path, batch), token_id)
 
+        uses = self._write_usage(set(by_name), parsed_files, batch)
+
         counts = batch.flush()
         return TokenExtractionResult(
             tokens_found=len(by_name),
+            uses_created=uses,
             nodes_created=counts["nodes_created"],
             relationships_created=counts["relationships_created"],
         )
+
+    def _write_usage(self, token_names: set[str], parsed_files: list[ParsedFile], batch: BatchCollector) -> int:
+        """Emit Function-[:USES_TOKEN]->Token for each function whose literal className
+        classes or `var(--x)` refs resolve to a real token — name-gated, so nothing is
+        fabricated for stock utilities or default-scale classes."""
+        if not token_names:
+            return 0
+        from gristle.parsers.design_tokens import resolve_utility_class
+
+        created = 0
+        for pf in parsed_files:
+            functions = list(pf.functions)
+            for cls in pf.classes:
+                functions.extend(cls.methods)
+            for fn in functions:
+                matched: set[str] = set()
+                for utility in fn.style_class_uses:
+                    token = resolve_utility_class(utility, token_names)
+                    if token:
+                        matched.add(token)
+                for var in fn.token_var_uses:
+                    name = var.lstrip("-")
+                    if name in token_names:
+                        matched.add(name)
+                if matched:
+                    func_id = f"func::{fn.qualified_name}"
+                    for name in matched:
+                        batch.add_merge_relationship("USES_TOKEN", func_id, f"token::{name}", {})
+                        created += 1
+        return created
 
     def _file_id_for(self, file_path: str, batch: BatchCollector) -> str:
         """File node id for a CSS file, creating a minimal File node the first time — a
