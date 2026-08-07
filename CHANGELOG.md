@@ -6,6 +6,8 @@ All notable changes to Gristle are documented here. This file is intended for co
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-07
+
 ### Added
 - **Design tokens — `Token` nodes from CSS custom properties.** Gristle now models an
   app's design system: it parses CSS custom-property definitions (`--primary: 215 75% 25%`)
